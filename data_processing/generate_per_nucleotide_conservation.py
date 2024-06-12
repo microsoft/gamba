@@ -9,47 +9,51 @@ from pyfaidx import Fasta
 # sequences.fasta file will contain the sequences from the genome corresponding to the regions specified in the BED file
 # conservation_scores.fasta file will contain the conservation scores for these regions
 # fasta files will have a header in the format >chrom:start-end, followed by the sequence or conservation scores
-def make_scores_df(bigwig_file, bed, file_path, genome_fasta):
+def make_scores_fasta(bigwig_file, bed, file_path, genome_fasta):
     # open the bigwig file
     bw = pyBigWig.open(bigwig_file)
 
     # open the genome fasta file
     genome = Fasta(genome_fasta)
 
-    # empty list to store conservation scores
-    conservation_scores = []
+    # create directories for train, test, and valid if they don't exist
+    os.makedirs(f"{file_path}train", exist_ok=True)
+    os.makedirs(f"{file_path}test", exist_ok=True)
+    os.makedirs(f"{file_path}valid", exist_ok=True)
 
-    # open the output fasta files
-    with open(f"{file_path}sequences.fasta", "w") as seq_fasta, open(
-        f"{file_path}conservation_scores.fasta", "w"
-    ) as cons_fasta:
-        # iterate over the BED file
-        for index, row in bed.iterrows():
-            # get the conservation scores
-            chrom = row["chrom"]
-            start = row["start"]
-            end = row["end"]
+    # iterate over the BED file
+    for index, row in bed.iterrows():
+        # get the conservation scores from strangely formatted BED
+        chrom = index
+        start = row["chrom"]
+        end = row["start"]
+        set = row["end"]
 
-            # get scores for each position in the range
-            vals = bw.values(chrom, start, end, numpy=True)
+        print(f"Processing chrom:{chrom}, start:{start}, end:{end}, set:{set}")
 
-            # check if the returned vals are valid
-            if vals is not None:
-                # replace nans with 0s
-                vals = [0 if pd.isna(val) else val for val in vals]
-            else:
-                # if the returned vals are invalid, append 0s
-                vals = [0] * (end - start)
+        # get scores for each position in the range
+        vals = bw.values(chrom, start, end, numpy=True)
 
-            conservation_scores.append(vals)
+        # check if the returned vals are valid
+        if vals is not None:
+            print("Val is not None")
+            # replace nans with 0s
+            vals = [0 if pd.isna(val) else val for val in vals]
+        else:
+            print("Val is None")
+            # if the returned vals are invalid, append 0s
+            vals = [0] * (end - start)
 
-            # get the sequence from the genome
-            sequence = genome[chrom][start:end].seq
+        print("Getting the sequence from the genome")
+        # get the sequence from the genome
+        sequence = genome[chrom][start:end].seq
 
-            # write the sequence to the fasta file
+        print("Writing to the fasta files")
+        # write the sequence and conservation scores to the fasta files in the corresponding directory
+        with open(f"{file_path}{set}/sequences.fasta", "a") as seq_fasta, open(
+            f"{file_path}{set}/conservation_scores.fasta", "a"
+        ) as cons_fasta:
             seq_fasta.write(f">{chrom}:{start}-{end}\n{sequence}\n")
-
-            # write the conservation scores to the fasta file
             cons_fasta.write(f">{chrom}:{start}-{end}\n{''.join(map(str, vals))}\n")
 
     # close the bigwig file
@@ -64,7 +68,7 @@ def main():
     parser.add_argument(
         "--bigwig_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/241-mammalian-2020v2.bigwig",
+        default="/home/t-mconsens/gamba/data_processing/data/241-mammalian-2020v2.bigWig",
         help="Path to the bigwig file with phyloP scores",
     )
     parser.add_argument(
@@ -82,7 +86,7 @@ def main():
     parser.add_argument(
         "--genome_fasta",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/hg38.fa",
+        default="/home/t-mconsens/gamba/data_processing/data/hg38.ml.fa",
         help="Path to the genome fasta file",
     )
     args = parser.parse_args()
@@ -92,7 +96,7 @@ def main():
         args.bed_file, sep="\t", header=None, names=["chrom", "start", "end"]
     )
 
-    make_scores_df(args.bigwig_file, bed, args.file_path, args.genome_fasta)
+    make_scores_fasta(args.bigwig_file, bed, args.file_path, args.genome_fasta)
     print(f"Sequences and conservation scores fasta files created in: {args.file_path}")
 
 
