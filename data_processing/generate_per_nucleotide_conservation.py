@@ -2,14 +2,39 @@ import pyBigWig
 import pandas as pd
 import os
 import argparse
+import numpy as np
 from pyfaidx import Fasta
 
+# make a dictionary for train/test/valid for each chromosome
+splits = {
+    "train": [
+        "2",
+        "3",
+        "4",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "X",
+        "Y",
+    ],
+    "valid": ["1", "12"],
+    "test": ["5", "11"],
+}
 
-# create two fasta files in the specified directory: sequences.fasta and conservation_scores.fasta
-# sequences.fasta file will contain the sequences from the genome corresponding to the regions specified in the BED file
-# conservation_scores.fasta file will contain the conservation scores for these regions
-# fasta files will have a header in the format >chrom:start-end, followed by the sequence or conservation scores
-def make_scores_fasta(bigwig_file, bed, file_path, genome_fasta):
+
+def make_datasets(bigwig_file, bed, file_path, genome_fasta):
     # open the bigwig file
     bw = pyBigWig.open(bigwig_file)
 
@@ -23,38 +48,54 @@ def make_scores_fasta(bigwig_file, bed, file_path, genome_fasta):
 
     # iterate over the BED file
     for index, row in bed.iterrows():
-        # get the conservation scores from strangely formatted BED
-        chrom = index
-        start = row["chrom"]
-        end = row["start"]
-        set = row["end"]
+        # get the chromosome and size from the BED file
+        chrom = row["chrom"]
+        size = row["end"]
+        chrom_num = chrom.split("chr")[1]
 
-        print(f"Processing chrom:{chrom}, start:{start}, end:{end}, set:{set}")
+        print(f"Processing chromosome: {chrom}, chromosome number: {chrom_num}")
 
-        # get scores for each position in the range
-        vals = bw.values(chrom, start, end, numpy=True)
-
-        # check if the returned vals are valid
-        if vals is not None:
-            print("Val is not None")
-            # replace nans with 0s
-            vals = [0 if pd.isna(val) else val for val in vals]
-        else:
-            print("Val is None")
-            # if the returned vals are invalid, append 0s
-            vals = [0] * (end - start)
-
-        print("Getting the sequence from the genome")
         # get the sequence from the genome
-        sequence = genome[chrom][start:end].seq
+        sequence = genome[chrom][:size].seq
 
-        print("Writing to the fasta files")
-        # write the sequence and conservation scores to the fasta files in the corresponding directory
-        with open(f"{file_path}{set}/sequences.fasta", "a") as seq_fasta, open(
-            f"{file_path}{set}/conservation_scores.fasta", "a"
-        ) as cons_fasta:
-            seq_fasta.write(f">{chrom}:{start}-{end}\n{sequence}\n")
-            cons_fasta.write(f">{chrom}:{start}-{end}\n{''.join(map(str, vals))}\n")
+        # convert the characters to int8
+        sequence = np.frombuffer(sequence.encode(), dtype=np.int8)
+
+        # get the conservation scores from the bigwig file
+        intervals = bw.intervals(chrom, 0, size)
+
+        # if intervals is not None, get the scores as a numpy array, numpy float64
+        if intervals is not None:
+            vals = np.array([interval[2] for interval in intervals])
+            print(f"Vals:, {min(vals)}, {max(vals)}")
+
+        # # multiply the scores so that they're not floats, but the right size for int8
+        # # the scores are currently between -20 and 10, and they're -log likelihood (p values)
+        # # we want to take the absolute value of the scores, transform them back to p values (exp(-score)),
+        # # apply their original sign (negative or positive) back
+        # # and multiply by 100 to make them int8
+        # # p_val_scores = np.abs(vals)
+        # # print(f"P_val scores:, {min(p_val_scores)}, {max(p_val_scores)}")
+        # p_val_scores = np.exp(-np.array(vals))
+        # print("p_val_scores", min(p_val_scores), max(p_val_scores))
+        # p_val_scores = np.multiply(p_val_scores, 100).astype(np.int8)
+        # # apply the original sign back
+        # scores = np.multiply(p_val_scores, np.sign(vals))
+        # print("scores", min(scores), max(scores))
+
+        # # create a numpy array with sequence and conservation scores
+        # data = np.column_stack((sequence, scores))
+
+        # use the splits dictionary to save the numpy array as a compressed numpy file by chrom_num
+        for split, chroms in splits.items():
+            if chrom_num in chroms:
+                print(f"Saving {split} data for chromosome: {chrom_num}")
+                split_dir = f"{file_path}{split}/"
+                seq_npz_file = f"{split_dir}seq_{chrom_num}.npz"
+                score_npz_file = f"{split_dir}score_{chrom_num}.npz"
+                os.makedirs(split_dir, exist_ok=True)
+                np.savez_compressed(seq_npz_file, data=sequence)
+                np.savez_compressed(score_npz_file, data=vals)
 
     # close the bigwig file
     bw.close()
@@ -74,7 +115,7 @@ def main():
     parser.add_argument(
         "--bed_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/sequences_human.bed",
+        default="/home/t-mconsens/gamba/data_processing/data/hg38.bed",
         help="File name of the bed file",
     )
     parser.add_argument(
@@ -96,7 +137,7 @@ def main():
         args.bed_file, sep="\t", header=None, names=["chrom", "start", "end"]
     )
 
-    make_scores_fasta(args.bigwig_file, bed, args.file_path, args.genome_fasta)
+    make_datasets(args.bigwig_file, bed, args.file_path, args.genome_fasta)
     print(f"Sequences and conservation scores fasta files created in: {args.file_path}")
 
 
