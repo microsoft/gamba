@@ -68,24 +68,6 @@ def make_datasets(bigwig_file, bed, file_path, genome_fasta):
         if intervals is not None:
             vals = np.array([interval[2] for interval in intervals])
             print(f"Vals:, {min(vals)}, {max(vals)}")
-
-        # # multiply the scores so that they're not floats, but the right size for int8
-        # # the scores are currently between -20 and 10, and they're -log likelihood (p values)
-        # # we want to take the absolute value of the scores, transform them back to p values (exp(-score)),
-        # # apply their original sign (negative or positive) back
-        # # and multiply by 100 to make them int8
-        # # p_val_scores = np.abs(vals)
-        # # print(f"P_val scores:, {min(p_val_scores)}, {max(p_val_scores)}")
-        # p_val_scores = np.exp(-np.array(vals))
-        # print("p_val_scores", min(p_val_scores), max(p_val_scores))
-        # p_val_scores = np.multiply(p_val_scores, 100).astype(np.int8)
-        # # apply the original sign back
-        # scores = np.multiply(p_val_scores, np.sign(vals))
-        # print("scores", min(scores), max(scores))
-
-        # # create a numpy array with sequence and conservation scores
-        # data = np.column_stack((sequence, scores))
-
         # use the splits dictionary to save the numpy array as a compressed numpy file by chrom_num
         for split, chroms in splits.items():
             if chrom_num in chroms:
@@ -104,7 +86,7 @@ def make_datasets(bigwig_file, bed, file_path, genome_fasta):
 def main():
     # process command line arguments
     parser = argparse.ArgumentParser(
-        description="Generate.fasta file for sequences and for conservation scores from a bigwig file and a BED file"
+        description="Generate data files for training, testing, and validation sets"
     )
     parser.add_argument(
         "--bigwig_file",
