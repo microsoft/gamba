@@ -17,6 +17,7 @@ def make_bed(chrom_sizes, file_path):
             and "_" not in line
             and "random" not in line
             and "chrM" not in line
+            and "chrY" not in line
             and "alt" not in line
             and "scaffold" not in line
         ):
