@@ -13,6 +13,12 @@ def plot_dist(bigwig_file, bed, file_path):
     # open the bigwig file
     bw = pyBigWig.open(bigwig_file)
 
+    # set the x and y axis limits
+    x_min = -20
+    x_max = 9
+    y_min = 0.0001
+    y_max = 10**7.5
+
     # iterate over the BED file
     for index, row in bed.iterrows():
         # get the chromosome and size from the BED file
@@ -37,6 +43,8 @@ def plot_dist(bigwig_file, bed, file_path):
             plt.ylabel("Frequency")
             # log scale y
             plt.yscale("log")
+            plt.xlim(x_min, x_max)
+            plt.ylim(y_min, y_max)
             plt.savefig(f"{file_path}distribution_chr{chrom_num}.png")
             plt.close()
 
