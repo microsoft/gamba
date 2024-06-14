@@ -82,8 +82,7 @@ class ConservationDataset(Dataset):
         with open(osp.join(data_dir, "splits.json"), "r") as f:
             self.indices = json.load(f)[self.split]
         self.max_len = max_len
-        self.seq_file = None
-        self.cons_file = None
+        self.file = None
 
     def __len__(self):
         return len(self.indices)
@@ -91,13 +90,12 @@ class ConservationDataset(Dataset):
     def __getitem__(self, idx):
         idx = self.indices[idx]
 
-        if self.seq_file is None:
-            self.seq_file = f"{self.data_dir}/{self.split}/seq_{idx}.npz"
-        if self.cons_file is None:
-            self.cons_file = f"{self.data_dir}/{self.split}/score_{idx}.npz"
+        if self.file is None:
+            self.file = f"{self.data_dir}/{self.split}/{idx}.npz"
 
-        sequence = np.load(self.seq_file)["data"]
-        conservation = np.load(self.cons_file)["data"]
+        file_data = np.load(self.seq_file)
+        sequence = file_data["sequence"]
+        conservation = file_data["score"]
 
         # right now random sampling, could change to some smarter way
         if len(sequence) - self.max_len > 0:
