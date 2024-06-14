@@ -58,8 +58,6 @@ def make_datasets(
                 seq_cons_file = f"{split_dir}{chrom_num}.npz"
                 os.makedirs(split_dir, exist_ok=True)
                 np.savez_compressed(seq_cons_file, sequence=sequence, conservation=vals)
-                # add a break
-                break
 
     # close the bigwig file
     bw.close()
