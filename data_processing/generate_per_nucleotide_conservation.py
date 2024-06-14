@@ -7,7 +7,13 @@ from pyfaidx import Fasta
 import json
 
 
-def make_datasets(bigwig_file, bed, file_path, genome_fasta, splits_file):
+def make_datasets(
+    bigwig_file: str,
+    bed: pd.DataFrame,
+    file_path: str,
+    genome_fasta: str,
+    splits_file: str,
+):
     # open the bigwig file
     bw = pyBigWig.open(bigwig_file)
 
@@ -49,11 +55,9 @@ def make_datasets(bigwig_file, bed, file_path, genome_fasta, splits_file):
             if chrom_num in chroms:
                 print(f"Saving {split} data for chromosome: {chrom_num}")
                 split_dir = f"{file_path}{split}/"
-                seq_npz_file = f"{split_dir}seq_{chrom_num}.npz"
-                score_npz_file = f"{split_dir}score_{chrom_num}.npz"
+                seq_cons_file = f"{split_dir}{chrom_num}.npz"
                 os.makedirs(split_dir, exist_ok=True)
-                np.savez_compressed(seq_npz_file, data=sequence)
-                np.savez_compressed(score_npz_file, data=vals)
+                np.savez_compressed(seq_cons_file, sequence=sequence, conservation=vals)
                 # add a break
                 break
 

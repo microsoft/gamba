@@ -3,7 +3,7 @@ import argparse
 
 
 # generates a BED file from the hg38.chrom.sizes file
-def make_bed(chrom_sizes, file_path):
+def make_bed(chrom_sizes: str, file_path: str):
 
     # open the hg38.chrom.sizes file
     chrom_sizes = open(chrom_sizes, "r")

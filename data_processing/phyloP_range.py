@@ -2,7 +2,7 @@ import pyBigWig
 import argparse
 
 
-def get_range(bigwig_file):
+def get_range(bigwig_file: str):
     with pyBigWig.open(bigwig_file) as bw:
         min_val = float("inf")
         max_val = float("-inf")
