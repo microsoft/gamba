@@ -11,9 +11,12 @@ from torch.utils.data import Dataset
 
 def parse_msa(path):
     parsed_msa = parse_fasta(path)
-    parsed_msa = list(filter(None, parsed_msa))  # get rid of any empty entries from commented inputs
+    parsed_msa = list(
+        filter(None, parsed_msa)
+    )  # get rid of any empty entries from commented inputs
     parsed_msa = [
-        [char for char in seq if (char.isupper() or char == "-") and not char == "."] for seq in parsed_msa
+        [char for char in seq if (char.isupper() or char == "-") and not char == "."]
+        for seq in parsed_msa
     ]  # get rid of indels
     parsed_msa = ["".join(seq) for seq in parsed_msa]
     return parsed_msa
@@ -27,7 +30,9 @@ def msa_subsampling(sliced_msa, n_sequences, selection_type):
     """
     if selection_type == "random":
         msa_depth = len(sliced_msa)
-        random_idx = np.random.choice(msa_depth - 1, size=n_sequences - 1, replace=False) + 1
+        random_idx = (
+            np.random.choice(msa_depth - 1, size=n_sequences - 1, replace=False) + 1
+        )
         msa_sequences = [list(sliced_msa[int(i)]) for i in random_idx]
     elif selection_type == "max_hamming":
         msa_sequences = []
@@ -57,6 +62,53 @@ def msa_subsampling(sliced_msa, n_sequences, selection_type):
     else:
         raise Exception("Invalid selection type; choose from 'random' or 'max_hamming'")
     return msa_sequences
+
+
+class ConservationDataset(Dataset):
+    """
+    Dataset that pulls sequence information and corresponding conservation scores
+
+    The data folder should contain the following:
+    - 'splits.json': a dict with keys 'train', 'valid', and 'test' mapping to lists of chromosomes
+    - 'train', 'valid', 'test' folders with the following files:
+    - 'seq_{chromosome}.npz': sequence data
+    - 'score_{chromosome}.npz': conservation scores
+    where {chromosome} is the chromosome number, determined by splits.json to be in the correct split folder
+    """
+
+    def __init__(self, data_dir: str, split: str, max_len=2048):
+        self.data_dir = data_dir
+        self.split = split
+        with open(osp.join(data_dir, "splits.json"), "r") as f:
+            self.indices = json.load(f)[self.split]
+        self.max_len = max_len
+        self.seq_file = None
+        self.cons_file = None
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        idx = self.indices[idx]
+
+        if self.seq_file is None:
+            self.seq_file = f"{self.data_dir}/{self.split}/seq_{idx}.npz"
+        if self.cons_file is None:
+            self.cons_file = f"{self.data_dir}/{self.split}/score_{idx}.npz"
+
+        sequence = np.load(self.seq_file)["data"]
+        conservation = np.load(self.cons_file)["data"]
+
+        # right now random sampling, could change to some smarter way
+        if len(sequence) - self.max_len > 0:
+            start = np.random.choice(len(sequence) - self.max_len)
+            stop = start + self.max_len
+        else:
+            start = 0
+            stop = len(sequence)
+        sequence = sequence[start:stop]
+        conservation = conservation[start:stop]
+        return (sequence, conservation)
 
 
 class UniRefDataset(Dataset):
@@ -167,7 +219,9 @@ class OpenProteinDataset(Dataset):
         msa_seq_len = self.lengths[idx]
 
         parsed_msa = parse_msa(path)
-        tokenized_msa = np.vstack([np.array([self.a_to_i[a] for a in seq]) for seq in parsed_msa])
+        tokenized_msa = np.vstack(
+            [np.array([self.a_to_i[a] for a in seq]) for seq in parsed_msa]
+        )
 
         if msa_seq_len > self.max_seq_len:
             slice_start = np.random.choice(msa_seq_len - self.max_seq_len + 1)
@@ -180,7 +234,9 @@ class OpenProteinDataset(Dataset):
         sliced_msa = tokenized_msa[:, slice_start : slice_start + seq_len]
         # Reduce high-gap content in sliced sequences
         sliced_msa = [
-            seq for seq in sliced_msa if (np.count_nonzero(seq == self.gap_id) < len(seq) / self.gap_fraction)
+            seq
+            for seq in sliced_msa
+            if (np.count_nonzero(seq == self.gap_id) < len(seq) / self.gap_fraction)
         ]
         msa_depth = len(sliced_msa)
         anchor_seq = sliced_msa[0]  # This is the query sequence in MSA
@@ -188,8 +244,13 @@ class OpenProteinDataset(Dataset):
         if msa_depth <= self.n_sequences:
             output = sliced_msa
         else:
-            msa_sequences = msa_subsampling(sliced_msa, self.n_sequences, selection_type=self.selection_type)
+            msa_sequences = msa_subsampling(
+                sliced_msa, self.n_sequences, selection_type=self.selection_type
+            )
             output = [anchor_seq] + msa_sequences
         # Add start/stop tokens to each seq in MSA
-        output = ["".join(self.i_to_a[[self.start_id] + list(seq) + [self.stop_id]]) for seq in output]
+        output = [
+            "".join(self.i_to_a[[self.start_id] + list(seq) + [self.stop_id]])
+            for seq in output
+        ]
         return output
