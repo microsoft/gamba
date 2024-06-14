@@ -54,6 +54,8 @@ def make_datasets(bigwig_file, bed, file_path, genome_fasta, splits_file):
                 os.makedirs(split_dir, exist_ok=True)
                 np.savez_compressed(seq_npz_file, data=sequence)
                 np.savez_compressed(score_npz_file, data=vals)
+                # add a break
+                break
 
     # close the bigwig file
     bw.close()
