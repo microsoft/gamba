@@ -4,37 +4,10 @@ import os
 import argparse
 import numpy as np
 from pyfaidx import Fasta
-
-# make a dictionary for train/test/valid for each chromosome
-splits = {
-    "train": [
-        "2",
-        "3",
-        "4",
-        "6",
-        "7",
-        "8",
-        "9",
-        "10",
-        "13",
-        "14",
-        "15",
-        "16",
-        "17",
-        "18",
-        "19",
-        "20",
-        "21",
-        "22",
-        "X",
-        "Y",
-    ],
-    "valid": ["1", "12"],
-    "test": ["5", "11"],
-}
+import json
 
 
-def make_datasets(bigwig_file, bed, file_path, genome_fasta):
+def make_datasets(bigwig_file, bed, file_path, genome_fasta, splits_file):
     # open the bigwig file
     bw = pyBigWig.open(bigwig_file)
 
@@ -67,8 +40,11 @@ def make_datasets(bigwig_file, bed, file_path, genome_fasta):
         # if intervals is not None, get the scores as a numpy array, numpy float64
         if intervals is not None:
             vals = np.array([interval[2] for interval in intervals])
-            print(f"Vals:, {min(vals)}, {max(vals)}")
-        # use the splits dictionary to save the numpy array as a compressed numpy file by chrom_num
+        # use the splits json to save the numpy array as a compressed numpy file by chrom_num
+        # read in the splits file
+        with open(splits_file, "r") as f:
+            splits = json.load(f)
+        # iterate over the splits
         for split, chroms in splits.items():
             if chrom_num in chroms:
                 print(f"Saving {split} data for chromosome: {chrom_num}")
@@ -112,6 +88,12 @@ def main():
         default="/home/t-mconsens/gamba/data_processing/data/hg38.ml.fa",
         help="Path to the genome fasta file",
     )
+    parser.add_argument(
+        "--splits_file",
+        type=str,
+        default="/home/t-mconsens/gamba/data_processing/data/splits.json",
+        help="Path to the splits JSON file",
+    )
     args = parser.parse_args()
 
     # load the BED file to pandas df
@@ -119,7 +101,9 @@ def main():
         args.bed_file, sep="\t", header=None, names=["chrom", "start", "end"]
     )
 
-    make_datasets(args.bigwig_file, bed, args.file_path, args.genome_fasta)
+    make_datasets(
+        args.bigwig_file, bed, args.file_path, args.genome_fasta, args.splits_file
+    )
     print(f"Sequences and conservation scores fasta files created in: {args.file_path}")
 
 
