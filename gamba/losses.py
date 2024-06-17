@@ -43,7 +43,10 @@ class OAMaskedCrossEntropyLoss(nn.Module):
         tgt = tgt * mask + ~mask * -100
 
         loss = F.cross_entropy(
-            pred.reshape(-1, pred.shape[-1]), tgt.flatten(), weight=self.weight, reduction="none"
+            pred.reshape(-1, pred.shape[-1]),
+            tgt.flatten(),
+            weight=self.weight,
+            reduction="none",
         ).reshape(*tgt.shape)
         nll_loss = loss.sum()
 
@@ -75,7 +78,9 @@ class MaskedCrossEntropyLoss(nn.Module):
         self.weight = weight
         self.reduction = reduction
 
-    def forward(self, pred: torch.Tensor, tgt: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, pred: torch.Tensor, tgt: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
         # we only want to compute the error over the masked tokens
         # this also eliminates the contribution of padding tokens since they aren't in the mask (by construction)
         tgt = tgt * mask + (1 - mask) * -100
@@ -86,3 +91,24 @@ class MaskedCrossEntropyLoss(nn.Module):
             weight=self.weight,
             reduction=self.reduction,
         )
+
+
+class GaussianNLLLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(
+        self, pred: torch.Tensor, tgt: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        # we only want to compute the error over the masked tokens
+        # this also eliminates the contribution of padding tokens since they aren't in the mask (by construction)
+        tgt = tgt * mask + (1 - mask) * -100
+        # let's return the loss as the negative log likelihood of the target given the predicted parameters of the Gaussian distribution
+        # where pred: torch.Tensor has shape (batch, seq_length, 2) where 2 is the mean and variance of the Gaussian distribution
+        # we will use the - log likelihood of the Gaussian distribution as the loss
+        mean = pred[:, :, 0]
+        var = pred[:, :, 1]
+        loss = -(0.5 * torch.log(var) + 0.5 * ((tgt - mean) ** 2) / var)
+        # mean loss over batch and seq length
+        loss = loss.mean()
+        return loss
