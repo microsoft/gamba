@@ -7,9 +7,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
+import logging
+
+_logger = logging.getLogger(__name__)
 
 
-def plot_dist(bigwig_file: str, bed: pd.DataFrame, file_path: str):
+def plot_dist(
+    bigwig_file: str, bed: pd.DataFrame, file_path: str, verbose: bool = True
+):
     # open the bigwig file
     bw = pyBigWig.open(bigwig_file)
 
@@ -26,7 +31,11 @@ def plot_dist(bigwig_file: str, bed: pd.DataFrame, file_path: str):
         size = row["end"]
         chrom_num = chrom.split("chr")[1]
 
-        print(f"Processing chromosome: {chrom}, chromosome number: {chrom_num}")
+        # if verbose logging
+        if verbose:
+            _logger.info(
+                f"Processing chromosome: {chrom}, chromosome number: {chrom_num}"
+            )
 
         # get the conservation scores from the bigwig file
         intervals = bw.intervals(chrom, 0, size)
@@ -50,6 +59,9 @@ def plot_dist(bigwig_file: str, bed: pd.DataFrame, file_path: str):
 
     # close the bigwig file
     bw.close()
+    # if verbose print where saved
+    if verbose:
+        _logger.info(f"Distribution plots saved to {file_path}")
 
 
 def main():
@@ -89,7 +101,6 @@ def main():
     )
 
     plot_dist(args.bigwig_file, bed, args.file_path)
-    print(f"Plots created in: {args.file_path}")
 
 
 if __name__ == "__main__":

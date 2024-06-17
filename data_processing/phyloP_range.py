@@ -32,8 +32,6 @@ def main():
     )
     args = parser.parse_args()
     min_val, max_val = get_range(args.bigwig_file)
-    print(f"Min value: {min_val}, Max value: {max_val}")
-    print(f"Range: {max_val - min_val}")
     # save the min and max value to a file
     with open(f"{args.file_path}min_max_range.txt", "w") as f:
         f.write(f"Min value: {min_val}, Max value: {max_val}\n")

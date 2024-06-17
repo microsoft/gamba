@@ -5,6 +5,9 @@ import argparse
 import numpy as np
 from pyfaidx import Fasta
 import json
+import logging
+
+_logger = logging.getLogger(__name__)
 
 
 def make_datasets(
@@ -13,6 +16,7 @@ def make_datasets(
     file_path: str,
     genome_fasta: str,
     splits_file: str,
+    verbose: bool = True,
 ):
     # open the bigwig file
     bw = pyBigWig.open(bigwig_file)
@@ -32,7 +36,11 @@ def make_datasets(
         size = row["end"]
         chrom_num = chrom.split("chr")[1]
 
-        print(f"Processing chromosome: {chrom}, chromosome number: {chrom_num}")
+        # if verbose print using logger:
+        if verbose:
+            _logger.info(
+                f"Processing chromosome: {chrom}, chromosome number: {chrom_num}"
+            )
 
         # get the sequence from the genome
         sequence = genome[chrom][:size].seq
@@ -61,6 +69,9 @@ def make_datasets(
 
     # close the bigwig file
     bw.close()
+    if verbose:
+        _logger.info(f"Processing chromosome: {chrom}, chromosome number: {chrom_num}")
+    print(f"Sequences and conservation scores fasta files created in: {file_path}")
 
 
 def main():
@@ -108,7 +119,6 @@ def main():
     make_datasets(
         args.bigwig_file, bed, args.file_path, args.genome_fasta, args.splits_file
     )
-    print(f"Sequences and conservation scores fasta files created in: {args.file_path}")
 
 
 if __name__ == "__main__":

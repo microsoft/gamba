@@ -1,9 +1,12 @@
 import os
 import argparse
+import logging
+
+_logger = logging.getLogger(__name__)
 
 
 # generates a BED file from the hg38.chrom.sizes file
-def make_bed(chrom_sizes: str, file_path: str):
+def make_bed(chrom_sizes: str, file_path: str, verbose: bool = True):
 
     # open the hg38.chrom.sizes file
     chrom_sizes = open(chrom_sizes, "r")
@@ -28,6 +31,10 @@ def make_bed(chrom_sizes: str, file_path: str):
     with open((f"{file_path}hg38.bed"), "w") as bed_file:
         bed_file.write("\n".join(bed_lines))
 
+    # if verbose print where saved
+    if verbose:
+        _logger.info(f"Saved BED file to {file_path}")
+
 
 def main():
     # process command line arguments
@@ -49,8 +56,6 @@ def main():
     args = parser.parse_args()
 
     make_bed(args.chrom_sizes, args.file_path)
-
-    print(f"BED file created:{args.file_path}hg38.bed")
 
 
 if __name__ == "__main__":

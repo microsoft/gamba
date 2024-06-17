@@ -3,9 +3,14 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import logging
+
+_logger = logging.getLogger(__name__)
 
 
-def plot_scores(bigwig_file: str, bed: pd.DataFrame, file_path: str):
+def plot_scores(
+    bigwig_file: str, bed: pd.DataFrame, file_path: str, verbose: bool = True
+):
     # open the bigwig file
     bw = pyBigWig.open(bigwig_file)
 
@@ -16,7 +21,12 @@ def plot_scores(bigwig_file: str, bed: pd.DataFrame, file_path: str):
         size = row["end"]
         chrom_num = chrom.split("chr")[1]
 
-        print(f"Processing chromosome: {chrom}, chromosome number: {chrom_num}")
+        # if verbose print using logger:
+        if verbose:
+            _logger.info(
+                f"Processing chromosome: {chrom}, chromosome number: {chrom_num}"
+            )
+
         # get the conservation scores from the bigwig file in 1000bp bins from 0 to size
         bins = int(np.ceil(size / 1000))
         scores = []
@@ -39,6 +49,9 @@ def plot_scores(bigwig_file: str, bed: pd.DataFrame, file_path: str):
 
     # close the bigwig file
     bw.close()
+    # if verbose print where saved
+    if verbose:
+        _logger.info(f"Saved conservation scores to {file_path}")
 
 
 def main():
@@ -72,7 +85,6 @@ def main():
     )
 
     plot_scores(args.bigwig_file, bed, args.file_path)
-    print(f"Plots created in: {args.file_path}")
 
 
 if __name__ == "__main__":
