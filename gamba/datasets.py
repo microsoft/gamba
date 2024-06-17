@@ -96,6 +96,9 @@ class ConservationDataset(Dataset):
         sequence = file_data["sequence"]
         conservation = file_data["conservation"]
 
+        # code to round conservation to two decimal places for prediction
+        conservation = np.round(conservation, 2)
+
         # right now random sampling, could change to some smarter way
         if len(sequence) - self.max_len > 0:
             start = np.random.choice(len(sequence) - self.max_len)
