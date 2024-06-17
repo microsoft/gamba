@@ -9,7 +9,7 @@ import pandas as pd
 import os
 
 
-def plot_dist(bigwig_file, bed, file_path):
+def plot_dist(bigwig_file: str, bed: pd.DataFrame, file_path: str):
     # open the bigwig file
     bw = pyBigWig.open(bigwig_file)
 
