@@ -71,8 +71,7 @@ class ConservationDataset(Dataset):
     The data folder should contain the following:
     - 'splits.json': a dict with keys 'train', 'valid', and 'test' mapping to lists of chromosomes
     - 'train', 'valid', 'test' folders with the following files:
-    - 'seq_{chromosome}.npz': sequence data
-    - 'score_{chromosome}.npz': conservation scores
+    - '{chromosome}.npz': sequence data and conservation scores in 'sequence' and 'conservation' keys
     where {chromosome} is the chromosome number, determined by splits.json to be in the correct split folder
     """
 
@@ -87,7 +86,7 @@ class ConservationDataset(Dataset):
     def __len__(self):
         return len(self.indices)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int):
         idx = self.indices[idx]
 
         if self.file is None:
@@ -95,7 +94,7 @@ class ConservationDataset(Dataset):
 
         file_data = np.load(self.seq_file)
         sequence = file_data["sequence"]
-        conservation = file_data["score"]
+        conservation = file_data["conservation"]
 
         # right now random sampling, could change to some smarter way
         if len(sequence) - self.max_len > 0:
