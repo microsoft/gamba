@@ -42,7 +42,10 @@ def plot_scores(
         # use these average scores to plot the conservation across the whole chromosome for every bin
         plt.scatter(range(bins), scores, s=1)
         plt.title(f"Conservation Scores for Chromosome {chrom_num}")
-        plt.xlabel("1000bp Bin")
+        # force all axis to be the same for every plot
+        plt.ylim(-20, 9)
+        plt.xlim(0, bins)
+        plt.xlabel("1,000bp Bin")
         plt.ylabel("Conservation Score")
         plt.savefig(f"{file_path}conservation_chr{chrom_num}.png")
         plt.close()

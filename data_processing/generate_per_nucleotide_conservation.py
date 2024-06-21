@@ -29,6 +29,17 @@ def make_datasets(
     os.makedirs(f"{file_path}test", exist_ok=True)
     os.makedirs(f"{file_path}valid", exist_ok=True)
 
+    # use the splits json to save the numpy array as a compressed numpy file by chrom_num
+    # read in the splits file
+    with open(splits_file, "r") as f:
+        splits = json.load(f)
+
+    # create a dictionary to map chromosomes to splits
+    chromosome_splits = {}
+    for split, chroms in splits.items():
+        for chrom in chroms:
+            chromosome_splits[chrom] = split
+
     # iterate over the BED file
     for index, row in bed.iterrows():
         # get the chromosome and size from the BED file
@@ -46,6 +57,7 @@ def make_datasets(
         sequence = genome[chrom][:size].seq
 
         # convert the characters to int8
+        # .encode() method comes from built-in python method, results in ASCII
         sequence = np.frombuffer(sequence.encode(), dtype=np.int8)
 
         # get the conservation scores from the bigwig file
@@ -54,18 +66,15 @@ def make_datasets(
         # if intervals is not None, get the scores as a numpy array, numpy float64
         if intervals is not None:
             vals = np.array([interval[2] for interval in intervals])
-        # use the splits json to save the numpy array as a compressed numpy file by chrom_num
-        # read in the splits file
-        with open(splits_file, "r") as f:
-            splits = json.load(f)
-        # iterate over the splits
-        for split, chroms in splits.items():
-            if chrom_num in chroms:
-                print(f"Saving {split} data for chromosome: {chrom_num}")
-                split_dir = f"{file_path}{split}/"
-                seq_cons_file = f"{split_dir}{chrom_num}.npz"
-                os.makedirs(split_dir, exist_ok=True)
-                np.savez_compressed(seq_cons_file, sequence=sequence, conservation=vals)
+
+        # get the split for the current chromosome
+        split_dir = chromosome_splits[chrom_num]
+        if verbose:
+            _logger.info(f"Saving {split_dir} data for chromosome: {chrom_num}")
+        split_dir = f"{file_path}{split}/"
+        seq_cons_file = f"{split_dir}{chrom_num}.npz"
+        os.makedirs(split_dir, exist_ok=True)
+        np.savez_compressed(seq_cons_file, sequence=sequence, conservation=vals)
 
     # close the bigwig file
     bw.close()
