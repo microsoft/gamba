@@ -68,10 +68,10 @@ def make_datasets(
             vals = np.array([interval[2] for interval in intervals])
 
         # get the split for the current chromosome
-        split_dir = chromosome_splits[chrom_num]
+        split_name = chromosome_splits[chrom_num]
         if verbose:
             _logger.info(f"Saving {split_dir} data for chromosome: {chrom_num}")
-        split_dir = f"{file_path}{split}/"
+        split_dir = f"{file_path}{split_name}/"
         seq_cons_file = f"{split_dir}{chrom_num}.npz"
         os.makedirs(split_dir, exist_ok=True)
         np.savez_compressed(seq_cons_file, sequence=sequence, conservation=vals)
@@ -80,7 +80,6 @@ def make_datasets(
     bw.close()
     if verbose:
         _logger.info(f"Processing chromosome: {chrom}, chromosome number: {chrom_num}")
-    print(f"Sequences and conservation scores fasta files created in: {file_path}")
 
 
 def main():
