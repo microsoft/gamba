@@ -95,9 +95,11 @@ class ConservationDataset(Dataset):
         file_data = np.load(self.seq_file)
         sequence = file_data["sequence"]
         conservation = file_data["conservation"]
+        error = file_data["error"]
 
-        # code to round conservation to two decimal places for prediction
+        # code to round conservation & scaling to two decimal places for prediction
         conservation = np.round(conservation, 2)
+        error = np.round(error, 2)
 
         # right now random sampling, could change to some smarter way
         if len(sequence) - self.max_len > 0:
@@ -108,7 +110,8 @@ class ConservationDataset(Dataset):
             stop = len(sequence)
         sequence = sequence[start:stop]
         conservation = conservation[start:stop]
-        return (sequence, conservation)
+        error = error[start:stop]
+        return (sequence, conservation, error)
 
 
 class UniRefDataset(Dataset):
