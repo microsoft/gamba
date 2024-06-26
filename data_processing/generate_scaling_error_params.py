@@ -90,25 +90,25 @@ def main():
     parser.add_argument(
         "--bed_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/hg38.bed",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/hg38.bed",
         help="File name of the bed file",
     )
     parser.add_argument(
         "--file_path",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/",
         help="Directory to save the new sequence and conservation scores fasta",
     )
     parser.add_argument(
         "--genome_fasta",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/hg38.ml.fa",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
         help="Path to the genome fasta file",
     )
     parser.add_argument(
         "--splits_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/splits.json",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/splits.json",
         help="Path to the splits JSON file",
     )
     args = parser.parse_args()

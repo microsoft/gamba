@@ -21,13 +21,13 @@ def main():
     parser.add_argument(
         "--bigwig_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/241-mammalian-2020v2.bigWig",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
         help="Path to the bigwig file with phyloP scores",
     )
     parser.add_argument(
         "--file_path",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/data_vis/",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/data_vis/",
         help="Directory to save the txt file with min and max values",
     )
     args = parser.parse_args()

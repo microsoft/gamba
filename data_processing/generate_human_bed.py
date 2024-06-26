@@ -44,13 +44,13 @@ def main():
     parser.add_argument(
         "--chrom_sizes",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/hg38.chrom.sizes",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/hg38.chrom.sizes",
         help="Path to the hg38.chrom.sizes file",
     )
     parser.add_argument(
         "--file_path",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/",
         help="Directory to save the BED file",
     )
     args = parser.parse_args()
