@@ -64,38 +64,99 @@ def msa_subsampling(sliced_msa, n_sequences, selection_type):
     return msa_sequences
 
 
-class ConservationDataset(Dataset):
+class ConservationDataset10000(Dataset):
     """
-    Dataset that pulls sequence information and corresponding conservation scores
+    Dataset that pulls sequence information and corresponding conservation scores in 10,000bp chunks
 
     The data folder should contain the following:
     - 'splits.json': a dict with keys 'train', 'valid', and 'test' mapping to lists of chromosomes
     - 'train', 'valid', 'test' folders with the following files:
-    - '{chromosome}.npz': sequence data and conservation scores in 'sequence' and 'conservation' keys
+    - '{chromosome}.npz': sequence data and conservation scores in 'sequence' and 'conservation' and 'error' keys
     where {chromosome} is the chromosome number, determined by splits.json to be in the correct split folder
     """
 
-    def __init__(self, data_dir: str, split: str, max_len=2048):
+    def __init__(
+        self,
+        data_dir: str,
+        split: str,
+        max_len=2048,
+        specific_chromosomes: list = None,
+    ):
         self.data_dir = data_dir
         self.split = split
         with open(osp.join(data_dir, "splits.json"), "r") as f:
-            self.indices = json.load(f)[self.split]
+            self.chromosomes = json.load(f)[self.split]
+        # load the bed file of chromosome sizes
+        bed = pd.read_csv(
+            osp.join(data_dir, "hg38.bed"),
+            sep="\t",
+            header=None,
+            names=["chrom", "start", "end"],
+        )
         self.max_len = max_len
+        self.specific_chromosomes = specific_chromosomes
+        # if specific chromosome provided, use it, otherwise use all in split
+        if self.specific_chromosomes is not None:
+            # if chromosome is not in split, raise error
+            if not all(
+                [
+                    chromosome in self.chromosomes
+                    for chromosome in self.specific_chromosomes
+                ]
+            ):
+                raise ValueError("Chromosome not in split")
+            self.chromosomes = self.specific_chromosomes
+        # for each chromosome being used, make a mapping of chrom: size
+        print(chrom for chrom in self.chromosomes)
+        print(f'bed[chrom] values {bed["chrom"].values}')
+        self.chrom_sizes = {
+            chrom: bed[bed["chrom"] == ("chr" + chrom)]["end"].values
+            for chrom in self.chromosomes
+        }
+        print(f"self.chrom_sizes: {self.chrom_sizes}")
+        # split the size by arbitrary sequence length setting of 10,000 bp to determine how many 10,000bp sequences in each chromosome
+        self.num_sequences = {
+            chrom: (self.chrom_sizes[chrom] // 10000) for chrom in self.chromosomes
+        }
+        print(f"self.num_sequences: {self.num_sequences}")
+        # indices from 0 to n, where n is the total number of 10,000bp sequences across all chromosomes (sum the number of sequences for each chromosome and then generate a range of that total)
+        self.indices = list(
+            range(int(sum(self.num_sequences[chrom] for chrom in self.chromosomes)))
+        )
         self.file = None
 
     def __len__(self):
         return len(self.indices)
 
+    def get_chrom_seq(self, idx: int):
+        # based on idx, determine which chromosome the sequence is from
+        chrom = None
+        # sequence within chromosome
+        seq_idx = None
+        for chromosome in self.chromosomes:
+            if idx < self.num_sequences[chromosome]:
+                chrom = chromosome
+                seq_idx = idx
+                break
+            else:
+                idx -= self.num_sequences[chromosome]
+        return chrom, int(seq_idx)
+
     def __getitem__(self, idx: int):
-        idx = self.indices[idx]
+        print(f"idx sent in: {idx}")
+        chrom, seq_idx = self.get_chrom_seq(idx)
+        print(f"seq_idx: {seq_idx}")
+        print(f"chrom and seq id:{chrom, seq_idx}")
+        if self.file is None or not self.file.endswith(f"test_{chrom}.npz"):
+            self.file = osp.join(self.data_dir, self.split, f"test_{chrom}.npz")
+        print(f"self.file: {self.file}")
 
-        if self.file is None:
-            self.file = f"{self.data_dir}/{self.split}/{idx}.npz"
-
-        file_data = np.load(self.seq_file)
-        sequence = file_data["sequence"]
-        conservation = file_data["conservation"]
-        error = file_data["error"]
+        file_data = np.load(self.file)
+        sequence = file_data["sequence"][seq_idx * 10000 : (seq_idx + 1) * 10000]
+        conservation = file_data["conservation"][
+            seq_idx * 10000 : (seq_idx + 1) * 10000
+        ]
+        error = file_data["error"][seq_idx * 10000 : (seq_idx + 1) * 10000]
 
         # code to round conservation & scaling to two decimal places for prediction
         conservation = np.round(conservation, 2)
@@ -111,6 +172,93 @@ class ConservationDataset(Dataset):
         sequence = sequence[start:stop]
         conservation = conservation[start:stop]
         error = error[start:stop]
+        return (sequence, conservation, error)
+
+
+class ConservationDataset(Dataset):
+    """
+    Dataset that pulls sequence information and corresponding conservation scores randomly
+
+    The data folder should contain the following:
+    - 'splits.json': a dict with keys 'train', 'valid', and 'test' mapping to lists of chromosomes
+    - 'train', 'valid', 'test' folders with the following files:
+    - '{chromosome}.npz': sequence data and conservation scores in 'sequence' and 'conservation' and 'error' keys
+    where {chromosome} is the chromosome number, determined by splits.json to be in the correct split folder
+    """
+
+    def __init__(
+        self,
+        data_dir: str,
+        split: str,
+        max_len=2048,
+        num_sequences: int = 100,
+        specific_chromosomes: list = None,
+    ):
+        self.data_dir = data_dir
+        self.split = split
+        with open(osp.join(data_dir, "splits.json"), "r") as f:
+            self.chromosomes = json.load(f)[self.split]
+        # load the bed file of chromosome sizes
+        bed = pd.read_csv(
+            osp.join(data_dir, "hg38.bed"),
+            sep="\t",
+            header=None,
+            names=["chrom", "start", "end"],
+        )
+        self.max_len = max_len
+        self.specific_chromosomes = specific_chromosomes
+        # if specific chromosome provided, use it, otherwise use all in split
+        if self.specific_chromosomes is not None:
+            # if chromosome is not in split, raise error
+            if not all(
+                [
+                    chromosome in self.chromosomes
+                    for chromosome in self.specific_chromosomes
+                ]
+            ):
+                raise ValueError("Chromosome not in split")
+            self.chromosomes = self.specific_chromosomes
+        # for each chromosome being used, make a mapping of chrom: size
+        print(chrom for chrom in self.chromosomes)
+        print(f'bed[chrom] values {bed["chrom"].values}')
+        self.chrom_sizes = {
+            chrom: bed[bed["chrom"] == ("chr" + chrom)]["end"].values
+            for chrom in self.chromosomes
+        }
+        print(f"self.chrom_sizes: {self.chrom_sizes}")
+        self.num_sequences = num_sequences
+        print(f"self.num_sequences: {self.num_sequences}")
+        # num sequences times: randomly sample a chromosome and a sequence start position from that chromosome (within chrom_size of that chromosome - max_len) and save it
+        self.sequences = []
+        for i in range(self.num_sequences):
+            chrom = np.random.choice(self.chromosomes)
+            start = np.random.choice(self.chrom_sizes[chrom] - max_len)
+            self.sequences.append((chrom, start))
+        # indices from 0 to n, where n is the total number of 10,000bp sequences across all chromosomes (sum the number of sequences for each chromosome and then generate a range of that total)
+        self.indices = list(range(self.num_sequences))
+        self.file = None
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx: int):
+        print(f"idx sent in: {idx}")
+        chrom, seq_idx = self.sequences[idx]
+        print(f"seq_idx: {seq_idx}")
+        print(f"chrom and seq id:{chrom, seq_idx}")
+        if self.file is None or not self.file.endswith(f"test_{chrom}.npz"):
+            self.file = osp.join(self.data_dir, self.split, f"test_{chrom}.npz")
+        print(f"self.file: {self.file}")
+
+        file_data = np.load(self.file)
+        sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+        conservation = file_data["conservation"][seq_idx : seq_idx + self.max_len]
+        error = file_data["error"][seq_idx : seq_idx + self.max_len]
+
+        # code to round conservation & scaling to two decimal places for prediction
+        conservation = np.round(conservation, 2)
+        error = np.round(error, 2)
+
         return (sequence, conservation, error)
 
 
