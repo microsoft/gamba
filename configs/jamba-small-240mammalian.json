@@ -1,6 +1,6 @@
 {
   "dataset": "240-mammalian",
-  "task": "lm",
+  "task": "glm",
   "model_type": "jamba",
   "model_config": {
     "hidden_size": 512,
