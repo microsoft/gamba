@@ -18,11 +18,11 @@ cd gamba/
 To set up the data for gamba:
 
 ```bash
-mkdir -p data_processing/data
-curl https://hgdownload.cse.ucsc.edu/goldenpath/hg38/bigZips/hg38.chrom.sizes > data_processing/data/hg38.chrom.sizes
+mkdir -p data_processing/data/240-mammalian/
+curl https://hgdownload.cse.ucsc.edu/goldenpath/hg38/bigZips/hg38.chrom.sizes > data_processing/data/240-mammalian/hg38.chrom.sizes
 python data_processing/generate_human_bed.py
-curl https://storage.googleapis.com/basenji_barnyard2/hg38.ml.fa.gz > data_processing/data/hg38.ml.fa.gz 
-curl https://cgl.gi.ucsc.edu/data/cactus/241-mammalian-2020v2-hub/Homo_sapiens/241-mammalian-2020v2.bigWig > data_processing/data/241-mammalian-2020v2.bigWig
-gunzip data_processing/data/hg38.ml.fa.gz
+curl https://storage.googleapis.com/basenji_barnyard2/hg38.ml.fa.gz > data_processing/data/240-mammalian/hg38.ml.fa.gz 
+curl https://cgl.gi.ucsc.edu/data/cactus/241-mammalian-2020v2-hub/Homo_sapiens/241-mammalian-2020v2.bigWig > data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig
+gunzip data_processing/data/240-mammalian/hg38.ml.fa.gz
 python data_processing/generate_per_nucleotide_conservation.py
 ```
