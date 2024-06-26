@@ -6,6 +6,7 @@ import sequence_models.constants as constants
 class TaskType(enum.Enum):
     LM = "lm"
     OADM = "oadm"
+    GLM = "glm"
 
 
 FIM_MIDDLE = "_"
