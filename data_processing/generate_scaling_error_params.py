@@ -6,6 +6,8 @@ from pyfaidx import Fasta
 import json
 import logging
 from scipy.stats import invgamma
+from evodiff.utils import Tokenizer
+from gamba.constants import DNA_ALPHABET_PLUS
 
 _logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ def make_test_datasets(
     splits_file: str,
     verbose: bool = True,
 ):
-
+    tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
     # open the genome fasta file
     genome = Fasta(genome_fasta)
 
@@ -43,19 +45,11 @@ def make_test_datasets(
         chrom = row["chrom"]
         size = row["end"]
         chrom_num = chrom.split("chr")[1]
-
-        # if verbose print using logger:
-        if verbose:
-            _logger.info(
-                f"Processing chromosome: {chrom}, chromosome number: {chrom_num}"
-            )
-
         # get the sequence from the genome
         sequence = genome[chrom][:size].seq
 
-        # convert the characters to int8
-        # .encode() method comes from built-in python method, results in ASCII
-        sequence = np.frombuffer(sequence.encode(), dtype=np.int8)
+        # tokenize the sequence already
+        sequence = tokenizer.tokenizeMSA(sequence)
 
         # generate random conservation scores instead of from bigwig:
         # for every position in this chromosome generate a random scaling parameter sampled from a Gaussian distribution
@@ -70,7 +64,7 @@ def make_test_datasets(
         # get the split for the current chromosome
         split_name = chromosome_splits[chrom_num]
         if verbose:
-            _logger.info(f"Saving {split_dir} data for chromosome: {chrom_num}")
+            _logger.info(f"Saving {split_name} data for chromosome: {chrom_num}")
         split_dir = f"{file_path}{split_name}/"
         seq_cons_file = f"{split_dir}test_{chrom_num}.npz"
         os.makedirs(split_dir, exist_ok=True)
@@ -79,7 +73,7 @@ def make_test_datasets(
             seq_cons_file, sequence=sequence, conservation=scaling, error=standard_error
         )
     if verbose:
-        _logger.info(f"Processing chromosome: {chrom}, chromosome number: {chrom_num}")
+        _logger.info(f"Processing chromosome: {chrom}")
 
 
 def main():
