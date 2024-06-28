@@ -7,9 +7,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoConfig, AutoModelForCausalLM, PreTrainedModel
+from torch.distributions import Gamma, Normal
+
 
 from gamba.constants import MSA_ALPHABET_PLUS, TaskType
-from gamba.losses import OAMaskedCrossEntropyLoss
+from gamba.losses import OAMaskedCrossEntropyLoss, GaussianNLLLoss, InverseGammaNLLLoss
 
 
 OTHER_METRICS_KEY = "other_metrics"
@@ -177,9 +179,11 @@ class JambagambaModel(nn.Module):
         self.jambalm = ARDiffusionModel(jambalm)
         self.embedder = self.jambalm.module.model
         # need to split d_model into lm head, scaling head and error head
-        self.lm_head = nn.Linear(d_model, jambalm.vocab_size)
-        self.scaling_head = nn.Linear(d_model, 1)
-        self.error_head = nn.Linear(d_model, 1)
+        self.each_dim = int(d_model / 3)
+        self.lm_head = nn.Linear(self.each_dim, jambalm.vocab_size)
+        self.scaling_head = nn.Linear(self.each_dim, 2)
+        self.error_head = nn.Linear(self.each_dim, 2)
+
         layer = nn.TransformerEncoderLayer(
             d_model,
             nhead,
@@ -189,58 +193,126 @@ class JambagambaModel(nn.Module):
             batch_first=True,
             norm_first=True,
         )
+
         self.decoder = nn.TransformerEncoder(layer, n_layers)
         self.down = nn.Linear(
             2 * jambalm.model.embed_tokens.weight.shape[-1] + d_model, d_model
         )
-        self.pe = PositionalEncoding(d_model)
-        self.embedding = nn.Embedding(jambalm.vocab_size, d_model)
+        self.seq_embedding = nn.Embedding(jambalm.vocab_size, self.each_dim)
+        self.value_embedding = nn.Linear(1, self.each_dim)
+
+        # real number loss
+        self.cons_loss_func = GaussianNLLLoss()
+        self.error_loss_func = InverseGammaNLLLoss()
         # # self.embed_tokens = nn.Embedding(jambalm.vocab_size, d_model)
         # self.padding_id = padding_id
         # self.decoder = nn.Linear(2 * jambalm.model.embed_tokens.weight.shape[-1], jambalm.vocab_size)
         # self.decoder = nn.Linear(2 * jambalm.vocab_size, jambalm.vocab_size)
         # self.lm_head = self.jambalm.module.lm_head
 
-    def forward(
-        self, src: torch.Tensor, input_mask: torch.Tensor = None
-    ) -> Dict[str, torch.Tensor]:
-        ells = input_mask.sum(dim=1)  # b x 1
-        b, input_length = src.shape
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> dict:
+        seq_tgt, conservation_tgt, error_tgt = tgt.split(1, dim=0)
+        seq_tgt = seq_tgt.squeeze(0).long()
+        conservation_tgt = conservation_tgt.squeeze(0)
+        error_tgt = error_tgt.squeeze(0)
+        n_tokens = (seq_tgt >= 0).sum()
+
+        # print the dtypes of all the tgt tensors
+        print(f"SEQ_TGT: {(seq_tgt).dtype}")
+        print(f"CONSERVATION_TGT: {(conservation_tgt).dtype}")
+        print(f"ERROR_TGT: {(error_tgt).dtype}")
+        values, b, input_length = src.shape
         print(
-            f"IN FORWARD JAMBAGAMBA, HAVE BATCH B: {b} AND INPUT_LENGTH: {input_length}, and SRC.SHAPE: {src.shape}"
+            f"IN FORWARD JAMBAGAMBA, HAVE {values} VALUES, HAVE BATCH B: {b} AND INPUT_LENGTH: {input_length}, and SRC.SHAPE: {src.shape}"
         )
+        seq, conservation, error = src.split(1, dim=0)
+        seq = seq.squeeze(0).long()
+        conservation = conservation.squeeze(0)
+        error = error.squeeze(0)
         device = src.device
+
+        n_seq = torch.tensor(len(seq), device=seq.device)
+        n_processed = n_tokens - len(seq_tgt)  # -1 token per sequence for the shift
+
+        print(
+            f"shapes of seq, conservation, error: {seq.shape}, {conservation.shape}, {error.shape}"
+        )
         print(f"DEVICE: {device}")
-        print(f"ells: {ells}, {len(ells)}")
-        print(f"ells.squeeze(): {ells.squeeze()}")
+        # embed seq, conservation and error separately
+        emb_seq = self.seq_embedding(seq)
+        print(f"SEQ: {(seq).dtype}")
+        print(f"CONSERVATION: {(conservation).dtype}")
+        print(f"ERROR: {(error).dtype}")
+
+        # error has shape (batch, seq_length)
+        error_reshaped = error.view(-1, 1)  # reshape to (seq_length, batch)
+        # embed
+        emb_error = self.value_embedding(error_reshaped)
+        # reshape the output back to (batch, seq_length, embedding dim)
+        emb_error = emb_error.view(1, -1, self.each_dim)
+
+        conservation_reshaped = conservation.view(
+            -1, 1
+        )  # reshape to (seq_length, batch)
+        # embed
+        emb_conservation = self.value_embedding(conservation_reshaped)
+        # reshape the output back to (batch, seq_length, embedding dim)
+        emb_conservation = emb_conservation.view(1, -1, self.each_dim)
+
+        print(
+            f"shapes of emb_seq, emb_conservation, emb_error: {emb_seq.shape}, {emb_conservation.shape}, {emb_error.shape}"
+        )
+        # next, concatenate the embeddings along the hidden dimension and send to the model
+        inputs_embeds = torch.cat([emb_seq, emb_conservation, emb_error], dim=-1)
+        print(f"shape of input_embeds: {inputs_embeds.shape}")
+        # need to set the embedded inputs to inputs_embeds to values in the Jamba model
+        output = self.embedder(inputs_embeds=inputs_embeds)["last_hidden_state"]
+        # take the output of the model and split it along the last dimension
+        seq_output, scaling_output, error_output = output.split(
+            output.shape[-1] // 3, dim=-1
+        )
+        # put the outputs through their respective linear layers
+        seq_logits = self.lm_head(seq_output)
+        scaling_logits = self.scaling_head(scaling_output)
+        error_logits = self.error_head(error_output)
+        # apply CE loss on the seq_logits
+        ce_loss = F.cross_entropy(
+            seq_logits[:, :-1, :].reshape(-1, seq_logits.shape[-1]),
+            seq_tgt[:, 1:].flatten(),
+            reduction="mean",
+        )
+        # apply GaussianNLLLoss from losses.py on the scaling_logits
+        gaussian_loss = self.cons_loss_func(scaling_logits, conservation_tgt)
+        # apply InverseGammaNLLLoss from losses.py on the error_logits
+        inverse_gamma_loss = self.error_loss_func(error_logits, error_tgt)
+
+        print(f"shape of the error_logits: {error_logits.shape}")
+        print(f"shape of the scaling_logits: {scaling_logits.shape}")
+        print(f"shape of the seq_logits: {seq_logits.shape}")
+        # compute the accuracy
         with torch.no_grad():
-            keep_x = (
-                torch.arange(b, device=device)
-                .repeat_interleave(input_length - 2, dim=0)
-                .view(b, input_length - 2)
-            )
-            y1 = [torch.arange(ell - 2, device=device) for ell in ells.squeeze()]
-            y2 = [
-                torch.arange(ell, input_length, device=device) for ell in ells.squeeze()
-            ]
-            keep_y = torch.stack(
-                [torch.cat([y1i, y2i], dim=-1) for y1i, y2i in zip(y1, y2)]
-            )
-            e_fwd = self.embedder(src)["last_hidden_state"]
-            e_fwd = e_fwd[keep_x, keep_y]
-            crs = flip_with_padding(src, ells)
-            e_rev = self.embedder(crs)["last_hidden_state"]
-            e_rev = e_rev[keep_x, keep_y]
-            e_rev = flip_with_padding(e_rev, ells - 2)
-            e = torch.cat([e_fwd, e_rev], dim=-1)
-        s = self.embedding(src)
-        s = s[keep_x, keep_y]
-        e = torch.cat([e, s], dim=-1)
-        e = self.down(e)
-        e = self.pe(e)
-        e = self.decoder(e, src_key_padding_mask=~input_mask.squeeze(-1)[:, 2:])
-        logits = self.lm_head(e)
-        return logits
+            pred_tok_seq = torch.argmax(seq_logits[:, :-1, :], dim=-1)
+            seq_accu = (
+                (pred_tok_seq == seq_tgt[:, 1:]) * (seq_tgt[:, 1:] >= 0)
+            ).float().sum() / n_tokens
+
+        other_metrics = {
+            "accuracy": seq_accu,
+        }
+        if hasattr(output, "aux_loss"):
+            # log the original CE loss and the auxiliary loss
+            other_metrics["ce_loss"] = ce_loss
+        outputs = {
+            "seq_logits": seq_logits,
+            "scaling_logits": scaling_logits,
+            "error_logits": error_logits,
+            "loss": ce_loss + gaussian_loss + inverse_gamma_loss,
+            OTHER_METRICS_KEY: other_metrics,
+            "n_tokens": n_tokens,
+            "n_seqs": n_seq,
+            "n_processed": n_processed,
+        }
+        return outputs
 
 
 def _create_bytenet(
