@@ -323,15 +323,7 @@ class gLMCollator:
     def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray]]):
         # unpack the input data
         sequence, scaling, error = zip(*data)
-        # print the types of unpacked data
-        print(f"type of sequence: {type(sequence)}")
-        print(f"type of scaling: {type(scaling)}")
-        print(f"type of error: {type(error)}")
-        print(f"sequence: {sequence}, scaling: {scaling}, error: {error}")
-        print(
-            f"type(sequence): {type(sequence)}, type(scaling): {type(scaling)}, type(error): {type(error)}"
-        )
-
+        # sequence is already tokenized
         # wrap sequence in start and stop
         sequence = [
             np.concatenate([self.start_id, s, self.stop_id], axis=0) for s in sequence
@@ -341,19 +333,19 @@ class gLMCollator:
             np.pad(s, (1, 1), "constant", constant_values=(0, 0)) for s in scaling
         ]
         error = [np.pad(e, (1, 1), "constant", constant_values=(0, 0)) for e in error]
-
-        print(f"sequence: {sequence}, scaling: {scaling}, error: {error}")
-
         # Pad each array type accordingly
-        sequence, seq_lbls = self.pad_arrays(sequence)
-        scaling, scale_lbs = self.pad_arrays(scaling)
-        error, error_lbs = self.pad_arrays(error)
+        sequence, seq_lbls = self.pad_arrays(sequence, dtype=torch.long)
+        scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
+        error, error_lbs = self.pad_arrays(error, dtype=torch.float32)
 
         print(
-            f"len(sequence): {len(sequence)}, len(scaling): {len(scaling)}, len(error): {len(error)}"
+            f"inside collator, sequence: {sequence}, scaling: {scaling}, error: {error}"
         )
 
-        return [[sequence, scaling, error], [seq_lbls, scale_lbs, error_lbs]]
+        out = torch.stack([sequence, scaling, error])
+        lbls = torch.stack([seq_lbls, scale_lbs, error_lbs])
+
+        return out, lbls
 
     def apply_transformations(self, sequence):
         # flip as needed
@@ -417,8 +409,7 @@ class gLMCollator:
                 sequence[i] = self._wrap(sequence[i], flipped=is_flipped(i))
         return sequence
 
-    def pad_arrays(self, sequence):
-        print("inside pad arrays sequence:", sequence)
+    def pad_arrays(self, sequence, dtype):
         # pad to a multiple of pad_to_mult
         max_len = max(len(s) for s in sequence)
 
@@ -428,9 +419,7 @@ class gLMCollator:
                 self.pad_to_mult * np.ceil(max_len / self.pad_to_mult).astype(int)
             ).item()
 
-        out = torch.full(
-            (len(sequence), max_len), self.tokenizer.pad_id, dtype=torch.long
-        )
+        out = torch.full((len(sequence), max_len), self.tokenizer.pad_id, dtype=dtype)
         for i, s in enumerate(sequence):
             out[i, : len(s)] = torch.tensor(s, device=out.device)
 
