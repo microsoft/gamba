@@ -98,17 +98,51 @@ class GaussianNLLLoss(nn.Module):
         super().__init__()
 
     def forward(
-        self, pred: torch.Tensor, tgt: torch.Tensor, mask: torch.Tensor
+        self, pred: torch.Tensor, tgt: torch.Tensor, mask: torch.Tensor = None
     ) -> torch.Tensor:
         # we only want to compute the error over the masked tokens
         # this also eliminates the contribution of padding tokens since they aren't in the mask (by construction)
-        tgt = tgt * mask + (1 - mask) * -100
+        if mask is not None:
+            tgt = tgt * mask + (1 - mask) * -100
         # let's return the loss as the negative log likelihood of the target given the predicted parameters of the Gaussian distribution
         # where pred: torch.Tensor has shape (batch, seq_length, 2) where 2 is the mean and variance of the Gaussian distribution
         # we will use the - log likelihood of the Gaussian distribution as the loss
-        mean = pred[:, :, 0]
-        var = pred[:, :, 1]
+        log_mean = pred[:, :, 0]
+        log_var = pred[:, :, 1]
+        # exponentiate mean and variance
+        var = torch.exp(log_var)
+        mean = torch.exp(log_mean)
         loss = -(0.5 * torch.log(var) + 0.5 * ((tgt - mean) ** 2) / var)
+        # mean loss over batch and seq length
+        loss = loss.mean()
+        return loss
+
+
+class InverseGammaNLLLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(
+        self, pred: torch.Tensor, tgt: torch.Tensor, mask: torch.Tensor = None
+    ) -> torch.Tensor:
+        # we only want to compute the error over the masked tokens
+        # this also eliminates the contribution of padding tokens since they aren't in the mask (by construction)
+        if mask is not None:
+            tgt = tgt * mask + (1 - mask) * -100
+        # let's return the loss as the negative log likelihood of the target given the predicted parameters of the inverse Gamma distribution
+        # where pred: torch.Tensor has shape (batch, seq_length, 2) where 2 is the scaling parameter theta and shape parameter k of the inverse gamma distribution
+        # we will use the - log likelihood of the inverse gamma distribution as the loss
+        log_scaling = pred[:, :, 0]
+        log_shape = pred[:, :, 1]
+        # exponentiate scaling and shape
+        scaling = torch.exp(log_scaling)
+        shape = torch.exp(log_shape)
+        loss = (
+            -shape * torch.log(scaling)
+            - (shape + 1) * torch.log(tgt)
+            - scaling / tgt
+            - torch.lgamma(shape)
+        )
         # mean loss over batch and seq length
         loss = loss.mean()
         return loss
