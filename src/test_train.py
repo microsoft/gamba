@@ -108,7 +108,7 @@ def load_config_and_model(
         model = ARDiffusionModel(model, aux_loss_weight=aux_loss_weight)
     elif task == TaskType.GLM:
         model = JambagambaModel(
-            model, d_model=512, nhead=8, n_layers=6, padding_id=0, dim_feedfoward=512
+            model, d_model=576, nhead=8, n_layers=6, padding_id=0, dim_feedfoward=576
         )
     else:
         raise ValueError(f"Unknown task: {config['task']}")
@@ -148,10 +148,7 @@ def get_dataloader(
     elif config["task"] == "glm":
         collator = gLMCollator(
             tokenizer=tokenizer,
-            pad_to_multiple_of=config.get("pad_to_multiple_of", None),
-            flip_prob=config.get("flip_prob", 0.0),
-            fim_prob=config.get("fim_prob", 0.0),
-            swap_bos_eos_on_flip=config.get("swap_bos_eos_on_flip", True),
+            swap_bos_eos_on_flip=config.get("pad_to_multiple_of", None),
         )
     else:
         raise ValueError(f"Unknown task: {config['task']}")
@@ -226,7 +223,7 @@ def step(
     scheduler: torch.optim.lr_scheduler._LRScheduler,
 ) -> dict:
     print("at step")
-    print(example for example in batch)
+    print("el for el in batch:", [el for el in batch])
     if any(el.numel() for el in batch) == 0:
         raise ValueError("Empty tensor in batch")
 
@@ -468,10 +465,14 @@ def train(args: argparse.Namespace) -> None:
     scheduler = LambdaLR(optimizer, lr_func)
 
     # load the state
-    print("loading state")
-    initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
-        model, optimizer, scheduler, args.out_fpath, args.last_step
-    )
+    # print("loading state")
+    # initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
+    #     model, optimizer, scheduler, args.out_fpath, args.last_step
+    # )
+    initial_epoch = 0
+    total_steps = 0
+    total_tokens = 0
+    total_seqs = 0
     # override from config
     optimizer.param_groups[0]["lr"] = config["lr"] * lr_func(total_steps + 1)
     optimizer.param_groups[0]["initial_lr"] = config["lr"]
