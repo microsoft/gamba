@@ -217,14 +217,6 @@ class JambagambaModel(nn.Module):
         error_tgt = error_tgt.squeeze(0)
         n_tokens = (seq_tgt >= 0).sum()
 
-        # print the dtypes of all the tgt tensors
-        print(f"SEQ_TGT: {(seq_tgt).dtype}")
-        print(f"CONSERVATION_TGT: {(conservation_tgt).dtype}")
-        print(f"ERROR_TGT: {(error_tgt).dtype}")
-        values, b, input_length = src.shape
-        print(
-            f"IN FORWARD JAMBAGAMBA, HAVE {values} VALUES, HAVE BATCH B: {b} AND INPUT_LENGTH: {input_length}, and SRC.SHAPE: {src.shape}"
-        )
         seq, conservation, error = src.split(1, dim=0)
         seq = seq.squeeze(0).long()
         conservation = conservation.squeeze(0)
@@ -234,15 +226,8 @@ class JambagambaModel(nn.Module):
         n_seq = torch.tensor(len(seq), device=seq.device)
         n_processed = n_tokens - len(seq_tgt)  # -1 token per sequence for the shift
 
-        print(
-            f"shapes of seq, conservation, error: {seq.shape}, {conservation.shape}, {error.shape}"
-        )
-        print(f"DEVICE: {device}")
         # embed seq, conservation and error separately
         emb_seq = self.seq_embedding(seq)
-        print(f"SEQ: {(seq).dtype}")
-        print(f"CONSERVATION: {(conservation).dtype}")
-        print(f"ERROR: {(error).dtype}")
 
         # error has shape (batch, seq_length)
         error_reshaped = error.view(-1, 1)  # reshape to (seq_length, batch)
@@ -275,6 +260,12 @@ class JambagambaModel(nn.Module):
         seq_logits = self.lm_head(seq_output)
         scaling_logits = self.scaling_head(scaling_output)
         error_logits = self.error_head(error_output)
+        print(
+            f"shapes of seq_logits, scaling_logits, error_logits: {seq_logits.shape}, {scaling_logits.shape}, {error_logits.shape}"
+        )
+        print(
+            f"seq_logits: {seq_logits}, scaling_logits: {scaling_logits}, error_logits: {error_logits}"
+        )
         # apply CE loss on the seq_logits
         ce_loss = F.cross_entropy(
             seq_logits[:, :-1, :].reshape(-1, seq_logits.shape[-1]),
@@ -282,9 +273,17 @@ class JambagambaModel(nn.Module):
             reduction="mean",
         )
         # apply GaussianNLLLoss from losses.py on the scaling_logits
-        gaussian_loss = self.cons_loss_func(scaling_logits, conservation_tgt)
+        gaussian_loss = self.cons_loss_func(
+            scaling_logits[:, :-1, :], conservation_tgt[:, 1:]
+        )
         # apply InverseGammaNLLLoss from losses.py on the error_logits
-        inverse_gamma_loss = self.error_loss_func(error_logits, error_tgt)
+        inverse_gamma_loss = self.error_loss_func(
+            error_logits[:, :-1, :], error_tgt[:, 1:]
+        )
+
+        print("CE LOSS: ", ce_loss)
+        print("GAUSSIAN LOSS: ", gaussian_loss)
+        print("INVERSE GAMMA LOSS: ", inverse_gamma_loss)
 
         print(f"shape of the error_logits: {error_logits.shape}")
         print(f"shape of the scaling_logits: {scaling_logits.shape}")
