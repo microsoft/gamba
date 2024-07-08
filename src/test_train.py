@@ -156,6 +156,7 @@ def get_dataloader(
     # create the dataloader
     if args.mini_run:
         # load the dataset
+        print("making the dataset")
         ds_train = ConservationDataset(
             data_dir, "train", num_sequences=100, max_len=config["max_len"]
         )
@@ -233,6 +234,8 @@ def step(
     optimizer.zero_grad()
     print(f"entering model with batch {batch[0].shape}")
     outputs = model(*batch)
+    # try clipping the gradients
+    # torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
     outputs["loss"].backward()
     optimizer.step()
     scheduler.step()

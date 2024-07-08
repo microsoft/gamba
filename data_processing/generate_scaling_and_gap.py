@@ -48,30 +48,38 @@ def make_test_datasets(
         # get the sequence from the genome
         sequence = genome[chrom][:size].seq
 
+        # print a small section of the sequence
+        print(sequence[70000:70100])
+
         # tokenize the sequence already
         sequence = tokenizer.tokenizeMSA(sequence)
+
+        # print a small section of the sequence
+        print(sequence[70000:70100])
 
         # generate random conservation scores instead of from bigwig:
         # for every position in this chromosome generate a random scaling parameter sampled from a Gaussian distribution
         scaling = np.round(np.random.normal(1, 0.1, size), 2).astype(np.float32)
-        # for every position in this chromosome generate a random standard error sampled from an inverse Gamma distribution
-        a = 1
-
-        standard_error = np.round(np.array(invgamma.rvs(a, size=size)), 2).astype(
-            np.float32
-        )
+        # for every position in this chromosome generate a random gap number between 0 and 240 sampled from a Poisson distribution
+        # this is the mean of the distribution
+        lam = 7
+        gaps = np.round(np.array(np.random.poisson(lam, size)), 2).astype(np.float32)
+        # make sure gaps is less than 240
+        gaps = np.clip(gaps, 0, 240)
 
         # get the split for the current chromosome
         split_name = chromosome_splits[chrom_num]
         if verbose:
             _logger.info(f"Saving {split_name} data for chromosome: {chrom_num}")
+        print(f"Saving {split_name} data for chromosome: {chrom_num}")
         split_dir = f"{file_path}{split_name}/"
         seq_cons_file = f"{split_dir}test_{chrom_num}.npz"
         os.makedirs(split_dir, exist_ok=True)
 
         np.savez_compressed(
-            seq_cons_file, sequence=sequence, conservation=scaling, error=standard_error
+            seq_cons_file, sequence=sequence, conservation=scaling, gap=gaps
         )
+
     if verbose:
         _logger.info(f"Processing chromosome: {chrom}")
 

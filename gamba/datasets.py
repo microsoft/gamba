@@ -107,18 +107,14 @@ class ConservationDataset10000(Dataset):
                 raise ValueError("Chromosome not in split")
             self.chromosomes = self.specific_chromosomes
         # for each chromosome being used, make a mapping of chrom: size
-        print(chrom for chrom in self.chromosomes)
-        print(f'bed[chrom] values {bed["chrom"].values}')
         self.chrom_sizes = {
             chrom: bed[bed["chrom"] == ("chr" + chrom)]["end"].values
             for chrom in self.chromosomes
         }
-        print(f"self.chrom_sizes: {self.chrom_sizes}")
         # split the size by arbitrary sequence length setting of 10,000 bp to determine how many 10,000bp sequences in each chromosome
         self.num_sequences = {
             chrom: (self.chrom_sizes[chrom] // 10000) for chrom in self.chromosomes
         }
-        print(f"self.num_sequences: {self.num_sequences}")
         # indices from 0 to n, where n is the total number of 10,000bp sequences across all chromosomes (sum the number of sequences for each chromosome and then generate a range of that total)
         self.indices = list(
             range(int(sum(self.num_sequences[chrom] for chrom in self.chromosomes)))
@@ -143,24 +139,20 @@ class ConservationDataset10000(Dataset):
         return chrom, int(seq_idx)
 
     def __getitem__(self, idx: int):
-        print(f"idx sent in: {idx}")
         chrom, seq_idx = self.get_chrom_seq(idx)
-        print(f"seq_idx: {seq_idx}")
-        print(f"chrom and seq id:{chrom, seq_idx}")
         if self.file is None or not self.file.endswith(f"test_{chrom}.npz"):
             self.file = osp.join(self.data_dir, self.split, f"test_{chrom}.npz")
-        print(f"self.file: {self.file}")
 
         file_data = np.load(self.file)
         sequence = file_data["sequence"][seq_idx * 10000 : (seq_idx + 1) * 10000]
         conservation = file_data["conservation"][
             seq_idx * 10000 : (seq_idx + 1) * 10000
         ]
-        error = file_data["error"][seq_idx * 10000 : (seq_idx + 1) * 10000]
+        gaps = file_data["gap"][seq_idx * 10000 : (seq_idx + 1) * 10000]
 
         # code to round conservation & scaling to two decimal places for prediction
         conservation = np.round(conservation, 2)
-        error = np.round(error, 2)
+        gaps = np.round(gaps, 2)
 
         # right now random sampling, could change to some smarter way
         if len(sequence) - self.max_len > 0:
@@ -171,8 +163,8 @@ class ConservationDataset10000(Dataset):
             stop = len(sequence)
         sequence = sequence[start:stop]
         conservation = conservation[start:stop]
-        error = error[start:stop]
-        return (sequence, conservation, error)
+        gaps = gaps[start:stop]
+        return (sequence, conservation, gaps)
 
 
 class ConservationDataset(Dataset):
@@ -182,7 +174,7 @@ class ConservationDataset(Dataset):
     The data folder should contain the following:
     - 'splits.json': a dict with keys 'train', 'valid', and 'test' mapping to lists of chromosomes
     - 'train', 'valid', 'test' folders with the following files:
-    - '{chromosome}.npz': sequence data and conservation scores in 'sequence' and 'conservation' and 'error' keys
+    - '{chromosome}.npz': sequence data and conservation scores in 'sequence' and 'conservation' and 'gap' keys
     where {chromosome} is the chromosome number, determined by splits.json to be in the correct split folder
     """
 
@@ -219,22 +211,19 @@ class ConservationDataset(Dataset):
                 raise ValueError("Chromosome not in split")
             self.chromosomes = self.specific_chromosomes
         # for each chromosome being used, make a mapping of chrom: size
-        print(chrom for chrom in self.chromosomes)
-        print(f'bed[chrom] values {bed["chrom"].values}')
         self.chrom_sizes = {
             chrom: bed[bed["chrom"] == ("chr" + chrom)]["end"].values
             for chrom in self.chromosomes
         }
-        print(f"self.chrom_sizes: {self.chrom_sizes}")
+
         self.num_sequences = num_sequences
-        print(f"self.num_sequences: {self.num_sequences}")
         # num sequences times: randomly sample a chromosome and a sequence start position from that chromosome (within chrom_size of that chromosome - max_len) and save it
         self.sequences = []
         for i in range(self.num_sequences):
             chrom = np.random.choice(self.chromosomes)
-            start = np.random.choice(self.chrom_sizes[chrom] - max_len)
+            start = np.random.choice(np.arange(self.chrom_sizes[chrom] - max_len))
+
             self.sequences.append((chrom, start))
-        # indices from 0 to n, where n is the total number of 10,000bp sequences across all chromosomes (sum the number of sequences for each chromosome and then generate a range of that total)
         self.indices = list(range(self.num_sequences))
         self.file = None
 
@@ -242,24 +231,30 @@ class ConservationDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, idx: int):
-        print(f"idx sent in: {idx}")
         chrom, seq_idx = self.sequences[idx]
-        print(f"seq_idx: {seq_idx}")
-        print(f"chrom and seq id:{chrom, seq_idx}")
         if self.file is None or not self.file.endswith(f"test_{chrom}.npz"):
             self.file = osp.join(self.data_dir, self.split, f"test_{chrom}.npz")
-        print(f"self.file: {self.file}")
 
         file_data = np.load(self.file)
         sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+
+        # check if sequence has over 10% composition of N nucleotides, represented as int 4,
+        # if so, resample the sequence and save the new chrom and coordinates
+        while np.count_nonzero(sequence == 4) > 0.1 * len(sequence):
+            seq_idx = np.random.choice(
+                np.arange(self.chrom_sizes[chrom] - self.max_len)
+            )
+            sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+            self.sequences[idx] = (chrom, seq_idx)
+
         conservation = file_data["conservation"][seq_idx : seq_idx + self.max_len]
-        error = file_data["error"][seq_idx : seq_idx + self.max_len]
+        gaps = file_data["gap"][seq_idx : seq_idx + self.max_len]
 
         # code to round conservation & scaling to two decimal places for prediction
         conservation = np.round(conservation, 2)
-        error = np.round(error, 2)
+        gaps = np.round(gaps, 2)
 
-        return (sequence, conservation, error)
+        return (sequence, conservation, gaps)
 
 
 class UniRefDataset(Dataset):

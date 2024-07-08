@@ -11,7 +11,12 @@ from torch.distributions import Gamma, Normal
 
 
 from gamba.constants import MSA_ALPHABET_PLUS, TaskType
-from gamba.losses import OAMaskedCrossEntropyLoss, GaussianNLLLoss, InverseGammaNLLLoss
+from gamba.losses import (
+    OAMaskedCrossEntropyLoss,
+    GaussianNLLLoss,
+    InverseGammaNLLLoss,
+    PoissonNLLLoss,
+)
 
 
 OTHER_METRICS_KEY = "other_metrics"
@@ -178,11 +183,11 @@ class JambagambaModel(nn.Module):
         super().__init__()
         self.jambalm = ARDiffusionModel(jambalm)
         self.embedder = self.jambalm.module.model
-        # need to split d_model into lm head, scaling head and error head
+        # need to split d_model into lm head, scaling head and gap head
         self.each_dim = int(d_model / 3)
         self.lm_head = nn.Linear(self.each_dim, jambalm.vocab_size)
         self.scaling_head = nn.Linear(self.each_dim, 2)
-        self.error_head = nn.Linear(self.each_dim, 2)
+        self.gap_head = nn.Linear(self.each_dim, 1)
 
         layer = nn.TransformerEncoderLayer(
             d_model,
@@ -203,7 +208,7 @@ class JambagambaModel(nn.Module):
 
         # real number loss
         self.cons_loss_func = GaussianNLLLoss()
-        self.error_loss_func = InverseGammaNLLLoss()
+        self.gap_loss_func = PoissonNLLLoss()
         # # self.embed_tokens = nn.Embedding(jambalm.vocab_size, d_model)
         # self.padding_id = padding_id
         # self.decoder = nn.Linear(2 * jambalm.model.embed_tokens.weight.shape[-1], jambalm.vocab_size)
@@ -211,30 +216,30 @@ class JambagambaModel(nn.Module):
         # self.lm_head = self.jambalm.module.lm_head
 
     def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> dict:
-        seq_tgt, conservation_tgt, error_tgt = tgt.split(1, dim=0)
+        seq_tgt, conservation_tgt, gap_tgt = tgt.split(1, dim=0)
         seq_tgt = seq_tgt.squeeze(0).long()
         conservation_tgt = conservation_tgt.squeeze(0)
-        error_tgt = error_tgt.squeeze(0)
+        gap_tgt = gap_tgt.squeeze(0)
         n_tokens = (seq_tgt >= 0).sum()
 
-        seq, conservation, error = src.split(1, dim=0)
+        seq, conservation, gap = src.split(1, dim=0)
         seq = seq.squeeze(0).long()
         conservation = conservation.squeeze(0)
-        error = error.squeeze(0)
+        gap = gap.squeeze(0)
         device = src.device
 
         n_seq = torch.tensor(len(seq), device=seq.device)
         n_processed = n_tokens - len(seq_tgt)  # -1 token per sequence for the shift
 
-        # embed seq, conservation and error separately
+        # embed seq, conservation and gap separately
         emb_seq = self.seq_embedding(seq)
 
-        # error has shape (batch, seq_length)
-        error_reshaped = error.view(-1, 1)  # reshape to (seq_length, batch)
+        # gap has shape (batch, seq_length)
+        gap_reshaped = gap.view(-1, 1)  # reshape to (seq_length, batch)
         # embed
-        emb_error = self.value_embedding(error_reshaped)
+        emb_gap = self.value_embedding(gap_reshaped)
         # reshape the output back to (batch, seq_length, embedding dim)
-        emb_error = emb_error.view(1, -1, self.each_dim)
+        emb_gap = emb_gap.view(1, -1, self.each_dim)
 
         conservation_reshaped = conservation.view(
             -1, 1
@@ -245,27 +250,34 @@ class JambagambaModel(nn.Module):
         emb_conservation = emb_conservation.view(1, -1, self.each_dim)
 
         print(
-            f"shapes of emb_seq, emb_conservation, emb_error: {emb_seq.shape}, {emb_conservation.shape}, {emb_error.shape}"
+            f"shapes of emb_seq, emb_conservation, emb_gap: {emb_seq.shape}, {emb_conservation.shape}, {emb_gap.shape}"
         )
         # next, concatenate the embeddings along the hidden dimension and send to the model
-        inputs_embeds = torch.cat([emb_seq, emb_conservation, emb_error], dim=-1)
+        inputs_embeds = torch.cat([emb_seq, emb_conservation, emb_gap], dim=-1)
         print(f"shape of input_embeds: {inputs_embeds.shape}")
         # need to set the embedded inputs to inputs_embeds to values in the Jamba model
         output = self.embedder(inputs_embeds=inputs_embeds)["last_hidden_state"]
         # take the output of the model and split it along the last dimension
-        seq_output, scaling_output, error_output = output.split(
+        seq_output, scaling_output, gap_output = output.split(
             output.shape[-1] // 3, dim=-1
         )
         # put the outputs through their respective linear layers
         seq_logits = self.lm_head(seq_output)
         scaling_logits = self.scaling_head(scaling_output)
-        error_logits = self.error_head(error_output)
+        gap_logits = self.gap_head(gap_output)
         print(
-            f"shapes of seq_logits, scaling_logits, error_logits: {seq_logits.shape}, {scaling_logits.shape}, {error_logits.shape}"
+            f"shapes of seq_logits, scaling_logits, gap_logits: {seq_logits.shape}, {scaling_logits.shape}, {gap_logits.shape}"
         )
         print(
-            f"seq_logits: {seq_logits}, scaling_logits: {scaling_logits}, error_logits: {error_logits}"
+            f"seq_logits: {seq_logits}, scaling_logits: {scaling_logits}, gap_logits: {gap_logits}"
         )
+
+        # exclude the logits for the first and last tokens for conservation and gap
+        scaling_logits = scaling_logits[:, 1:-1]
+        gap_logits = gap_logits[:, 1:-1]
+        conservation_tgt = conservation_tgt[:, 1:-1]
+        gap_tgt = gap_tgt[:, 1:-1]
+
         # apply CE loss on the seq_logits
         ce_loss = F.cross_entropy(
             seq_logits[:, :-1, :].reshape(-1, seq_logits.shape[-1]),
@@ -276,16 +288,14 @@ class JambagambaModel(nn.Module):
         gaussian_loss = self.cons_loss_func(
             scaling_logits[:, :-1, :], conservation_tgt[:, 1:]
         )
-        # apply InverseGammaNLLLoss from losses.py on the error_logits
-        inverse_gamma_loss = self.error_loss_func(
-            error_logits[:, :-1, :], error_tgt[:, 1:]
-        )
+        # apply PoissonNLLLoss from losses.py on the gap_logits
+        poisson_loss = self.gap_loss_func(gap_logits[:, :-1, :], gap_tgt[:, 1:])
 
         print("CE LOSS: ", ce_loss)
         print("GAUSSIAN LOSS: ", gaussian_loss)
-        print("INVERSE GAMMA LOSS: ", inverse_gamma_loss)
+        print("POISSON LOSS: ", poisson_loss)
 
-        print(f"shape of the error_logits: {error_logits.shape}")
+        print(f"shape of the gap_logits: {gap_logits.shape}")
         print(f"shape of the scaling_logits: {scaling_logits.shape}")
         print(f"shape of the seq_logits: {seq_logits.shape}")
         # compute the accuracy
@@ -304,8 +314,8 @@ class JambagambaModel(nn.Module):
         outputs = {
             "seq_logits": seq_logits,
             "scaling_logits": scaling_logits,
-            "error_logits": error_logits,
-            "loss": ce_loss + gaussian_loss + inverse_gamma_loss,
+            "gap_logits": gap_logits,
+            "loss": ce_loss + gaussian_loss + poisson_loss,
             OTHER_METRICS_KEY: other_metrics,
             "n_tokens": n_tokens,
             "n_seqs": n_seq,

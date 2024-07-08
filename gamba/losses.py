@@ -98,21 +98,35 @@ class GaussianNLLLoss(nn.Module):
         super().__init__()
 
     def forward(
-        self, pred: torch.Tensor, tgt: torch.Tensor, mask: torch.Tensor = None
+        self,
+        pred: torch.Tensor,
+        tgt: torch.Tensor,
     ) -> torch.Tensor:
-        # we only want to compute the error over the masked tokens
-        # this also eliminates the contribution of padding tokens since they aren't in the mask (by construction)
-        if mask is not None:
-            tgt = tgt * mask + (1 - mask) * -100
+        print("pred shape: ", pred.shape)
+        print("tgt shape: ", tgt.shape)
+
         # let's return the loss as the negative log likelihood of the target given the predicted parameters of the Gaussian distribution
         # where pred: torch.Tensor has shape (batch, seq_length, 2) where 2 is the mean and variance of the Gaussian distribution
         # we will use the - log likelihood of the Gaussian distribution as the loss
-        log_mean = pred[:, :, 0]
+
+        # mask is where tgt is not equal to -100
+        mask = tgt != -100
+
+        log_stdev = pred[:, :, 0]
         log_var = pred[:, :, 1]
+
+        # apply the  mask to log_stdev, log_var and tgt
+        log_stdev = log_stdev[mask]
+        log_var = log_var[mask]
+        tgt = tgt[mask]
+
         # exponentiate mean and variance
         var = torch.exp(log_var)
-        mean = torch.exp(log_mean)
-        loss = -(0.5 * torch.log(var) + 0.5 * ((tgt - mean) ** 2) / var)
+        stdev = torch.exp(log_stdev)
+        # use the pytorch distribution instead as its more stable
+        norm_dist = torch.distributions.normal.Normal(var, stdev)
+        log_pdf = norm_dist.log_prob(tgt)
+        loss = -log_pdf
         # mean loss over batch and seq length
         loss = loss.mean()
         return loss
@@ -122,27 +136,79 @@ class InverseGammaNLLLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(
-        self, pred: torch.Tensor, tgt: torch.Tensor, mask: torch.Tensor = None
-    ) -> torch.Tensor:
-        # we only want to compute the error over the masked tokens
-        # this also eliminates the contribution of padding tokens since they aren't in the mask (by construction)
-        if mask is not None:
-            tgt = tgt * mask + (1 - mask) * -100
+    def forward(self, pred: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
+        print("pred shape: ", pred.shape)
+        print("tgt shape: ", tgt.shape)
+        # mask is where tgt is not equal to -100
+        mask = tgt != -100
+
         # let's return the loss as the negative log likelihood of the target given the predicted parameters of the inverse Gamma distribution
         # where pred: torch.Tensor has shape (batch, seq_length, 2) where 2 is the scaling parameter theta and shape parameter k of the inverse gamma distribution
         # we will use the - log likelihood of the inverse gamma distribution as the loss
         log_scaling = pred[:, :, 0]
         log_shape = pred[:, :, 1]
+
+        # apply the mask to log_scaling, log_shape and tgt
+        log_scaling = log_scaling[mask]
+        log_shape = log_shape[mask]
+        tgt = tgt[mask]
+        print(f"in inverse gamma loss tgt: {tgt}")
+
         # exponentiate scaling and shape
         scaling = torch.exp(log_scaling)
         shape = torch.exp(log_shape)
-        loss = (
-            -shape * torch.log(scaling)
-            - (shape + 1) * torch.log(tgt)
-            - scaling / tgt
-            - torch.lgamma(shape)
-        )
+
+        print(f"in inverse gamma loss scaling and shape, {scaling}, {shape}")
+
+        # pytorch distribution is more stable
+        inv_gamma_dist = torch.distributions.inverse_gamma.InverseGamma(shape, scaling)
+        log_pdf = inv_gamma_dist.log_prob(tgt)
+        print("LOSS: ", -log_pdf)
+        loss = -log_pdf
+
         # mean loss over batch and seq length
         loss = loss.mean()
         return loss
+
+
+class PoissonNLLLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, pred: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
+        print("pred shape: ", pred.shape)
+        print("tgt shape: ", tgt.shape)
+        # mask is where tgt is not equal to -100
+        mask = tgt != -100
+
+        # let's return the loss as the negative log likelihood of the target given the predicted parameters of the poisson distribution
+        # where pred: torch.Tensor has shape (batch, seq_length, 1) where this represents lambda param
+        # we will use the - log likelihood of the poisson distribution as the loss
+        log_lam = pred
+
+        # apply the mask to log_scaling, log_shape and tgt
+        log_lam = log_lam[mask]
+        tgt = tgt[mask]
+        print(f"in poisson loss tgt: {tgt}")
+
+        # exponentiate lambda
+        lam = torch.exp(log_lam)
+
+        print(f"in poisson loss lambda, {lam}")
+
+        # pytorch distribution is more stable
+        poisson_dist = torch.distributions.poisson.Poisson(lam)
+        log_pdf = poisson_dist.log_prob(tgt)
+        print("LOSS: ", -log_pdf)
+        loss = -log_pdf
+
+        # mean loss over batch and seq length
+        loss = loss.mean()
+        return loss
+
+
+# use pytorch implementation
+# log the gradients of the loss
+# clip the gradients
+# see if other distributions are more stable
+# error correlated with the presence of species at sites
