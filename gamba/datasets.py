@@ -167,6 +167,13 @@ class ConservationDataset10000(Dataset):
         return (sequence, conservation, gaps)
 
 
+def chrom_sort_key(s):
+    """Sort key for chromosomes."""
+    import re
+
+    return [int(text) if text.isdigit() else text for text in re.split(r"(\d+)", s)]
+
+
 class ConservationDataset(Dataset):
     """
     Dataset that pulls sequence information and corresponding conservation scores randomly
@@ -190,6 +197,8 @@ class ConservationDataset(Dataset):
         self.split = split
         with open(osp.join(data_dir, "splits.json"), "r") as f:
             self.chromosomes = json.load(f)[self.split]
+            # make sure self.chromosomes is sorted
+            self.chromosomes = sorted(self.chromosomes, key=chrom_sort_key)
         # load the bed file of chromosome sizes
         bed = pd.read_csv(
             osp.join(data_dir, "hg38.bed"),
