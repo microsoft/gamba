@@ -5,8 +5,9 @@ import logging
 _logger = logging.getLogger(__name__)
 
 
-def make_bed_per_chrom(chrom_sizes: str, file_path: str, verbose: bool = True):
+def make_bed_per_chrom(chrom_sizes: str, file_path: str, test: bool = False, verbose: bool = True):
     # open chrom sizes
+    test=True
     with open(chrom_sizes, "r") as chrom_sizes_file:
         for line in chrom_sizes_file:
             # subset to chromosomes we want
@@ -20,18 +21,27 @@ def make_bed_per_chrom(chrom_sizes: str, file_path: str, verbose: bool = True):
                 and "scaffold" not in line
             ):
                 chrom, size = line.strip().split("\t")
-                # every position in the chromosome
+                size = int(size)
+                
+                if test and chrom == "chr1":
+                    start = (size // 4)*3 - 500
+                    end = start + 100
+                    bed_lines = [f"{chrom}\t{i}\t{i+1}" for i in range(start, end)]
+                    bed_file_path = f"{file_path}{chrom}_everypos_hg38_test.bed"
+                else:
+                    bed_lines = [f"{chrom}\t{i}\t{i+1}" for i in range(size)]
+                    bed_file_path = f"{file_path}{chrom}_everypos_hg38.bed"
+
                 if verbose:
                     print("Processing Chromosome: ", chrom, "Size: ", size)
-                bed_lines = [f"{chrom}\t{i}\t{i+1}" for i in range(int(size))]
-
-                # BED file for each chromosome
-                bed_file_path = f"{file_path}{chrom}_everypos_hg38.bed"
+                
                 with open(bed_file_path, "w") as bed_file:
                     bed_file.write("\n".join(bed_lines))
 
                 if verbose:
                     _logger.info(f"Saved BED file for {chrom} to {bed_file_path}")
+                if test:
+                    break
 
 
 def main():
@@ -48,12 +58,19 @@ def main():
     parser.add_argument(
         "--file_path",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/all_chrom_beds/",
         help="Directory to save the BED file",
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Run in test mode, subsetting to 1000 positions in the middle of chromosome 1",
     )
     args = parser.parse_args()
 
-    make_bed_per_chrom(args.chrom_sizes, args.file_path)
+    os.makedirs(args.file_path, exist_ok=True)
+
+    make_bed_per_chrom(args.chrom_sizes, args.file_path, test=args.test)
 
 
 if __name__ == "__main__":
