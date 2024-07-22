@@ -250,75 +250,8 @@ class LMCollator:
 class gLMCollator:
     def __init__(
         self,
-        tokenizer: Tokenizer,
-        *,
-        flip_prob: float = 0.0,
-        fim_prob: float = 0.0,
-        min_fim_prefix_len: int = 0,
-        min_fim_suffix_len: int = 0,
-        fim_mode: Literal["psm", "spm", "both"] = "both",
-        simple_spm: bool = False,
-        pad_to_multiple_of: Optional[int] = None,
-        swap_bos_eos_on_flip: bool = True,
     ) -> None:
-        """A collator which randomly converts a subset of samples into FIM samples.
-
-        Parameters:
-        -----------
-        tokenizer: Callable
-            A callable which tokenizes a string into a sequence of integers.
-        fim_prob: float
-            The probability of converting a sample into a FIM sample. Default is 0.5.
-        min_fim_prefix_len: int
-            The minimum length of the prefix for the FIM sample. Default is 0.
-        min_fim_suffix_len: int
-            The minimum length of the suffix for the FIM sample. Default is 0.
-        fim_mode: Literal["psm", "spm", "both"]
-            The mode of FIM to use. "psm" presents prefix-suffix-middle. "spm" presents suffix-prefix-middle.
-            "both" presents both, switching between the two with equal probability. Default is both.
-        simple_spm: bool
-            If True, SPM samples are presented in the form <suffix>suffix-aa's<prefix>prefix-aa's<middle>middle-aa's.
-            If False, SPM samples are presented in the form <prefix><suffix>suffix-aa's<middle>prefix-aa's middle-aa's.
-            Default is False.
-        flip_prob: float
-            The probability of flipping the sample (always prior to FIM). Default is 0.5.
-        pad_to_multiple_of: Optional[int]
-            If not None, the length of the sequence will be padded to a multiple of this value.
-        swap_bos_eos_on_flip: bool
-            If True, the the sequence will be preceded by EOS (rather than BOS) when flipped. Default is True.
-        """
-        assert 0 <= fim_prob <= 1, "FIM probability must be in [0, 1]"
-        assert 0 <= flip_prob <= 1, "Flip probability must be in [0, 1]"
-
-        self.tokenizer = tokenizer
-        self.fim_prob = fim_prob
-        self.flip_prob = flip_prob
-        self.pad_to_mult = pad_to_multiple_of
-        self.fim_mode = fim_mode
-        self.simple_spm = simple_spm
-        self.swap_bos_eos_on_flip = swap_bos_eos_on_flip
-        self.splitter = self.make_splitter(min_fim_prefix_len, min_fim_suffix_len)
-
-        # intentionally keep them as arrays so we can concat later
-        self.fim_pid = self.tokenizer.tokenize([FIM_PREFIX])
-        self.fim_sid = self.tokenizer.tokenize([FIM_SUFFIX])
-        self.fim_mid = self.tokenizer.tokenize([FIM_MIDDLE])
-        self.start_id = self.tokenizer.tokenize([START])
-        self.stop_id = self.tokenizer.tokenize([STOP])
-
-    @staticmethod
-    def make_splitter(min_prefix_len: int, min_suffix_len: int) -> Callable:
-        def splitter(sequence: str) -> Tuple[str, str, str]:
-            prefix_len = np.random.randint(
-                min_prefix_len, len(sequence) - min_suffix_len
-            )
-            suffix_len = np.random.randint(min_suffix_len, len(sequence) - prefix_len)
-            prefix = sequence[:prefix_len]
-            suffix = sequence[-suffix_len:]
-            middle = sequence[prefix_len:-suffix_len]
-            return prefix, middle, suffix
-
-        return splitter
+        """A collator pads sequences for glm"""
 
     def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray]]):
         # unpack the input data
@@ -333,7 +266,7 @@ class gLMCollator:
             np.pad(s, (1, 1), "constant", constant_values=(0, 0)) for s in scaling
         ]
         gap = [np.pad(g, (1, 1), "constant", constant_values=(0, 0)) for g in gap]
-        # Pad each array type accordingly
+        # pad each array type accordingly
         sequence, seq_lbls = self.pad_arrays(sequence, dtype=torch.long)
         scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
         gap, gap_lbs = self.pad_arrays(gap, dtype=torch.float32)
@@ -342,68 +275,6 @@ class gLMCollator:
         lbls = torch.stack([seq_lbls, scale_lbs, gap_lbs])
 
         return out, lbls
-
-    def apply_transformations(self, sequence):
-        # flip as needed
-        if self.flip_prob > 0:
-            maybe_flip = np.random.choice(
-                [-1, 1], (len(sequence),), p=[self.flip_prob, 1 - self.flip_prob]
-            )
-            sequence = [s[::f] for s, f in zip(sequence, maybe_flip)]
-
-        is_flipped = (
-            lambda i_: self.flip_prob > 0 and maybe_flip[i_] == -1
-        )  # noqa: E731
-
-        # FIM as needed
-        maybe_fim = np.random.choice(
-            [False, True], len(sequence), p=[1 - self.fim_prob, self.fim_prob]
-        )
-        for i, fim in enumerate(maybe_fim):
-            if fim:
-                # randomly split the sample
-                prefix, middle, suffix = self.splitter(sequence[i])
-
-                # select the fim type
-                if self.fim_mode == "both":
-                    fim_mode = np.random.choice(["psm", "spm"])
-                else:
-                    fim_mode = self.fim_mode
-
-                if fim_mode == "psm":
-                    sequence[i] = self._wrap(
-                        self.fim_pid,
-                        prefix,
-                        self.fim_sid,
-                        suffix,
-                        self.fim_mid,
-                        middle,
-                        flipped=is_flipped(i),
-                    )
-                else:
-                    if self.simple_spm:
-                        sequence[i] = self._wrap(
-                            self.fim_sid,
-                            suffix,
-                            self.fim_pid,
-                            prefix,
-                            self.fim_mid,
-                            middle,
-                            flipped=is_flipped(i),
-                        )
-                    else:
-                        sequence[i] = self._wrap(
-                            self.fim_pid,
-                            self.fim_sid,
-                            suffix,
-                            self.fim_mid,
-                            prefix,
-                            middle,
-                            flipped=is_flipped(i),
-                        )
-            else:
-                sequence[i] = self._wrap(sequence[i], flipped=is_flipped(i))
-        return sequence
 
     def pad_arrays(self, sequence, dtype):
         # pad to a multiple of pad_to_mult
