@@ -146,7 +146,7 @@ def get_dataloader(
             swap_bos_eos_on_flip=config.get("swap_bos_eos_on_flip", True),
         )
     elif config["task"] == "glm":
-        collator = gLMCollator()
+        collator = gLMCollator(tokenizer=tokenizer)
     else:
         raise ValueError(f"Unknown task: {config['task']}")
 
@@ -388,9 +388,6 @@ def load_checkpoint(
 
 
 def train(args: argparse.Namespace) -> None:
-    print("VERSIONS: torch, flash")
-    print(torch.__version__)
-    print(flash_attn.__version__)
     print(
         f"Starting job on rank {RANK} with local rank {LOCAL_RANK} and world size {WORLD_SIZE}"
     )

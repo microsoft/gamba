@@ -250,12 +250,17 @@ class LMCollator:
 class gLMCollator:
     def __init__(
         self,
+        tokenizer: Tokenizer,
     ) -> None:
         """A collator pads sequences for glm"""
+        self.tokenizer = tokenizer
+        self.start_id = self.tokenizer.tokenize([START])
+        self.stop_id = self.tokenizer.tokenize([STOP])
 
     def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray]]):
         # unpack the input data
-        sequence, scaling, gap = zip(*data)
+        sequence, scaling = zip(*data)
+        # sequence, scaling, gap = zip(*data)
         # sequence is already tokenized
         # wrap sequence in start and stop
         sequence = [
@@ -265,14 +270,14 @@ class gLMCollator:
         scaling = [
             np.pad(s, (1, 1), "constant", constant_values=(0, 0)) for s in scaling
         ]
-        gap = [np.pad(g, (1, 1), "constant", constant_values=(0, 0)) for g in gap]
+        # gap = [np.pad(g, (1, 1), "constant", constant_values=(0, 0)) for g in gap]
         # pad each array type accordingly
         sequence, seq_lbls = self.pad_arrays(sequence, dtype=torch.long)
         scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
-        gap, gap_lbs = self.pad_arrays(gap, dtype=torch.float32)
+        # gap, gap_lbs = self.pad_arrays(gap, dtype=torch.float32)
 
-        out = torch.stack([sequence, scaling, gap])
-        lbls = torch.stack([seq_lbls, scale_lbs, gap_lbs])
+        out = torch.stack([sequence, scaling])  # , gap])
+        lbls = torch.stack([seq_lbls, scale_lbs])  # , gap_lbs])
 
         return out, lbls
 
