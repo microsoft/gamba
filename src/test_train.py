@@ -146,7 +146,10 @@ def get_dataloader(
             swap_bos_eos_on_flip=config.get("swap_bos_eos_on_flip", True),
         )
     elif config["task"] == "glm":
-        collator = gLMCollator(tokenizer=tokenizer)
+        collator = gLMCollator(
+            tokenizer=tokenizer,
+            pad_to_multiple_of=config.get("pad_to_multiple_of", None),
+        )
     else:
         raise ValueError(f"Unknown task: {config['task']}")
 

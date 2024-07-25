@@ -251,11 +251,13 @@ class gLMCollator:
     def __init__(
         self,
         tokenizer: Tokenizer,
+        pad_to_multiple_of: Optional[int] = None,
     ) -> None:
         """A collator pads sequences for glm"""
         self.tokenizer = tokenizer
         self.start_id = self.tokenizer.tokenize([START])
         self.stop_id = self.tokenizer.tokenize([STOP])
+        self.pad_to_mult = pad_to_multiple_of
 
     def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray]]):
         # unpack the input data
