@@ -25,16 +25,15 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Subset
 
-from sequence_models.samplers import (
-    SortishSampler,
-    ApproxBatchSampler,
-    ClusteredSortishSampler,
-)
+from sequence_models.samplers import SortishSampler, ApproxBatchSampler
 from sequence_models.utils import transformer_lr
 
 from evodiff.utils import Tokenizer
 
-# import gamba
+# import gamba using sys.append
+import sys
+
+sys.path.append("../gamba")
 
 from gamba.activation_checkpointing import apply_activation_checkpointing
 from gamba.collators import gLMCollator, LMCollator, OAMaskCollator
@@ -52,7 +51,8 @@ from gamba.model import create_model
 import os
 import torch
 
-# Provide default values for RANK, LOCAL_RANK, and WORLD_SIZE if not set
+
+# default values for RANK, LOCAL_RANK, and WORLD_SIZE if not set
 RANK = int(os.environ.get("RANK", "0"))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "0"))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "1"))
@@ -146,10 +146,7 @@ def get_dataloader(
             swap_bos_eos_on_flip=config.get("swap_bos_eos_on_flip", True),
         )
     elif config["task"] == "glm":
-        collator = gLMCollator(
-            tokenizer=tokenizer,
-            swap_bos_eos_on_flip=config.get("pad_to_multiple_of", None),
-        )
+        collator = gLMCollator()
     else:
         raise ValueError(f"Unknown task: {config['task']}")
 
@@ -391,6 +388,9 @@ def load_checkpoint(
 
 
 def train(args: argparse.Namespace) -> None:
+    print("VERSIONS: torch, flash")
+    print(torch.__version__)
+    print(flash_attn.__version__)
     print(
         f"Starting job on rank {RANK} with local rank {LOCAL_RANK} and world size {WORLD_SIZE}"
     )
