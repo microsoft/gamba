@@ -36,6 +36,7 @@ RUN /root/miniconda3/bin/conda install -n gamba_az -c nvidia cuda-nvcc=12.1 && \
   /root/miniconda3/bin/conda run -n gamba_az pip install flash_attn==2.5.9.post1 && \
   /root/miniconda3/bin/conda run -n gamba_az conda install conda-forge::threadpoolctl && \
   /root/miniconda3/bin/conda install -n gamba_az -c defaults mkl && \ 
+  /root/miniconda3/bin/conda run -n gamba_az pip install wandb==0.16.5 && \
   /root/miniconda3/bin/conda run -n gamba_az conda env update -f conda.yaml
 
 # activate the environment and ensure nvcc is available
