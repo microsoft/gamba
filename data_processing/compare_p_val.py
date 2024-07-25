@@ -104,7 +104,6 @@ def compare_phyloP(bigwig_file, position_info, entropy):
         "/home/t-mconsens/gamba/data_processing/data/240-mammalian/entropy_100bp_bins.png"
     )
     plt.show()
-    # # Plotting
     # plt.figure(figsize=(10, 6))
     # plt.scatter(positions, scores, alpha=0.5, color="blue", label="Scores")
     # plt.scatter(positions, pvals, alpha=0.5, color="red", label="P-values")
