@@ -1,5 +1,5 @@
 # base image with cuda 12.1 and pytorch 2.2.0
-FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel
+FROM ptebic.azurecr.io/public/aifx/acpt/stable-ubuntu2004-cu121-py310-torch221:biweekly.202403.1.v1
 
 # need wget and gawk
 RUN apt-get update && apt-get install -y wget gawk
