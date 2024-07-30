@@ -241,8 +241,8 @@ class ConservationDataset(Dataset):
 
     def __getitem__(self, idx: int):
         chrom, seq_idx = self.sequences[idx]
-        if self.file is None or not self.file.endswith(f"test_{chrom}.npz"):
-            self.file = osp.join(self.data_dir, self.split, f"test_{chrom}.npz")
+        if self.file is None or not self.file.endswith(f"{chrom}.npz"):
+            self.file = osp.join(self.data_dir, self.split, f"{chrom}.npz")
 
         file_data = np.load(self.file)
         sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
@@ -257,13 +257,13 @@ class ConservationDataset(Dataset):
             self.sequences[idx] = (chrom, seq_idx)
 
         conservation = file_data["conservation"][seq_idx : seq_idx + self.max_len]
-        gaps = file_data["gap"][seq_idx : seq_idx + self.max_len]
+        # gaps = file_data["gap"][seq_idx : seq_idx + self.max_len]
 
         # code to round conservation & scaling to two decimal places for prediction
         conservation = np.round(conservation, 2)
-        gaps = np.round(gaps, 2)
+        # gaps = np.round(gaps, 2)
 
-        return (sequence, conservation, gaps)
+        return (sequence, conservation)  # , gaps)
 
 
 class UniRefDataset(Dataset):

@@ -223,8 +223,6 @@ def step(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler._LRScheduler,
 ) -> dict:
-    print("at step")
-    print("el for el in batch:", [el for el in batch])
     if any(el.numel() for el in batch) == 0:
         raise ValueError("Empty tensor in batch")
 
@@ -414,10 +412,10 @@ def train(args: argparse.Namespace) -> None:
     config["dtype"] = args.dtype
     config["random_seed"] = args.random_seed
     config["world_size"] = WORLD_SIZE
-    if RANK == 0:
-        os.makedirs(args.out_fpath, exist_ok=True)
-        with open(os.path.join(args.out_fpath, "config.json"), "w") as f:
-            json.dump(config, f)
+    # if RANK == 0:
+    #     os.makedirs(args.out_fpath, exist_ok=True)
+    #     with open(os.path.join(args.out_fpath, "config.json"), "w") as f:
+    #         json.dump(config, f)
 
     # training dtype and local device
     dtype = {
