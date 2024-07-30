@@ -102,8 +102,6 @@ class GaussianNLLLoss(nn.Module):
         pred: torch.Tensor,
         tgt: torch.Tensor,
     ) -> torch.Tensor:
-        print("pred shape: ", pred.shape)
-        print("tgt shape: ", tgt.shape)
 
         # let's return the loss as the negative log likelihood of the target given the predicted parameters of the Gaussian distribution
         # where pred: torch.Tensor has shape (batch, seq_length, 2) where 2 is the mean and variance of the Gaussian distribution
@@ -123,6 +121,9 @@ class GaussianNLLLoss(nn.Module):
         # exponentiate mean and variance
         var = torch.exp(log_var)
         stdev = torch.exp(log_stdev)
+
+        print("the variance is:", var)
+        print("the stdev is:", stdev)
         # use the pytorch distribution instead as its more stable
         norm_dist = torch.distributions.normal.Normal(var, stdev)
         log_pdf = norm_dist.log_prob(tgt)
@@ -137,8 +138,6 @@ class InverseGammaNLLLoss(nn.Module):
         super().__init__()
 
     def forward(self, pred: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
-        print("pred shape: ", pred.shape)
-        print("tgt shape: ", tgt.shape)
         # mask is where tgt is not equal to -100
         mask = tgt != -100
 

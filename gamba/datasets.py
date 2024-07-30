@@ -241,10 +241,19 @@ class ConservationDataset(Dataset):
 
     def __getitem__(self, idx: int):
         chrom, seq_idx = self.sequences[idx]
-        if self.file is None or not self.file.endswith(f"{chrom}.npz"):
+        print("chrom and seq_idx:", chrom, seq_idx)
+        # if self.file is None or not self.file.endswith(f"{chrom}.npz"):
+        #     self.file = osp.join(self.data_dir, self.split, f"{chrom}.npz")
+
+        if self.file is None or self.file != f"{chrom}.npz":
             self.file = osp.join(self.data_dir, self.split, f"{chrom}.npz")
 
+        print("self file:", self.file)
+
         file_data = np.load(self.file)
+        print("current chromosome size:", self.chrom_sizes[chrom])
+        print("file data length of sequence:", len(file_data["sequence"]))
+        print("file data length of conservation:", len(file_data["conservation"]))
         sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
 
         # check if sequence has over 10% composition of N nucleotides, represented as int 4,
@@ -257,6 +266,10 @@ class ConservationDataset(Dataset):
             self.sequences[idx] = (chrom, seq_idx)
 
         conservation = file_data["conservation"][seq_idx : seq_idx + self.max_len]
+
+        print(
+            f"CHROM: {chrom}, SEQ_IDX: {seq_idx}, LENGTH OF CONSERVATION: {len(conservation)}, LENGTH OF SEQUENCE: {len(sequence)}"
+        )
         # gaps = file_data["gap"][seq_idx : seq_idx + self.max_len]
 
         # code to round conservation & scaling to two decimal places for prediction

@@ -262,6 +262,8 @@ class gLMCollator:
     def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray]]):
         # unpack the input data
         sequence, scaling = zip(*data)
+
+        print(f"len(sequence): {len(sequence)}, len(scaling): {len(scaling)}")
         # sequence, scaling, gap = zip(*data)
         # sequence is already tokenized
         # wrap sequence in start and stop

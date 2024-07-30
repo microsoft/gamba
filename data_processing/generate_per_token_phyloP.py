@@ -48,35 +48,37 @@ def make_datasets(
         chrom = row["chrom"]
         size = row["end"]
         chrom_num = chrom.split("chr")[1]
+        print("the chromosome is:", chrom)
 
         # get the sequence from the genome
         sequence = genome[chrom][:size].seq
 
         # print 20 nucleotides at 700000
-        # print(f"Sequence at 700000: {sequence[700000:700020]}")
+        print(f"Sequence at 700000: {sequence[700000:700020]}")
 
         # tokenize the sequence already
         tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
         sequence = tokenizer.tokenizeMSA(sequence)
 
         # print 20 nucleotides at 700000
-        # print(f"Sequence at 700000: {sequence[700000:700020]}")
+        print(f"Sequence at 700000: {sequence[700000:700020]}")
 
         # the bigwig file only stores non-zero data so well initialize with zeros
         vals = np.zeros(size, dtype=np.float64)
 
         # get the conservation scores from the bigwig file
         intervals = bw.intervals(chrom, 0, size)
-        # print("CHROMOSOME SIZE:", size)
-        # print("INTERVALS LENGTH:", len(intervals))
+        print("CHROMOSOME SIZE:", size)
+        print("INTERVALS LENGTH:", len(intervals))
 
         for start, end, value in intervals:
             vals[start:end] = value
 
-        # print("THE LENGTH OF VALS IS: ", len(vals))
+        print("THE LENGTH OF VALS IS: ", len(vals))
+        print("THE LENGTH OF SEQUENCE IS:", len(sequence))
 
         # print the vals for the same interval
-        # print(f"val at 700000: {vals[700000:700020]}")
+        print(f"val at 700000: {vals[700000:700020]}")
 
         # get the split for the current chromosome
         split_name = chromosome_splits[chrom_num]

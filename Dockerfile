@@ -21,26 +21,20 @@ ENV PATH=/root/miniconda3/bin:$PATH
 # working directory
 WORKDIR /gamba
 
-# copy conda.yaml file into the Docker image
-COPY configs/conda.yaml .
+# install everything needed for mamba
+RUN conda install python=3.12.2 && \
+pip install nvidia-cuda-nvcc-cu12 && \
+  pip install torch==2.2.0 && \
+  pip install packaging==23.2 && \
+  pip install causal-conv1d==1.3.0.post1 && \
+  pip install mamba-ssm==2.1.0 && \
+  pip install flash_attn==2.5.9.post1 && \
+  conda install conda-forge::threadpoolctl && \
+  pip install defaults mkl && \ 
+  pip install sequence-models &&\
+  pip install evodiff && \
+  pip install wandb==0.16.5 
 
-# create the Conda environment
-RUN /root/miniconda3/bin/conda create -n gamba_az python=3.12.2
-
-# install all needed for mamba
-RUN /root/miniconda3/bin/conda install -n gamba_az -c nvidia cuda-nvcc=12.1 && \
-  /root/miniconda3/bin/conda run -n gamba_az pip install torch==2.2.0 && \
-  /root/miniconda3/bin/conda run -n gamba_az pip install packaging==23.2 && \
-  /root/miniconda3/bin/conda run -n gamba_az pip install causal-conv1d==1.3.0.post1 && \
-  /root/miniconda3/bin/conda run -n gamba_az pip install mamba-ssm==2.1.0 && \
-  /root/miniconda3/bin/conda run -n gamba_az pip install flash_attn==2.5.9.post1 && \
-  /root/miniconda3/bin/conda run -n gamba_az conda install conda-forge::threadpoolctl && \
-  /root/miniconda3/bin/conda install -n gamba_az -c defaults mkl && \ 
-  /root/miniconda3/bin/conda run -n gamba_az pip install wandb==0.16.5 && \
-  /root/miniconda3/bin/conda run -n gamba_az conda env update -f conda.yaml
-
-# activate the environment and ensure nvcc is available
-SHELL ["/root/miniconda3/bin/conda", "run", "-n", "gamba_az", "/bin/bash", "-c"]
 
 # default command to run when the container starts
 CMD ["bash"]

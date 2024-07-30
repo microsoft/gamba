@@ -304,6 +304,7 @@ class JambagambaModel(nn.Module):
         if math.isnan(gaussian_loss):
             raise ValueError("Gaussian Loss is NaN")
         # print("POISSON LOSS: ", poisson_loss)
+        print("LOSS:", ce_loss + gaussian_loss)
 
         # print(f"shape of the gap_logits: {gap_logits.shape}")
         # print(f"shape of the scaling_logits: {scaling_logits.shape}")
