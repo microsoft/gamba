@@ -10,6 +10,10 @@ from evodiff.utils import Tokenizer
 from gamba.constants import DNA_ALPHABET_PLUS
 
 _logger = logging.getLogger(__name__)
+# import gamba using sys.append
+import sys
+
+sys.path.append("../gamba")
 
 
 def make_datasets(
@@ -103,7 +107,7 @@ def main():
     parser.add_argument(
         "--bigwig_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/241-mammalian-2020v2.bigWig",
+        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
         help="Path to the bigwig file with phyloP scores",
     )
     parser.add_argument(

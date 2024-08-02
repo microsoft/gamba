@@ -181,8 +181,8 @@ class JambagambaModel(nn.Module):
         padding_id: int,
     ):
         super().__init__()
-        self.jambalm = ARDiffusionModel(jambalm)
-        self.embedder = self.jambalm.module.model
+        self.embedder = ARDiffusionModel(jambalm).module.model
+
         # need to split d_model into lm head, scaling head and gap head
         # self.each_dim = int(d_model / 3)
         self.each_dim = int(d_model / 2)
@@ -190,22 +190,12 @@ class JambagambaModel(nn.Module):
         self.scaling_head = nn.Linear(self.each_dim, 2)
         # self.gap_head = nn.Linear(self.each_dim, 1)
 
-        layer = nn.TransformerEncoderLayer(
-            d_model,
-            nhead,
-            dim_feedforward=dim_feedfoward,
-            dropout=0.0,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-
-        self.decoder = nn.TransformerEncoder(layer, n_layers)
         self.down = nn.Linear(
             2 * jambalm.model.embed_tokens.weight.shape[-1] + d_model, d_model
         )
         self.seq_embedding = nn.Embedding(jambalm.vocab_size, self.each_dim)
         self.value_embedding = nn.Linear(1, self.each_dim)
+        
 
         # real number loss
         self.cons_loss_func = GaussianNLLLoss()
@@ -217,22 +207,24 @@ class JambagambaModel(nn.Module):
         # self.lm_head = self.jambalm.module.lm_head
 
     def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> dict:
+        # print("shape of tgt: ", tgt.shape)
+        # print("shape of src: ", src.shape)
         # seq_tgt, conservation_tgt, gap_tgt = tgt.split(1, dim=0)
-        seq_tgt, conservation_tgt = tgt.split(1, dim=0)
-        seq_tgt = seq_tgt.squeeze(0).long()
-        conservation_tgt = conservation_tgt.squeeze(0)
+        seq_tgt, conservation_tgt = tgt.split(1, dim=1)
+        seq_tgt = seq_tgt.squeeze(1).long()
+        conservation_tgt = conservation_tgt.squeeze(1)
         # gap_tgt = gap_tgt.squeeze(0)
-        n_tokens = (seq_tgt >= 0).sum()
+        n_tokens = (seq_tgt >= 1).sum()
 
         # seq, conservation, gap = src.split(1, dim=0)
-        seq, conservation = src.split(1, dim=0)
-        seq = seq.squeeze(0).long()
-        conservation = conservation.squeeze(0)
+        seq, conservation = src.split(1, dim=1)
+        seq = seq.squeeze(1).long()
+        conservation = conservation.squeeze(1)
         # gap = gap.squeeze(0)
         device = src.device
 
-        n_seq = torch.tensor(len(seq), device=seq.device)
-        n_processed = n_tokens - len(seq_tgt)  # -1 token per sequence for the shift
+        n_seq = torch.tensor(seq.size(1), device=device)
+        n_processed = n_tokens - seq_tgt.size(1)  # -1 token per sequence for the shift
 
         # embed seq, conservation and gap separately
         emb_seq = self.seq_embedding(seq)
@@ -244,13 +236,13 @@ class JambagambaModel(nn.Module):
         # reshape the output back to (batch, seq_length, embedding dim)
         # emb_gap = emb_gap.view(1, -1, self.each_dim)
 
-        conservation_reshaped = conservation.view(
+        conservation_reshaped = conservation.reshape(
             -1, 1
-        )  # reshape to (seq_length, batch)
-        # embed
+        )  # reshape to (batch * seq_length, 1)
         emb_conservation = self.value_embedding(conservation_reshaped)
-        # reshape the output back to (batch, seq_length, embedding dim)
-        emb_conservation = emb_conservation.view(1, -1, self.each_dim)
+        emb_conservation = emb_conservation.view(
+            seq.size(0), -1, self.each_dim
+        )  # reshape back to (batch, seq_length, embedding_dim)
 
         # print(
         #     f"shapes of emb_seq, emb_conservation, emb_gap: {emb_seq.shape}, {emb_conservation.shape}, {emb_gap.shape}"
@@ -327,6 +319,8 @@ class JambagambaModel(nn.Module):
             "scaling_logits": scaling_logits,
             # "gap_logits": gap_logits,
             "loss": ce_loss + gaussian_loss,  # + poisson_loss,
+            "cross_entropy_loss": ce_loss,
+            "gaussian_loss": gaussian_loss,
             OTHER_METRICS_KEY: other_metrics,
             "n_tokens": n_tokens,
             "n_seqs": n_seq,
