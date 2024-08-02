@@ -223,8 +223,7 @@ class ConservationDataset(Dataset):
         self.chrom_sizes = {
             chrom: bed[bed["chrom"] == ("chr" + chrom)]["end"].values
             for chrom in self.chromosomes
-        }
-
+        }   
         self.num_sequences = num_sequences
         # num sequences times: randomly sample a chromosome and a sequence start position from that chromosome (within chrom_size of that chromosome - max_len) and save it
         self.sequences = []
@@ -241,19 +240,19 @@ class ConservationDataset(Dataset):
 
     def __getitem__(self, idx: int):
         chrom, seq_idx = self.sequences[idx]
-        print("chrom and seq_idx:", chrom, seq_idx)
+       
         # if self.file is None or not self.file.endswith(f"{chrom}.npz"):
         #     self.file = osp.join(self.data_dir, self.split, f"{chrom}.npz")
 
         if self.file is None or self.file != f"{chrom}.npz":
             self.file = osp.join(self.data_dir, self.split, f"{chrom}.npz")
 
-        print("self file:", self.file)
+        
 
         file_data = np.load(self.file)
-        print("current chromosome size:", self.chrom_sizes[chrom])
-        print("file data length of sequence:", len(file_data["sequence"]))
-        print("file data length of conservation:", len(file_data["conservation"]))
+        # print("current chromosome size:", self.chrom_sizes[chrom])
+        # print("file data length of sequence:", len(file_data["sequence"]))
+        # print("file data length of conservation:", len(file_data["conservation"]))
         sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
 
         # check if sequence has over 10% composition of N nucleotides, represented as int 4,
@@ -267,9 +266,9 @@ class ConservationDataset(Dataset):
 
         conservation = file_data["conservation"][seq_idx : seq_idx + self.max_len]
 
-        print(
-            f"CHROM: {chrom}, SEQ_IDX: {seq_idx}, LENGTH OF CONSERVATION: {len(conservation)}, LENGTH OF SEQUENCE: {len(sequence)}"
-        )
+        # print(
+        #     f"CHROM: {chrom}, SEQ_IDX: {seq_idx}, LENGTH OF CONSERVATION: {len(conservation)}, LENGTH OF SEQUENCE: {len(sequence)}"
+        # )
         # gaps = file_data["gap"][seq_idx : seq_idx + self.max_len]
 
         # code to round conservation & scaling to two decimal places for prediction

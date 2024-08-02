@@ -25,7 +25,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Subset
 
-from sequence_models.samplers import SortishSampler, ApproxBatchSampler
+from sequence_models.samplers import SortishSampler, ApproxBatchSampler #, ClusteredSortishSampler
 from sequence_models.utils import transformer_lr
 
 from evodiff.utils import Tokenizer
@@ -158,15 +158,15 @@ def get_dataloader(
         # load the dataset
         print("making the dataset")
         ds_train = ConservationDataset(
-            data_dir, "train", num_sequences=100, max_len=config["max_len"]
+            data_dir, "train", num_sequences=100, max_len=config["max_len"], specific_chromosomes=['2']
         )
         train_idx = ds_train.indices
         print(f"len(train_idx): {len(train_idx)}")
         dl_train = DataLoader(
             dataset=ds_train,
             shuffle=True,
-            batch_size=1,
-            num_workers=1,
+            batch_size=8,
+            num_workers=8,
             collate_fn=collator,
         )
     else:
@@ -300,7 +300,7 @@ def epoch(
         # Accurate metric logging with reduce
         # Log number of sequences and processed tokens in one operation
         with torch.no_grad():
-            reduce_tensor = torch.stack((output["n_processed"], output["n_seqs"]))
+            reduce_tensor = torch.stack((output["n_processed"], output["n_seqs"], output["cross_entropy_loss"], output["gaussian_loss"]))
             dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
 
         total_steps += 1
@@ -312,6 +312,8 @@ def epoch(
             wandb.log(
                 {
                     "loss": output["loss"].item(),
+                    "cross_entropy_loss": output["cross_entropy_loss"].item(),
+                    "gaussian_loss": output["gaussian_loss"].item(),
                     "nsteps": total_steps,
                     "epoch": current_epoch,
                     "token_trained": total_tokens,
@@ -399,6 +401,8 @@ def train(args: argparse.Namespace) -> None:
     if args.verbose:
         print("Initializing model...", RANK)
     config, tokenizer, model, blk_types = load_config_and_model(args.config_fpath)
+    # add nn.Linear for final layer
+    #blk_types = blk_types + [nn.Linear]
     if RANK == 0:
         if args.no_wandb:
             wandbmode = "disabled"
@@ -412,10 +416,10 @@ def train(args: argparse.Namespace) -> None:
     config["dtype"] = args.dtype
     config["random_seed"] = args.random_seed
     config["world_size"] = WORLD_SIZE
-    # if RANK == 0:
-    #     os.makedirs(args.out_fpath, exist_ok=True)
-    #     with open(os.path.join(args.out_fpath, "config.json"), "w") as f:
-    #         json.dump(config, f)
+    if RANK == 0:
+        os.makedirs(args.out_fpath, exist_ok=True)
+        with open(os.path.join(args.out_fpath, "config.json"), "w") as f:
+            json.dump(config, f)
 
     # training dtype and local device
     dtype = {
@@ -431,6 +435,15 @@ def train(args: argparse.Namespace) -> None:
         print(
             f"Model has {sum(p.numel() for p in model.parameters())} trainable parameters."
         )
+    
+    if args.verbose:
+        print("Initializing data...", RANK)
+    print("Initializing data for training...")
+    dl_train = get_dataloader(config, tokenizer, args)
+    if args.verbose:
+        print("Done initializing data.", RANK)
+    if RANK == 0:
+        print(f"Training on {len(dl_train.dataset)} sequences.")
     if args.verbose:
         print("Moving and sharding model...", RANK)
     # set the default device
@@ -438,22 +451,33 @@ def train(args: argparse.Namespace) -> None:
 
     # setup FSDP
     # don't split ByteNetBlock's across devices
-    # wrap_policy = functools.partial(
-    #     transformer_auto_wrap_policy, transformer_layer_cls=blk_types
-    # )
-    # mixed_precision = MixedPrecision(param_dtype=dtype, buffer_dtype=dtype)
-    # shard_strategy = ShardingStrategy._HYBRID_SHARD_ZERO2
-    # bwd_prefetch = BackwardPrefetch.BACKWARD_PRE
-    # model = FSDP(
-    #     model,
-    #     device_id=DEVICE,
-    #     auto_wrap_policy=wrap_policy,
-    #     sharding_strategy=shard_strategy,
-    #     mixed_precision=mixed_precision,
-    #     backward_prefetch=bwd_prefetch,
-    # )
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    #blk_types = model.blocks
+    #print(f"blocks: {blk_types}")
+    #add linear layer with parameter size 1 to blk_types
+    #print(f"model.self.value_embedding: {type(model.value_embedding)}")
+    #blk_types = blk_types.union({type(model.value_embedding)})
+    from torch.distributed.device_mesh import init_device_mesh
+
+    device_mesh = init_device_mesh("cuda", (WORLD_SIZE,))
+    wrap_policy = functools.partial(
+       transformer_auto_wrap_policy, transformer_layer_cls=blk_types
+    )
+    #from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+   
+    #wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=100)
+    mixed_precision = MixedPrecision(param_dtype=dtype, buffer_dtype=dtype)
+    shard_strategy = ShardingStrategy._HYBRID_SHARD_ZERO2
+    bwd_prefetch = BackwardPrefetch.BACKWARD_PRE
+    model = FSDP(
+        model,
+        device_id=DEVICE,
+        device_mesh=device_mesh,
+        auto_wrap_policy=wrap_policy)#,
+        #sharding_strategy=shard_strategy,
+        #mixed_precision=mixed_precision,
+        #backward_prefetch=bwd_prefetch,
+    #)
+
     # create the optimizer and scheduler
     print("creating optimizer and scheduler")
     epochs = config["epochs"]
@@ -466,10 +490,10 @@ def train(args: argparse.Namespace) -> None:
     scheduler = LambdaLR(optimizer, lr_func)
 
     # load the state
-    # print("loading state")
-    # initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
-    #     model, optimizer, scheduler, args.out_fpath, args.last_step
-    # )
+    print("loading state")
+    initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
+        model, optimizer, scheduler, args.out_fpath, args.last_step
+    )
     initial_epoch = 0
     total_steps = 0
     total_tokens = 0
@@ -482,14 +506,6 @@ def train(args: argparse.Namespace) -> None:
     if act_ckpt is not None:
         apply_activation_checkpointing(model, blk_types, act_ckpt)
 
-    if args.verbose:
-        print("Initializing data...", RANK)
-    print("Initializing data for training...")
-    dl_train = get_dataloader(config, tokenizer, args)
-    if args.verbose:
-        print("Done initializing data.", RANK)
-    if RANK == 0:
-        print(f"Training on {len(dl_train.dataset)} sequences.")
     # train
     for e in range(initial_epoch, epochs):
         start_time = datetime.datetime.now()

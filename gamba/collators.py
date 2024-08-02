@@ -259,29 +259,33 @@ class gLMCollator:
         self.stop_id = self.tokenizer.tokenize([STOP])
         self.pad_to_mult = pad_to_multiple_of
 
-    def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray]]):
+    def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray]]):
         # unpack the input data
-        sequence, scaling = zip(*data)
+        # there are num_workers of data, so i need to do for each worker in data, unzip the sequence, scaling
 
-        print(f"len(sequence): {len(sequence)}, len(scaling): {len(scaling)}")
-        # sequence, scaling, gap = zip(*data)
+        # sequence, scaling, gap = zip(*data)[]
         # sequence is already tokenized
         # wrap sequence in start and stop
         sequence = [
-            np.concatenate([self.start_id, s, self.stop_id], axis=0) for s in sequence
+            np.concatenate([self.start_id, s, self.stop_id], axis=0) for s, _ in data
         ]
         # add 0s as start and stop around the scaling and error params
         scaling = [
-            np.pad(s, (1, 1), "constant", constant_values=(0, 0)) for s in scaling
+            np.pad(s, (1, 1), "constant", constant_values=(0, 0)) for _, s in data
         ]
         # gap = [np.pad(g, (1, 1), "constant", constant_values=(0, 0)) for g in gap]
         # pad each array type accordingly
         sequence, seq_lbls = self.pad_arrays(sequence, dtype=torch.long)
         scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
+        # print(
+        #     "shape of padded arrays (sequence & scaling): ",
+        #     sequence.shape,
+        #     scaling.shape,
+        # )
         # gap, gap_lbs = self.pad_arrays(gap, dtype=torch.float32)
 
-        out = torch.stack([sequence, scaling])  # , gap])
-        lbls = torch.stack([seq_lbls, scale_lbs])  # , gap_lbs])
+        out = torch.stack([sequence, scaling], dim=1)  # , gap])
+        lbls = torch.stack([seq_lbls, scale_lbs], dim=1)  # , gap_lbs])
 
         return out, lbls
 
