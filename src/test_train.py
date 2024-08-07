@@ -6,6 +6,7 @@ import os
 import random
 from typing import Optional, Sequence, Tuple, Type
 
+
 import numpy as np
 import wandb
 
@@ -20,13 +21,14 @@ from torch.distributed.fsdp import (
     ShardingStrategy,
 )
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from torch.distributed.device_mesh import init_device_mesh
 import torch.nn as nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Subset
 
-from sequence_models.samplers import SortishSampler, ApproxBatchSampler #, ClusteredSortishSampler
-from sequence_models.utils import transformer_lr
+from sequence_models.samplers import SortishSampler, ApproxBatchSampler
+from sequence_models.utils import transformer_lr, warmup
 
 from evodiff.utils import Tokenizer
 
@@ -53,6 +55,7 @@ import torch
 
 
 # default values for RANK, LOCAL_RANK, and WORLD_SIZE if not set
+ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp") + "/"
 RANK = int(os.environ.get("RANK", "0"))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "0"))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "1"))
@@ -158,15 +161,36 @@ def get_dataloader(
         # load the dataset
         print("making the dataset")
         ds_train = ConservationDataset(
-            data_dir, "train", num_sequences=100, max_len=config["max_len"], specific_chromosomes=['2']
+            data_dir,
+            "train",
+            num_sequences=10,
+            max_len=config["max_len"],
+            specific_chromosomes=["2"],
         )
         train_idx = ds_train.indices
         print(f"len(train_idx): {len(train_idx)}")
         dl_train = DataLoader(
             dataset=ds_train,
             shuffle=True,
-            batch_size=8,
-            num_workers=8,
+            batch_size=64,
+            num_workers=16,
+            collate_fn=collator,
+        )
+        # load the val dataset:
+        ds_val = ConservationDataset(
+            data_dir,
+            "valid",
+            num_sequences=10,
+            max_len=config["max_len"],
+            specific_chromosomes=["12"],
+        )
+        val_idx = ds_val.indices
+        print(f"len(val_idx): {len(val_idx)}")
+        dl_val = DataLoader(
+            dataset=ds_val,
+            shuffle=True,
+            batch_size=64,
+            num_workers=16,
             collate_fn=collator,
         )
     else:
@@ -174,22 +198,20 @@ def get_dataloader(
         ds_train = ConservationDataset(
             data_dir, "train", num_sequences=230000, max_len=config["max_len"]
         )
-        metadata = np.load(os.path.join(data_dir, "lengths_and_offsets.npz"))
-        len_train = np.minimum(metadata["ells"][train_idx], config["max_len"])
-        if "uniref50" in dataset:
-            train_sortish_sampler = SortishSampler(
-                len_train, config["bucket_size"], num_replicas=WORLD_SIZE, rank=RANK
-            )
-        elif "uniref90" in dataset:
-            with open(os.path.join(data_dir) + "clustered_splits.json") as f:
-                clusters = json.load(f)["train"]
-            train_sortish_sampler = ClusteredSortishSampler(
-                len_train,
-                clusters,
-                config["bucket_size"],
-                num_replicas=WORLD_SIZE,
-                rank=RANK,
-            )
+        # load the val dataset
+        ds_val = ConservationDataset(
+            data_dir, "valid", num_sequences=10000, max_len=config["max_len"]
+        )
+        # metadata = np.load(os.path.join(data_dir, "lengths_and_offsets.npz"))
+        # len_train = np.minimum(metadata["ells"][train_idx], config["max_len"])
+        train_idx = ds_train.indices
+        len_train = len(train_idx)
+        val_idx = ds_val.indices
+        len_val = len(val_idx)
+        print(f"len(train_idx): {len(train_idx)}")
+        train_sortish_sampler = SortishSampler(
+            len_train, config["bucket_size"], num_replicas=WORLD_SIZE, rank=RANK
+        )
         train_sampler = ApproxBatchSampler(
             train_sortish_sampler,
             config["max_tokens"],
@@ -205,8 +227,17 @@ def get_dataloader(
             collate_fn=collator,
             pin_memory=True,
         )
+        dl_val = DataLoader(
+            dataset=ds_val,
+            batch_size=8,
+            num_workers=8,
+            collate_fn=collator,
+            pin_memory=True,
+        )
+        if RANK == 0:
+            print(f"Validating on {len_val} sequences.")
 
-    return dl_train
+    return dl_train, dl_val
 
 
 def seed_everything(seed: int) -> None:
@@ -222,22 +253,79 @@ def step(
     batch: Sequence[torch.Tensor],
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler._LRScheduler,
+    training: bool = True,
 ) -> dict:
     if any(el.numel() for el in batch) == 0:
         raise ValueError("Empty tensor in batch")
 
     batch = [el.to(DEVICE) for el in batch]
 
-    # step through model
-    optimizer.zero_grad()
-    print(f"entering model with batch {batch[0].shape}")
-    outputs = model(*batch)
-    # try clipping the gradients
-    # torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-    outputs["loss"].backward()
-    optimizer.step()
-    scheduler.step()
+    if training:
+        # step through model
+        optimizer.zero_grad()
+        print(f"entering model with batch {batch[0].shape}")
+        outputs = model(*batch)
+        # try clipping the gradients
+        # torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+        outputs["loss"].backward()
+        optimizer.step()
+        scheduler.step()
+    else:
+        # validation
+        with torch.no_grad():
+            outputs = model(*batch)
     return outputs
+
+
+def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=None):
+    # log average val
+    # log val ce loss
+
+    if not args.mini_run:
+        if args.verbose:
+            print(RANK, "Setting epoch")
+        val_loader.batch_sampler.sampler.set_epoch(0)
+
+    model = model.eval()
+
+    if args.verbose:
+        print("Starting validation...", RANK)
+
+    total_tokens = 0
+    total_seqs = 0
+    total_ce_loss = 0
+    total_gaussian_loss = 0
+    for batch in val_loader:
+        output = step(model, batch, None, None, training=False)
+        with torch.no_grad():
+            reduce_tensor = torch.stack(
+                (
+                    output["n_processed"],
+                    output["n_seqs"],
+                    output["cross_entropy_loss"],
+                    output["gaussian_loss"],
+                )
+            )
+            dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
+        total_tokens += int(reduce_tensor[0].item())
+        total_seqs += int(reduce_tensor[1].item())
+        total_ce_loss += reduce_tensor[2].item()
+        total_gaussian_loss += reduce_tensor[3].item()
+    if RANK == 0:
+        with open(csv_fpath, "a") as f:
+            f.write(
+                f"{epoch},{train_step},{total_tokens},{total_ce_loss},{total_gaussian_loss}\n"
+            )
+        wandb.log(
+            {
+                "val_ce_loss": total_ce_loss,
+                "val_gaussian_loss": total_gaussian_loss,
+                "tokens_validated": total_tokens,
+                "nsteps": train_step,
+                "epoch": epoch,
+                **{k: v.item() for k, v in output[OTHER_METRICS_KEY].items()},
+            }
+        )
 
 
 def save_checkpoint(
@@ -274,6 +362,7 @@ def save_checkpoint(
 def epoch(
     model: nn.Module,
     dataloader: DataLoader,
+    val_loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler._LRScheduler,
     args: argparse.Namespace,
@@ -281,12 +370,25 @@ def epoch(
     current_step: int,
     current_tokens: int,
     current_sequences: int,
+    out_fpath: str,
 ) -> Tuple[int, int, int]:
     model = model.train()
 
     total_steps = current_step
     total_tokens = current_tokens
     total_seq = current_sequences
+
+    csv_fpath = os.path.join(out_fpath, "val.csv")
+
+    if total_steps == 0:
+        validation(
+            model,
+            val_loader,
+            args,
+            epoch=current_epoch,
+            train_step=total_steps,
+            csv_fpath=csv_fpath,
+        )
 
     for batch in dataloader:
         if args.verbose:
@@ -300,7 +402,14 @@ def epoch(
         # Accurate metric logging with reduce
         # Log number of sequences and processed tokens in one operation
         with torch.no_grad():
-            reduce_tensor = torch.stack((output["n_processed"], output["n_seqs"], output["cross_entropy_loss"], output["gaussian_loss"]))
+            reduce_tensor = torch.stack(
+                (
+                    output["n_processed"],
+                    output["n_seqs"],
+                    output["cross_entropy_loss"],
+                    output["gaussian_loss"],
+                )
+            )
             dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
 
         total_steps += 1
@@ -333,6 +442,10 @@ def epoch(
                 epoch=current_epoch,
                 tokens=total_tokens,
                 sequences=total_seq,
+            )
+            # validation at checkpoint_freq
+            validation(
+                model, val_loader, args, current_epoch, total_steps, csv_fpath=csv_fpath
             )
 
     return total_steps, total_tokens, total_seq
@@ -401,14 +514,15 @@ def train(args: argparse.Namespace) -> None:
     if args.verbose:
         print("Initializing model...", RANK)
     config, tokenizer, model, blk_types = load_config_and_model(args.config_fpath)
-    # add nn.Linear for final layer
-    #blk_types = blk_types + [nn.Linear]
     if RANK == 0:
         if args.no_wandb:
             wandbmode = "disabled"
         else:
             wandbmode = "online"
         wandb.init(config=config, mode=wandbmode)
+    out_fpath = ckpt_dir
+    csv_fpath = os.path.join(out_fpath, "val.csv")
+
     if args.verbose:
         print("Done initializing model.", RANK)
 
@@ -435,11 +549,10 @@ def train(args: argparse.Namespace) -> None:
         print(
             f"Model has {sum(p.numel() for p in model.parameters())} trainable parameters."
         )
-    
     if args.verbose:
         print("Initializing data...", RANK)
     print("Initializing data for training...")
-    dl_train = get_dataloader(config, tokenizer, args)
+    dl_train, dl_valid = get_dataloader(config, tokenizer, args)
     if args.verbose:
         print("Done initializing data.", RANK)
     if RANK == 0:
@@ -451,13 +564,6 @@ def train(args: argparse.Namespace) -> None:
 
     # setup FSDP
     # don't split ByteNetBlock's across devices
-    #blk_types = model.blocks
-    #print(f"blocks: {blk_types}")
-    #add linear layer with parameter size 1 to blk_types
-    #print(f"model.self.value_embedding: {type(model.value_embedding)}")
-    #blk_types = blk_types.union({type(model.value_embedding)})
-    from torch.distributed.device_mesh import init_device_mesh
-
     device_mesh = init_device_mesh("cuda", (WORLD_SIZE,))
     wrap_policy = functools.partial(
        transformer_auto_wrap_policy, transformer_layer_cls=blk_types
@@ -486,14 +592,15 @@ def train(args: argparse.Namespace) -> None:
     optimizer = Adam(
         model.parameters(), lr=lr, weight_decay=config.get("weight_decay", 0.0)
     )
-    lr_func = transformer_lr(warmup_steps)
+    #lr_func = transformer_lr(warmup_steps)
+    lr_func = warmup(warmup_steps)
     scheduler = LambdaLR(optimizer, lr_func)
 
     # load the state
-    print("loading state")
-    initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
-        model, optimizer, scheduler, args.out_fpath, args.last_step
-    )
+    # print("loading state")
+    # initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
+    #     model, optimizer, scheduler, args.out_fpath, args.last_step
+    # )
     initial_epoch = 0
     total_steps = 0
     total_tokens = 0
@@ -518,6 +625,7 @@ def train(args: argparse.Namespace) -> None:
         total_steps, total_tokens, total_seqs = epoch(
             model,
             dl_train,
+            dl_valid,
             optimizer,
             scheduler,
             args,
@@ -525,6 +633,7 @@ def train(args: argparse.Namespace) -> None:
             current_step=total_steps,
             current_tokens=total_tokens,
             current_sequences=total_seqs,
+            out_fpath=out_fpath,
         )
 
         save_checkpoint(
@@ -536,6 +645,14 @@ def train(args: argparse.Namespace) -> None:
             epoch=e,
             tokens=total_tokens,
             sequences=total_seqs,
+        )
+        validation(
+            model,
+            dl_valid,
+            args,
+            e,
+            total_steps,
+            csv_fpath,
         )
         print(f"Epoch {e} complete in {datetime.datetime.now() - start_time}")
 
