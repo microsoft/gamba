@@ -52,6 +52,7 @@ from gamba.model import create_model
 
 import os
 import torch
+import time
 
 
 # default values for RANK, LOCAL_RANK, and WORLD_SIZE if not set
@@ -163,17 +164,23 @@ def get_dataloader(
         ds_train = ConservationDataset(
             data_dir,
             "train",
-            num_sequences=10,
+            num_sequences=1000,
             max_len=config["max_len"],
             specific_chromosomes=["2"],
         )
         train_idx = ds_train.indices
         print(f"len(train_idx): {len(train_idx)}")
+        print("validating sequences")
+        start_time = time.time()
+        ds_train.validate_sequences()
+        end_time = time.time()
+        print("done validating sequences")
+        print(f"Validation took {end_time - start_time:.2f} seconds")
         dl_train = DataLoader(
             dataset=ds_train,
             shuffle=True,
-            batch_size=64,
-            num_workers=16,
+            batch_size=32,
+            num_workers=4,
             collate_fn=collator,
         )
         # load the val dataset:
@@ -380,15 +387,15 @@ def epoch(
 
     csv_fpath = os.path.join(out_fpath, "val.csv")
 
-    if total_steps == 0:
-        validation(
-            model,
-            val_loader,
-            args,
-            epoch=current_epoch,
-            train_step=total_steps,
-            csv_fpath=csv_fpath,
-        )
+    # if total_steps == 0:
+    #     validation(
+    #         model,
+    #         val_loader,
+    #         args,
+    #         epoch=current_epoch,
+    #         train_step=total_steps,
+    #         csv_fpath=csv_fpath,
+    #     )
 
     for batch in dataloader:
         if args.verbose:
@@ -444,9 +451,9 @@ def epoch(
                 sequences=total_seq,
             )
             # validation at checkpoint_freq
-            validation(
-                model, val_loader, args, current_epoch, total_steps, csv_fpath=csv_fpath
-            )
+            # validation(
+            #     model, val_loader, args, current_epoch, total_steps, csv_fpath=csv_fpath
+            # )
 
     return total_steps, total_tokens, total_seq
 
@@ -646,14 +653,14 @@ def train(args: argparse.Namespace) -> None:
             tokens=total_tokens,
             sequences=total_seqs,
         )
-        validation(
-            model,
-            dl_valid,
-            args,
-            e,
-            total_steps,
-            csv_fpath,
-        )
+        # validation(
+        #     model,
+        #     dl_valid,
+        #     args,
+        #     e,
+        #     total_steps,
+        #     csv_fpath,
+        # )
         print(f"Epoch {e} complete in {datetime.datetime.now() - start_time}")
 
 
