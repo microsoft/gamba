@@ -9,6 +9,7 @@ from sequence_models.constants import MSA_ALPHABET, GAP, START, STOP
 from torch.utils.data import Dataset
 import bisect
 import time
+from tqdm import tqdm
 
 
 def parse_msa(path):
@@ -211,10 +212,12 @@ class ConservationDataset(Dataset):
         max_len=2048,
         num_sequences: int = 100,
         specific_chromosomes: list = None,
-        non_overlapping: bool = True,
+        #non_overlapping: bool = True,
     ):
         self.data_dir = data_dir
         self.split = split
+        self.file = None
+        self.validated = False
         with open(osp.join(data_dir, "splits.json"), "r") as f:
             self.chromosomes = json.load(f)[self.split]
             # make sure self.chromosomes is sorted
@@ -331,6 +334,51 @@ class ConservationDataset(Dataset):
     def __len__(self):
         return len(self.indices)
 
+    def validate_sequences(self):
+        total_sequences = len(self.sequences)
+        resampled_sequences = 0
+        total_resamples = 0
+
+        start_time = time.time()
+
+        # ensure sequences contain less than 10% 'N' nucleotides
+        for idx in tqdm(range(total_sequences), desc="Validating sequences"):
+            chrom, seq_idx = self.sequences[idx]
+            if self.file is None or self.file != f"{chrom}.npz":
+                self.file = osp.join(self.data_dir, self.split, f"{chrom}.npz")
+            file_data = np.load(self.file)
+            sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+            
+            resample_count = 0
+            while np.count_nonzero(sequence == 4) > 0.1 * len(sequence):
+                print("resampling...")
+                resample_count += 1
+                seq_idx = np.random.choice(
+                    np.arange(self.chrom_sizes[chrom] - self.max_len)
+                )
+                sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+                self.sequences[idx] = (chrom, seq_idx)
+            
+            if resample_count > 0:
+                resampled_sequences += 1
+                total_resamples += resample_count
+
+        self.validated = True
+        #once validated save all of these chrom start and stops to a csv
+        with open("/home/t-mconsens/gamba/data_processing/data/240-mammalian/validated_sequences.csv", "w") as f:
+            for chrom, start in self.sequences:
+                f.write(f"{chrom},{start}\n")
+
+        #print stats
+        percentage_resampled = (resampled_sequences / total_sequences) * 100
+        average_resamples = total_resamples / resampled_sequences if resampled_sequences > 0 else 0
+
+        end_time = time.time()
+        duration = end_time - start_time
+
+        print(f"Percentage of sequences resampled: {percentage_resampled:.2f}%")
+        print(f"Average number of resamples per resampled sequence: {average_resamples:.2f}")
+        print(f"Validation took {duration:.2f} seconds")
     def __getitem__(self, idx: int):
         chrom, seq_idx = self.sequences[idx]
 
@@ -348,34 +396,35 @@ class ConservationDataset(Dataset):
 
         # check if sequence has over 10% composition of N nucleotides, represented as int 4,
         # if so, resample the sequence and save the new chrom and coordinates
-        while np.count_nonzero(sequence == 4) > 0.1 * len(sequence):
-            print("have to re-select sequence due to N nucleotide composition")
-            # if self.non_overlapping:
-            #     chrom = np.random.choice(self.chromosomes)
-            #     max_len = int(self.max_len)
-            #     non_overlapping_starts = list(self.valid_starts[chrom])
+        if not self.validated:
+            while np.count_nonzero(sequence == 4) > 0.1 * len(sequence):
+                print("have to re-select sequence due to N nucleotide composition")
+                # if self.non_overlapping:
+                #     chrom = np.random.choice(self.chromosomes)
+                #     max_len = int(self.max_len)
+                #     non_overlapping_starts = list(self.valid_starts[chrom])
 
-            #     if not non_overlapping_starts:
-            #         raise ValueError(
-            #             "No non-overlapping start locations for chromosome"
-            #         )
+                #     if not non_overlapping_starts:
+                #         raise ValueError(
+                #             "No non-overlapping start locations for chromosome"
+                #         )
 
-            #     start = np.random.choice(non_overlapping_starts)
-            #     sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
-            #     self.sequences[idx] = (chrom, seq_idx)
+                #     start = np.random.choice(non_overlapping_starts)
+                #     sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+                #     self.sequences[idx] = (chrom, seq_idx)
 
-            #     # remove indices from valid starts
-            #     # set of indices to remove
-            #     indices_to_remove = set(range(start, start + max_len))
-            #     # subtract the set of indices to remove from the valid start positions
-            #     self.valid_starts[chrom] -= indices_to_remove
+                #     # remove indices from valid starts
+                #     # set of indices to remove
+                #     indices_to_remove = set(range(start, start + max_len))
+                #     # subtract the set of indices to remove from the valid start positions
+                #     self.valid_starts[chrom] -= indices_to_remove
 
-            # else:
-            seq_idx = np.random.choice(
-                np.arange(self.chrom_sizes[chrom] - self.max_len)
-            )
-            sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
-            self.sequences[idx] = (chrom, seq_idx)
+                # else:
+                seq_idx = np.random.choice(
+                    np.arange(self.chrom_sizes[chrom] - self.max_len)
+                )
+                sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+                self.sequences[idx] = (chrom, seq_idx)
 
         conservation = file_data["conservation"][seq_idx : seq_idx + self.max_len]
 
@@ -387,7 +436,6 @@ class ConservationDataset(Dataset):
         # code to round conservation & scaling to two decimal places for prediction
         conservation = np.round(conservation, 2)
         # gaps = np.round(gaps, 2)
-        print("len(sequence), len(conservation):", len(sequence), len(conservation))
         return (sequence, conservation)  # , gaps)
 
 
