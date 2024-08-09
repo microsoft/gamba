@@ -17,7 +17,7 @@
     "use_cache": false
   },
   "aux_loss_weight": 0.001,
-  "epochs": 100,
+  "epochs": 100000,
   "max_tokens": 20000,
   "max_len": 2048,
   "pad_to_multiple_of": 8,

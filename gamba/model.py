@@ -186,13 +186,13 @@ class JambagambaModel(nn.Module):
         # need to split d_model into lm head, scaling head and gap head
         # self.each_dim = int(d_model / 3)
         self.each_dim = int(d_model / 2)
-        self.lm_head = nn.Linear(self.each_dim, jambalm.vocab_size)
-        self.scaling_head = nn.Linear(self.each_dim, 2)
+        self.lm_head = nn.Linear(d_model, jambalm.vocab_size)
+        self.scaling_head = nn.Linear(d_model, 2)
         # self.gap_head = nn.Linear(self.each_dim, 1)
 
-        self.down = nn.Linear(
-            2 * jambalm.model.embed_tokens.weight.shape[-1] + d_model, d_model
-        )
+        # self.down = nn.Linear(
+        #     2 * jambalm.model.embed_tokens.weight.shape[-1] + d_model, d_model
+        # )
         self.seq_embedding = nn.Embedding(jambalm.vocab_size, self.each_dim)
         self.value_embedding = nn.Linear(1, self.each_dim)
         
@@ -218,7 +218,9 @@ class JambagambaModel(nn.Module):
 
         # seq, conservation, gap = src.split(1, dim=0)
         seq, conservation = src.split(1, dim=1)
+        print("shape of seq: ", seq.shape)
         seq = seq.squeeze(1).long()
+        print("post squeeze & long shape of seq: ", seq.shape)
         conservation = conservation.squeeze(1)
         # gap = gap.squeeze(0)
         device = src.device
@@ -254,13 +256,13 @@ class JambagambaModel(nn.Module):
         # need to set the embedded inputs to inputs_embeds to values in the Jamba model
         output = self.embedder(inputs_embeds=inputs_embeds)["last_hidden_state"]
         # take the output of the model and split it along the last dimension
-        seq_output, scaling_output = output.split(output.shape[-1] // 2, dim=-1)
+        #seq_output, scaling_output = output.split(output.shape[-1] // 2, dim=-1)
         # seq_output, scaling_output, gap_output = output.split(
         #     output.shape[-1] // 3, dim=-1
         # )
         # put the outputs through their respective linear layers
-        seq_logits = self.lm_head(seq_output)
-        scaling_logits = self.scaling_head(scaling_output)
+        seq_logits = self.lm_head(output)
+        scaling_logits = self.scaling_head(output)
         # gap_logits = self.gap_head(gap_output)
         # print(
         #     f"shapes of seq_logits, scaling_logits, gap_logits: {seq_logits.shape}, {scaling_logits.shape},"  # {gap_logits.shape}"
