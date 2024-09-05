@@ -32,10 +32,13 @@ from sequence_models.utils import transformer_lr, warmup
 
 from evodiff.utils import Tokenizer
 
+#import GradScaler
+from torch.cuda.amp import GradScaler
+
 # import gamba using sys.append
 import sys
 
-sys.path.append("../gamba")
+sys.path.append(os.environ["PWD"])  # allow import from project directory.
 
 from gamba.activation_checkpointing import apply_activation_checkpointing
 from gamba.collators import gLMCollator, LMCollator, OAMaskCollator
@@ -129,9 +132,9 @@ def get_dataloader(
         "Directory of the running script:", os.path.dirname(os.path.abspath(__file__))
     )
     if is_amlt():
-        data_top_dir = args.data_root or "/ddn/evodiff/"
+        data_top_dir = args.data_root or "/mnt/data/data/"
     else:
-        data_top_dir = args.data_root or "/home/t-mconsens/gamba/data_processing/data/"
+        data_top_dir = args.data_root or "home/t-mconsens/gamba/data_processing/data/"
 
     dataset = config["dataset"]
     data_dir = os.path.join(data_top_dir, dataset + "/")
@@ -169,13 +172,25 @@ def get_dataloader(
             specific_chromosomes=["2"],
         )
         train_idx = ds_train.indices
+        len_train = len(train_idx)
         print(f"len(train_idx): {len(train_idx)}")
-        print("validating sequences")
-        start_time = time.time()
-        ds_train.validate_sequences()
-        end_time = time.time()
-        print("done validating sequences")
-        print(f"Validation took {end_time - start_time:.2f} seconds")
+        # print("validating sequences")
+        # start_time = time.time()
+        # ds_train.validate_sequences()
+        # end_time = time.time()
+        # print("done validating sequences")
+        # print(f"Validation took {end_time - start_time:.2f} seconds")
+
+        train_sortish_sampler = SortishSampler(
+            len_train, config["bucket_size"], num_replicas=WORLD_SIZE, rank=RANK
+        )
+        train_sampler = ApproxBatchSampler(
+            train_sortish_sampler,
+            config["max_tokens"],
+            config["max_batch_size"],
+            len_train,
+            #batch_mult=8,
+        )
         dl_train = DataLoader(
             dataset=ds_train,
             shuffle=True,
@@ -266,17 +281,29 @@ def step(
         raise ValueError("Empty tensor in batch")
 
     batch = [el.to(DEVICE) for el in batch]
-
+    scaler = GradScaler()
     if training:
         # step through model
         optimizer.zero_grad()
-        print(f"entering model with batch {batch[0].shape}")
         outputs = model(*batch)
-        # try clipping the gradients
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-        outputs["loss"].backward()
-        optimizer.step()
+        scaler.scale(outputs["loss"]).backward()
+
+        # Unscales the gradients of optimizer's assigned params in-place
+        scaler.unscale_(optimizer)
+
+        # Define max_norm
+        max_norm = 1.0
+
+        # Since the gradients of optimizer's assigned params are unscaled, clips as usual:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+
+        # optimizer's gradients are already unscaled, so scaler.step does not unscale them,
+        # although it still skips optimizer.step() if the gradients contain infs or NaNs.
+        scaler.step(optimizer)
         scheduler.step()
+        # Updates the scale for next iteration.
+        scaler.update()
+        print(f"entering model with batch {batch[0].shape}")
     else:
         # validation
         with torch.no_grad():
@@ -604,10 +631,10 @@ def train(args: argparse.Namespace) -> None:
     scheduler = LambdaLR(optimizer, lr_func)
 
     # load the state
-    # print("loading state")
-    # initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
-    #     model, optimizer, scheduler, args.out_fpath, args.last_step
-    # )
+    print("loading state")
+    initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
+        model, optimizer, scheduler, args.out_fpath, args.last_step
+    )
     initial_epoch = 0
     total_steps = 0
     total_tokens = 0
