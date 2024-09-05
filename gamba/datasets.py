@@ -216,19 +216,11 @@ class ConservationDataset(Dataset):
     ):
         self.data_dir = data_dir
         self.split = split
-        self.file = None
         self.validated = False
         with open(osp.join(data_dir, "splits.json"), "r") as f:
             self.chromosomes = json.load(f)[self.split]
             # make sure self.chromosomes is sorted
             self.chromosomes = sorted(self.chromosomes, key=chrom_sort_key)
-        # load the bed file of chromosome sizes
-        bed = pd.read_csv(
-            osp.join(data_dir, "hg38.bed"),
-            sep="\t",
-            header=None,
-            names=["chrom", "start", "end"],
-        )
         self.max_len = max_len
         self.specific_chromosomes = specific_chromosomes
         # if specific chromosome provided, use it, otherwise use all in split
@@ -244,92 +236,24 @@ class ConservationDataset(Dataset):
             ):
                 raise ValueError("Chromosome not in split")
             self.chromosomes = self.specific_chromosomes
-        # for each chromosome being used, make a mapping of chrom: size
-        self.chrom_sizes = {
-            chrom: bed[bed["chrom"] == ("chr" + chrom)]["end"].values
-            for chrom in self.chromosomes
-        }
+        chrom_sizes_file = osp.join(data_dir, "chrom_sizes.txt")
 
+        # read the chrom_sizes.txt file and create a dictionary with modified keys
+        with open(chrom_sizes_file, "r") as f:
+            self.chrom_sizes = {
+                line.split()[0].replace("chr", ""): int(line.split()[1])
+                for line in f
+            }
+        print("chrom sizes:", self.chrom_sizes)
         # sequences and intervals for chromosomes
         self.sequences = []
         self.num_sequences = num_sequences
-        # self.non_overlapping = non_overlapping
-
-        # if self.non_overlapping:
-        #     # valid start positions for sequences
-        #     self.valid_starts = {
-        #         chrom: set(range(int(self.chrom_sizes[chrom]) - int(self.max_len)))
-        #         for chrom in self.chromosomes
-        #     }
-        #     print("list of valid starts set up")
-        #     # timing the entire loop
-        #     total_start_time = time.time()
-
-        #     # dictionary to store the time taken for each step
-        #     step_times = {
-        #         "print_progress_bar": 0,
-        #         "np_random_choice_chrom": 0,
-        #         "list_valid_starts": 0,
-        #         "np_random_choice_start": 0,
-        #         "append_sequence": 0,
-        #         "remove_indices": 0,
-        #     }
-
-        #     for i in range(self.num_sequences):
-        #         # time the print progress bar step
-        #         start_time = time.time()
-        #         print_progress_bar(i + 1, self.num_sequences)
-        #         step_times["print_progress_bar"] += time.time() - start_time
-
-        #         # time the np.random.choice for chromosomes
-        #         start_time = time.time()
-        #         chrom = np.random.choice(self.chromosomes)
-        #         step_times["np_random_choice_chrom"] += time.time() - start_time
-
-        #         max_len = int(self.max_len)
-
-        #         # time the list conversion of valid starts
-        #         start_time = time.time()
-        #         non_overlapping_starts = list(self.valid_starts[chrom])
-        #         step_times["list_valid_starts"] += time.time() - start_time
-
-        #         if not non_overlapping_starts:
-        #             raise ValueError(
-        #                 "No non-overlapping start locations for chromosome"
-        #             )
-
-        #         # time the np.random.choice for start
-        #         start_time = time.time()
-        #         start = np.random.choice(non_overlapping_starts)
-        #         step_times["np_random_choice_start"] += time.time() - start_time
-
-        #         # time the append to sequences
-        #         start_time = time.time()
-        #         self.sequences.append((chrom, start))
-        #         step_times["append_sequence"] += time.time() - start_time
-
-        #         # time the removal of indices
-        #         start_time = time.time()
-        #         indices_to_remove = set(range(start, start + max_len))
-        #         self.valid_starts[chrom] -= indices_to_remove
-        #         step_times["remove_indices"] += time.time() - start_time
-        #     # end timing the entire loop
-        #     total_end_time = time.time()
-        #     total_time = total_end_time - total_start_time
-
-        #     # print the total time taken for the loop
-        #     print(f"Total time for the loop: {total_time:.4f} seconds")
-
-        #     # print the time taken for each step
-        #     for step, time_taken in step_times.items():
-        #         print(f"Time for {step}: {time_taken:.4f} seconds")
-        # else:
         for i in range(self.num_sequences):
             chrom = np.random.choice(self.chromosomes)
             start = np.random.choice(self.chrom_sizes[chrom] - self.max_len)
             self.sequences.append((chrom, start))
         self.indices = list(range(self.num_sequences))
-        self.file = None
+
 
     def __len__(self):
         return len(self.indices)
@@ -344,10 +268,9 @@ class ConservationDataset(Dataset):
         # ensure sequences contain less than 10% 'N' nucleotides
         for idx in tqdm(range(total_sequences), desc="Validating sequences"):
             chrom, seq_idx = self.sequences[idx]
-            if self.file is None or self.file != f"{chrom}.npz":
-                self.file = osp.join(self.data_dir, self.split, f"{chrom}.npz")
-            file_data = np.load(self.file)
-            sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+            
+            seq_file = np.load(osp.join(self.data_dir, self.split, f"{chrom}_sequence.npy"), mmap_mode='r')
+            sequence = seq_file[seq_idx : seq_idx + self.max_len]
             
             resample_count = 0
             while np.count_nonzero(sequence == 4) > 0.1 * len(sequence):
@@ -356,7 +279,7 @@ class ConservationDataset(Dataset):
                 seq_idx = np.random.choice(
                     np.arange(self.chrom_sizes[chrom] - self.max_len)
                 )
-                sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+                sequence = seq_file[seq_idx : seq_idx + self.max_len]
                 self.sequences[idx] = (chrom, seq_idx)
             
             if resample_count > 0:
@@ -379,61 +302,21 @@ class ConservationDataset(Dataset):
         print(f"Percentage of sequences resampled: {percentage_resampled:.2f}%")
         print(f"Average number of resamples per resampled sequence: {average_resamples:.2f}")
         print(f"Validation took {duration:.2f} seconds")
+
     def __getitem__(self, idx: int):
         chrom, seq_idx = self.sequences[idx]
+       
+        #load seq npy as mmap_mode='r'
+        seq_file = np.load(osp.join(self.data_dir, self.split, f"{chrom}_sequence.npy"), mmap_mode='r')
+        #load cons npy as mmap_mode='r'
+        cons_file = np.load(osp.join(self.data_dir, self.split, f"{chrom}_conservation.npy"), mmap_mode='r')
 
-        # if self.file is None or not self.file.endswith(f"{chrom}.npz"):
-        #     self.file = osp.join(self.data_dir, self.split, f"{chrom}.npz")
-
-        if self.file is None or self.file != f"{chrom}.npz":
-            self.file = osp.join(self.data_dir, self.split, f"{chrom}.npz")
-
-        file_data = np.load(self.file)
         # print("current chromosome size:", self.chrom_sizes[chrom])
         # print("file data length of sequence:", len(file_data["sequence"]))
         # print("file data length of conservation:", len(file_data["conservation"]))
-        sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
+        sequence = seq_file[seq_idx : seq_idx + self.max_len]
+        conservation = cons_file[seq_idx : seq_idx + self.max_len]
 
-        # check if sequence has over 10% composition of N nucleotides, represented as int 4,
-        # if so, resample the sequence and save the new chrom and coordinates
-        if not self.validated:
-            while np.count_nonzero(sequence == 4) > 0.1 * len(sequence):
-                print("have to re-select sequence due to N nucleotide composition")
-                # if self.non_overlapping:
-                #     chrom = np.random.choice(self.chromosomes)
-                #     max_len = int(self.max_len)
-                #     non_overlapping_starts = list(self.valid_starts[chrom])
-
-                #     if not non_overlapping_starts:
-                #         raise ValueError(
-                #             "No non-overlapping start locations for chromosome"
-                #         )
-
-                #     start = np.random.choice(non_overlapping_starts)
-                #     sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
-                #     self.sequences[idx] = (chrom, seq_idx)
-
-                #     # remove indices from valid starts
-                #     # set of indices to remove
-                #     indices_to_remove = set(range(start, start + max_len))
-                #     # subtract the set of indices to remove from the valid start positions
-                #     self.valid_starts[chrom] -= indices_to_remove
-
-                # else:
-                seq_idx = np.random.choice(
-                    np.arange(self.chrom_sizes[chrom] - self.max_len)
-                )
-                sequence = file_data["sequence"][seq_idx : seq_idx + self.max_len]
-                self.sequences[idx] = (chrom, seq_idx)
-
-        conservation = file_data["conservation"][seq_idx : seq_idx + self.max_len]
-
-        # print(
-        #     f"CHROM: {chrom}, SEQ_IDX: {seq_idx}, LENGTH OF CONSERVATION: {len(conservation)}, LENGTH OF SEQUENCE: {len(sequence)}"
-        # )
-        # gaps = file_data["gap"][seq_idx : seq_idx + self.max_len]
-
-        # code to round conservation & scaling to two decimal places for prediction
         conservation = np.round(conservation, 2)
         # gaps = np.round(gaps, 2)
         return (sequence, conservation)  # , gaps)
