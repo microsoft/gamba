@@ -214,7 +214,8 @@ class JambagambaModel(nn.Module):
         seq_tgt = seq_tgt.squeeze(1).long()
         conservation_tgt = conservation_tgt.squeeze(1)
         # gap_tgt = gap_tgt.squeeze(0)
-        n_tokens = (seq_tgt >= 1).sum()
+        # 0 is a token not a padding
+        n_tokens = (seq_tgt >= 0).sum()
 
         # seq, conservation, gap = src.split(1, dim=0)
         seq, conservation = src.split(1, dim=1)
@@ -287,6 +288,8 @@ class JambagambaModel(nn.Module):
         gaussian_loss = self.cons_loss_func(
             scaling_logits[:, :-1, :], conservation_tgt[:, 1:]
         )
+        #clip the gaussian loss
+        #gaussian_loss = torch.clamp(gaussian_loss, min=0.0, max=1.0)
         # apply PoissonNLLLoss from losses.py on the gap_logits
         # poisson_loss = self.gap_loss_func(gap_logits[:, :-1, :], gap_tgt[:, 1:])
 
