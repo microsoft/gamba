@@ -94,8 +94,9 @@ class MaskedCrossEntropyLoss(nn.Module):
 
 
 class GaussianNLLLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, full: bool = False, eps: float = 1e-6, reduction: str = 'mean'):
         super().__init__()
+        self.loss_fn = nn.GaussianNLLLoss(full=full, eps=eps, reduction=reduction)
 
     def forward(
         self,
@@ -110,28 +111,26 @@ class GaussianNLLLoss(nn.Module):
         # mask is where tgt is not equal to -100
         mask = tgt != -100
 
-        log_stdev = pred[:, :, 0]
+        mean = pred[:, :, 0]
         log_var = pred[:, :, 1]
 
-        # apply the  mask to log_stdev, log_var and tgt
-        log_stdev = log_stdev[mask]
+        # apply the mask to mean, log_var and tgt
+        mean = mean[mask]
         log_var = log_var[mask]
         tgt = tgt[mask]
 
-        # exponentiate mean and variance
+        # exponentiate variance and mean
         var = torch.exp(log_var)
-        stdev = torch.exp(log_stdev)
+        mean = torch.exp(mean)
 
-        print("the variance is:", var)
-        print("the stdev is:", stdev)
-        # use the pytorch distribution instead as its more stable
-        norm_dist = torch.distributions.normal.Normal(var, stdev)
-        log_pdf = norm_dist.log_prob(tgt)
-        loss = -log_pdf
-        # mean loss over batch and seq length
-        loss = loss.mean()
+        #print the mean and variance
+        print(f"mean: {mean}")
+        print(f"var: {var}")
+
+        # loss using PyTorch's built-in GaussianNLLLoss
+        loss = self.loss_fn(mean, tgt, var)
+        
         return loss
-
 
 class InverseGammaNLLLoss(nn.Module):
     def __init__(self):
