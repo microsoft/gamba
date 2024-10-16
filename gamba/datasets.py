@@ -288,7 +288,7 @@ class ConservationDataset(Dataset):
 
         self.validated = True
         #once validated save all of these chrom start and stops to a csv
-        with open("/home/t-mconsens/gamba/data_processing/data/240-mammalian/validated_sequences.csv", "w") as f:
+        with open("/home/mica/gamba/data_processing/data/240-mammalian/validated_sequences.csv", "w") as f:
             for chrom, start in self.sequences:
                 f.write(f"{chrom},{start}\n")
 

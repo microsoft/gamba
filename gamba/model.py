@@ -185,7 +185,7 @@ class JambagambaModel(nn.Module):
 
         # need to split d_model into lm head, scaling head and gap head
         # self.each_dim = int(d_model / 3)
-        self.each_dim = int(d_model / 2)
+        #self.each_dim = int(d_model / 2)
         self.lm_head = nn.Linear(d_model, jambalm.vocab_size)
         self.scaling_head = nn.Linear(d_model, 2)
         # self.gap_head = nn.Linear(self.each_dim, 1)
@@ -193,8 +193,10 @@ class JambagambaModel(nn.Module):
         # self.down = nn.Linear(
         #     2 * jambalm.model.embed_tokens.weight.shape[-1] + d_model, d_model
         # )
-        self.seq_embedding = nn.Embedding(jambalm.vocab_size, self.each_dim)
-        self.value_embedding = nn.Linear(1, self.each_dim)
+
+        #seq_embedding gets full dimensionality, there is no more any value embedding
+        self.seq_embedding = nn.Embedding(jambalm.vocab_size, d_model)
+        #self.value_embedding = nn.Linear(1, self.each_dim)
         
 
         # real number loss
@@ -213,6 +215,8 @@ class JambagambaModel(nn.Module):
         seq_tgt, conservation_tgt = tgt.split(1, dim=1)
         seq_tgt = seq_tgt.squeeze(1).long()
         conservation_tgt = conservation_tgt.squeeze(1)
+        print(f"conservation tgt shape:", conservation_tgt.shape)
+        print(f"seq tgt shape:", seq_tgt.shape)
         # gap_tgt = gap_tgt.squeeze(0)
         # 0 is a token not a padding
         n_tokens = (seq_tgt >= 0).sum()
@@ -223,6 +227,7 @@ class JambagambaModel(nn.Module):
         seq = seq.squeeze(1).long()
         print("post squeeze & long shape of seq: ", seq.shape)
         conservation = conservation.squeeze(1)
+        print(f"conservation shape:", conservation.shape)
         # gap = gap.squeeze(0)
         device = src.device
 
@@ -231,6 +236,7 @@ class JambagambaModel(nn.Module):
 
         # embed seq, conservation and gap separately
         emb_seq = self.seq_embedding(seq)
+        print(f"embed seq/input embeds shape:", emb_seq.shape)
 
         # gap has shape (batch, seq_length)
         # gap_reshaped = gap.view(-1, 1)  # reshape to (seq_length, batch)
@@ -239,21 +245,28 @@ class JambagambaModel(nn.Module):
         # reshape the output back to (batch, seq_length, embedding dim)
         # emb_gap = emb_gap.view(1, -1, self.each_dim)
 
-        conservation_reshaped = conservation.reshape(
-            -1, 1
-        )  # reshape to (batch * seq_length, 1)
-        emb_conservation = self.value_embedding(conservation_reshaped)
-        emb_conservation = emb_conservation.view(
-            seq.size(0), -1, self.each_dim
-        )  # reshape back to (batch, seq_length, embedding_dim)
+
+        #no more conservation embedding
+        # conservation_reshaped = conservation.reshape(
+        #     -1, 1
+        # )  # reshape to (batch * seq_length, 1)
+        # emb_conservation = self.value_embedding(conservation_reshaped)
+        # emb_conservation = emb_conservation.view(
+        #     seq.size(0), -1, self.each_dim
+        # )  # reshape back to (batch, seq_length, embedding_dim)
 
         # print(
         #     f"shapes of emb_seq, emb_conservation, emb_gap: {emb_seq.shape}, {emb_conservation.shape}, {emb_gap.shape}"
         # )
         # next, concatenate the embeddings along the hidden dimension and send to the model
         # inputs_embeds = torch.cat([emb_seq, emb_conservation, emb_gap], dim=-1)
-        inputs_embeds = torch.cat([emb_seq, emb_conservation], dim=-1)
-        # print(f"shape of input_embeds: {inputs_embeds.shape}")
+
+        #no more conservation embedding
+        #inputs_embeds = torch.cat([emb_seq, emb_conservation], dim=-1)
+
+        inputs_embeds = emb_seq#torch.transpose(emb_seq, 1, 2)
+
+        print(f"shape of input_embeds: {inputs_embeds.shape}")
         # need to set the embedded inputs to inputs_embeds to values in the Jamba model
         output = self.embedder(inputs_embeds=inputs_embeds)["last_hidden_state"]
         # take the output of the model and split it along the last dimension
