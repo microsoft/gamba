@@ -4,6 +4,7 @@ import functools
 import json
 import os
 import random
+import glob
 from typing import Optional, Sequence, Tuple, Type
 
 
@@ -56,7 +57,11 @@ from gamba.model import create_model
 import os
 import torch
 import time
+import mamba_ssm
+import causal_conv1d
 
+print(f"causal_conv1d version: {causal_conv1d.__version__}")
+print(f"mamba_ssm version: {mamba_ssm.__version__}")
 
 # default values for RANK, LOCAL_RANK, and WORLD_SIZE if not set
 ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp") + "/"
@@ -105,6 +110,17 @@ def load_config_and_model(
         task, config["model_type"], config["model_config"], tokenizer.mask_id.item()
     )
 
+    #get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
+    d_model = config.get("d_model", 576)
+    nhead = config.get("n_head", 8)
+    n_layers = config.get("n_layers", 6)
+    dim_feedforward = config.get("dim_feedforward", d_model)
+    padding_id = config.get("padding_id", 0)
+
+    #print all the values
+    print(f"d_model: {d_model}, nhead: {nhead}, n_layers: {n_layers}, dim_feedforward: {dim_feedforward}, padding_id: {padding_id}")
+
+
     # add the task-specific wrapper
     aux_loss_weight = config.get("aux_loss_weight", 0.0)
     if task == TaskType.OADM:
@@ -115,7 +131,7 @@ def load_config_and_model(
         model = ARDiffusionModel(model, aux_loss_weight=aux_loss_weight)
     elif task == TaskType.GLM:
         model = JambagambaModel(
-            model, d_model=576, nhead=8, n_layers=6, padding_id=0, dim_feedfoward=576
+            model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
         )
     else:
         raise ValueError(f"Unknown task: {config['task']}")
@@ -134,7 +150,7 @@ def get_dataloader(
     if is_amlt():
         data_top_dir = args.data_root or "/mnt/data/data/"
     else:
-        data_top_dir = args.data_root or "home/t-mconsens/gamba/data_processing/data/"
+        data_top_dir = args.data_root or "/home/mica/gamba/data_processing/data/"
 
     dataset = config["dataset"]
     data_dir = os.path.join(data_top_dir, dataset + "/")
@@ -174,7 +190,7 @@ def get_dataloader(
         train_idx = ds_train.indices
         len_train = len(train_idx)
         print(f"len(train_idx): {len(train_idx)}")
-        # print("validating sequences")
+        #print("validating sequences")
         # start_time = time.time()
         # ds_train.validate_sequences()
         # end_time = time.time()
@@ -218,11 +234,11 @@ def get_dataloader(
     else:
         # load the dataset
         ds_train = ConservationDataset(
-            data_dir, "train", num_sequences=230000, max_len=config["max_len"]
+            data_dir, "train", num_sequences=3000000, max_len=config["max_len"]
         )
         # load the val dataset
         ds_val = ConservationDataset(
-            data_dir, "valid", num_sequences=10000, max_len=config["max_len"]
+            data_dir, "valid", num_sequences=500, max_len=config["max_len"]
         )
         # metadata = np.load(os.path.join(data_dir, "lengths_and_offsets.npz"))
         # len_train = np.minimum(metadata["ells"][train_idx], config["max_len"])
@@ -251,7 +267,7 @@ def get_dataloader(
         )
         dl_val = DataLoader(
             dataset=ds_val,
-            batch_size=8,
+            batch_size=64,
             num_workers=8,
             collate_fn=collator,
             pin_memory=True,
@@ -315,7 +331,7 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
     # log average val
     # log val ce loss
 
-    if not args.mini_run:
+    if not args.mini_run and WORLD_SIZE > 1:
         if args.verbose:
             print(RANK, "Setting epoch")
         val_loader.batch_sampler.sampler.set_epoch(0)
@@ -340,7 +356,8 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
                     output["gaussian_loss"],
                 )
             )
-            dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
+            if WORLD_SIZE > 1:
+                dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
         total_tokens += int(reduce_tensor[0].item())
         total_seqs += int(reduce_tensor[1].item())
         total_ce_loss += reduce_tensor[2].item()
@@ -361,7 +378,6 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
             }
         )
 
-
 def save_checkpoint(
     out_dir: str,
     model: nn.Module,
@@ -371,9 +387,11 @@ def save_checkpoint(
     epoch: int,
     tokens: int,
     sequences: int,
+    max_checkpoints: int = 5  # keep only the last 5 checkpoints
 ) -> None:
+    # save the new checkpoint
     out_path = os.path.join(out_dir, f"dcp_{step}")
-    print(f"Saving checkpoint to {out_path}", RANK, flush=True)
+    print(f"Saving checkpoint to {out_path}", flush=True)
     model_state, optim_state = get_state_dict(model, optimizer)
     sd = {
         "model_state_dict": model_state,
@@ -381,6 +399,7 @@ def save_checkpoint(
     }
     fs_storage_writer = torch.distributed.checkpoint.FileSystemWriter(out_path)
     _ = dcp.save(sd, storage_writer=fs_storage_writer)
+    
     if RANK == 0:
         sched_state = scheduler.state_dict()
         sd = {
@@ -392,6 +411,16 @@ def save_checkpoint(
         }
         torch.save(sd, os.path.join(out_path, "scheduler.pt"))
 
+    # old checkpoints
+    checkpoint_pattern = os.path.join(out_dir, "dcp_*")
+    checkpoints = sorted(glob.glob(checkpoint_pattern), key=os.path.getmtime)  # Sort by modification time
+    
+    if len(checkpoints) > max_checkpoints:
+        # remove the oldest checkpoints if there are more than max_checkpoints
+        checkpoints_to_delete = checkpoints[:-max_checkpoints]
+        for checkpoint in checkpoints_to_delete:
+            print(f"Deleting old checkpoint {checkpoint}", flush=True)
+            os.system(f"rm -rf {checkpoint}")  # remove checkpoint directory
 
 def epoch(
     model: nn.Module,
@@ -414,15 +443,15 @@ def epoch(
 
     csv_fpath = os.path.join(out_fpath, "val.csv")
 
-    # if total_steps == 0:
-    #     validation(
-    #         model,
-    #         val_loader,
-    #         args,
-    #         epoch=current_epoch,
-    #         train_step=total_steps,
-    #         csv_fpath=csv_fpath,
-    #     )
+    if total_steps == 0:
+        validation(
+            model,
+            val_loader,
+            args,
+            epoch=current_epoch,
+            train_step=total_steps,
+            csv_fpath=csv_fpath,
+        )
 
     for batch in dataloader:
         if args.verbose:
@@ -477,10 +506,10 @@ def epoch(
                 tokens=total_tokens,
                 sequences=total_seq,
             )
-            # validation at checkpoint_freq
-            # validation(
-            #     model, val_loader, args, current_epoch, total_steps, csv_fpath=csv_fpath
-            # )
+            #validation at checkpoint_freq
+            validation(
+                model, val_loader, args, current_epoch, total_steps, csv_fpath=csv_fpath
+            )
 
     return total_steps, total_tokens, total_seq
 
@@ -543,7 +572,8 @@ def train(args: argparse.Namespace) -> None:
     )
     seed_everything(args.random_seed)
 
-    dist.init_process_group(backend="nccl")
+    if WORLD_SIZE > 1:
+        dist.init_process_group(backend="nccl")
     # get the config, tokenizer, and model
     if args.verbose:
         print("Initializing model...", RANK)
@@ -597,26 +627,30 @@ def train(args: argparse.Namespace) -> None:
     torch.cuda.set_device(LOCAL_RANK)
 
     # setup FSDP
-    # don't split ByteNetBlock's across devices
-    device_mesh = init_device_mesh("cuda", (WORLD_SIZE,))
-    wrap_policy = functools.partial(
-       transformer_auto_wrap_policy, transformer_layer_cls=blk_types
-    )
-    #from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
-   
-    #wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=100)
-    mixed_precision = MixedPrecision(param_dtype=dtype, buffer_dtype=dtype)
-    shard_strategy = ShardingStrategy._HYBRID_SHARD_ZERO2
-    bwd_prefetch = BackwardPrefetch.BACKWARD_PRE
-    model = FSDP(
-        model,
-        device_id=DEVICE,
-        device_mesh=device_mesh,
-        auto_wrap_policy=wrap_policy)#,
-        #sharding_strategy=shard_strategy,
-        #mixed_precision=mixed_precision,
-        #backward_prefetch=bwd_prefetch,
-    #)
+    if WORLD_SIZE > 1:
+        # don't split ByteNetBlock's across devices
+        device_mesh = init_device_mesh("cuda", (WORLD_SIZE,))
+        wrap_policy = functools.partial(
+        transformer_auto_wrap_policy, transformer_layer_cls=blk_types
+        )
+        #from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+    
+        #wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=100)
+        mixed_precision = MixedPrecision(param_dtype=dtype, buffer_dtype=dtype)
+        shard_strategy = ShardingStrategy._HYBRID_SHARD_ZERO2
+        bwd_prefetch = BackwardPrefetch.BACKWARD_PRE
+        model = FSDP(
+            model,
+            device_id=DEVICE,
+            device_mesh=device_mesh,
+            auto_wrap_policy=wrap_policy)#,
+            #sharding_strategy=shard_strategy,
+            #mixed_precision=mixed_precision,
+            #backward_prefetch=bwd_prefetch,
+        #)
+    else:
+        model.to(DEVICE) 
+    
 
     # create the optimizer and scheduler
     print("creating optimizer and scheduler")
@@ -680,14 +714,14 @@ def train(args: argparse.Namespace) -> None:
             tokens=total_tokens,
             sequences=total_seqs,
         )
-        # validation(
-        #     model,
-        #     dl_valid,
-        #     args,
-        #     e,
-        #     total_steps,
-        #     csv_fpath,
-        # )
+        validation(
+            model,
+            dl_valid,
+            args,
+            e,
+            total_steps,
+            csv_fpath,
+        )
         print(f"Epoch {e} complete in {datetime.datetime.now() - start_time}")
 
 

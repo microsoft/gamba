@@ -130,7 +130,7 @@ def get_dataloader(
     if is_amlt():
         data_top_dir = args.data_root or "/ddn/evodiff/"
     else:
-        data_top_dir = args.data_root or "/home/t-mconsens/gamba/data_processing/data/"
+        data_top_dir = args.data_root or "/home/mica/gamba/data_processing/data/"
 
     dataset = config["dataset"]
     data_dir = os.path.join(data_top_dir, dataset + "/")
