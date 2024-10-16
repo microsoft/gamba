@@ -7,13 +7,14 @@ from pyfaidx import Fasta
 import json
 import logging
 from evodiff.utils import Tokenizer
-from gamba.constants import DNA_ALPHABET_PLUS
-
-_logger = logging.getLogger(__name__)
 # import gamba using sys.append
 import sys
 
 sys.path.append("../gamba")
+from gamba.constants import DNA_ALPHABET_PLUS
+
+_logger = logging.getLogger(__name__)
+
 
 
 def make_datasets(
@@ -137,31 +138,31 @@ def main():
     parser.add_argument(
         "--bigwig_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
         help="Path to the bigwig file with phyloP scores",
     )
     parser.add_argument(
         "--bed_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/regions.bed",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/regions.bed",
         help="File name of the bed file excluding low quality regions",
     )
     parser.add_argument(
         "--file_path",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/",
         help="Directory to save the new sequence and conservation scores fasta",
     )
     parser.add_argument(
         "--genome_fasta",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
         help="Path to the genome fasta file",
     )
     parser.add_argument(
         "--splits_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/splits.json",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/splits.json",
         help="Path to the splits JSON file",
     )
     args = parser.parse_args()

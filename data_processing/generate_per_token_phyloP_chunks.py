@@ -7,11 +7,11 @@ from pyfaidx import Fasta
 import json
 import logging
 from evodiff.utils import Tokenizer
+
 _logger = logging.getLogger(__name__)
+
 # import gamba using sys.append
 import sys
-import gc
-
 sys.path.append("../gamba")
 from gamba.constants import DNA_ALPHABET_PLUS
 
@@ -21,6 +21,7 @@ def make_datasets(
     file_path: str,
     genome_fasta: str,
     splits_file: str,
+    chunk_size: int = 1000000,  # chunk size
     verbose: bool = True,
 ):
     # open the bigwig file
@@ -35,71 +36,66 @@ def make_datasets(
     os.makedirs(f"{file_path}valid", exist_ok=True)
 
     # use the splits json to save the numpy array as a compressed numpy file by chrom_num
-    # read in the splits file
     with open(splits_file, "r") as f:
         splits = json.load(f)
 
     # create a dictionary to map chromosomes to splits
-    chromosome_splits = {}
-    for split, chroms in splits.items():
-        for chrom in chroms:
-            chromosome_splits[chrom] = split
+    chromosome_splits = {chrom: split for split, chroms in splits.items() for chrom in chroms}
 
     # iterate over the BED file
     for index, row in bed.iterrows():
-        # get the chromosome and size from the BED file
         chrom = row["chrom"]
         size = row["end"]
         chrom_num = chrom.split("chr")[1]
-        print("the chromosome is:", chrom)
+        print(f"Processing chromosome: {chrom}")
 
-        # get the sequence from the genome
-        sequence = genome[chrom][:size].seq
+        # Process chromosome in chunks
+        for start in range(0, size, chunk_size):
+            end = min(start + chunk_size, size)
+            print(f"Processing chunk {start} - {end} for {chrom}")
 
-        # print 20 nucleotides at 700000
-        print(f"Sequence at 700000: {sequence[700000:700020]}")
+            # Get the sequence for this chunk
+            sequence = genome[chrom][start:end].seq
 
-        # tokenize the sequence already
-        tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
-        sequence = tokenizer.tokenizeMSA(sequence)
+            # Tokenize the sequence
+            tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
+            sequence = tokenizer.tokenizeMSA(sequence)
 
-        # print 20 nucleotides at 700000
-        print(f"Sequence at 700000: {sequence[700000:700020]}")
+            # Initialize the conservation scores for the chunk
+            vals = np.zeros(end - start, dtype=np.float64)
 
-        # the bigwig file only stores non-zero data so well initialize with zeros
-        vals = np.zeros(size, dtype=np.float64)
+            # Get the conservation scores from the bigwig file for the chunk
+            intervals = bw.intervals(chrom, start, end)
+            
+            # Check if there are intervals; if not, skip this chunk
+            if intervals is not None:
+                for i_start, i_end, value in intervals:
+                    vals[i_start - start:i_end - start] = value
+            else:
+                print(f"No intervals found for chunk {start} - {end} on chromosome {chrom}")
 
-        # get the conservation scores from the bigwig file
-        intervals = bw.intervals(chrom, 0, size)
-        print("CHROMOSOME SIZE:", size)
-        print("INTERVALS LENGTH:", len(intervals))
+            # Get the split for the current chromosome
+            split_name = chromosome_splits[chrom_num]
+            if verbose:
+                _logger.info(f"Saving {split_name} data for chromosome: {chrom_num} chunk {start}-{end}")
+            split_dir = f"{file_path}{split_name}/"
+            seq_cons_file = f"{split_dir}{chrom_num}_{start}_{end}.npz"
+            os.makedirs(split_dir, exist_ok=True)
 
-        for start, end, value in intervals:
-            vals[start:end] = value
+            # Save the chunk
+            np.savez_compressed(seq_cons_file, sequence=sequence, conservation=vals)
 
-        print("THE LENGTH OF VALS IS: ", len(vals))
-        print("THE LENGTH OF SEQUENCE IS:", len(sequence))
+            # Release memory for the chunk
+            del sequence, vals
+            import gc
+            gc.collect()
 
-        # print the vals for the same interval
-        print(f"val at 700000: {vals[700000:700020]}")
-
-        # get the split for the current chromosome
-        split_name = chromosome_splits[chrom_num]
-        if verbose:
-            _logger.info(f"Saving {split_name} data for chromosome: {chrom_num}")
-        split_dir = f"{file_path}{split_name}/"
-        seq_cons_file = f"{split_dir}{chrom_num}.npz"
-        os.makedirs(split_dir, exist_ok=True)
-        np.savez_compressed(seq_cons_file, sequence=sequence, conservation=vals)
-
-        #free memory
-        del sequence, vals
-        gc.collect()
+        print(f"Finished processing chromosome: {chrom}")
 
     # close the bigwig file
     bw.close()
     if verbose:
-        _logger.info(f"Processing chromosome: {chrom}")
+        _logger.info(f"Finished processing all chromosomes.")
 
 
 def main():
@@ -137,6 +133,12 @@ def main():
         default="/home/mica/gamba/data_processing/data/240-mammalian/splits.json",
         help="Path to the splits JSON file",
     )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=1000000,  # chunk size as a parameter
+        help="Chunk size for processing large chromosomes",
+    )
     args = parser.parse_args()
 
     # load the BED file to pandas df
@@ -145,9 +147,10 @@ def main():
     )
 
     make_datasets(
-        args.bigwig_file, bed, args.file_path, args.genome_fasta, args.splits_file
+        args.bigwig_file, bed, args.file_path, args.genome_fasta, args.splits_file, chunk_size=args.chunk_size
     )
 
 
 if __name__ == "__main__":
     main()
+

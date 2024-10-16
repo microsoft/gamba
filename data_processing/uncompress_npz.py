@@ -30,20 +30,19 @@ def main():
     parser.add_argument(
         "--file_path",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/",
         help="Directory to find files to uncompress",
     )
     parser.add_argument(
         "--splits_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/splits.json",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/splits.json",
         help="Path to the splits JSON file",
     )
     args = parser.parse_args()
 
     #full list of chromosomes 1-22 + X
-    #chromosomes = [str(i) for i in range(1, 23)] + ["X"]
-    chromosomes = ["2", "12"]
+    chromosomes = [str(i) for i in range(1, 23)] + ["X"]
     uncompress_and_save(chromosomes, args.splits_file, args.file_path)
 
 if __name__ == "__main__":

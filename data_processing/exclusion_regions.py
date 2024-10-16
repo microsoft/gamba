@@ -121,25 +121,25 @@ def main():
     parser.add_argument(
         "--fasta_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
         help="Path to the human genome fasta file",
     )
     parser.add_argument(
         "--bed_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/hg38.bed",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.bed",
         help="File name of the bed file",
     )
     parser.add_argument(
         "--exclusion_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/centromeres.txt",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/centromeres.txt",
         help="File name of the exclusion regions file",
     )
     parser.add_argument(
         "--output_file",
         type=str,
-        default="/home/t-mconsens/gamba/data_processing/data/240-mammalian/regions",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/regions",
         help="File name to save the non-excluded regions",
     )
     args = parser.parse_args()
