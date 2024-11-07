@@ -21,6 +21,20 @@ def read_exclusion_file(exclusion_file):
                 exclusion_regions[chrom].append((chrom_start, chrom_end))
     return exclusion_regions
 
+def read_bed_file(bed_file):
+    regions = {}
+    with open(bed_file, "r") as file:
+        for line in file:
+            parts = line.strip().split("\t")
+            if len(parts) >= 3:  # Assuming chrom, start, end
+                chrom = parts[0]
+                chrom_start = int(parts[1])
+                chrom_end = int(parts[2])
+                if chrom not in regions:
+                    regions[chrom] = []
+                regions[chrom].append((chrom_start, chrom_end))
+    return regions
+
 
 def merge_intervals(intervals):
     print("merging intervals")
@@ -142,6 +156,12 @@ def main():
         default="/home/mica/gamba/data_processing/data/240-mammalian/regions",
         help="File name to save the non-excluded regions",
     )
+    parser.add_argument(
+        "--repeats_bed_file",
+        type=str,
+        default="/home/mica/gamba/data_processing/data/240-mammalian/repeats_hg38.bed",
+        help="File name of the repeats regions file",
+    )
     args = parser.parse_args()
 
     # load the BED file to pandas df
@@ -151,6 +171,15 @@ def main():
 
     # read the exclusion regions (centromeres)
     exclusion_regions = read_exclusion_file(args.exclusion_file)
+
+    # read the exclusion regions (repeats from bed file)
+    repeats_regions = read_bed_file(args.repeats_bed_file)
+
+    # merge repeats regions with exclusion regions
+    for chrom, intervals in repeats_regions.items():
+        if chrom not in exclusion_regions:
+            exclusion_regions[chrom] = []
+        exclusion_regions[chrom].extend(intervals)
 
     save_non_excluded_regions(args.fasta_file, bed, exclusion_regions, args.output_file)
 

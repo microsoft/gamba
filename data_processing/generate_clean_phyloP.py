@@ -16,8 +16,8 @@ from gamba.constants import DNA_ALPHABET_PLUS
 _logger = logging.getLogger(__name__)
 
 
-
 def make_datasets(
+    chromosome: str,
     bigwig_file: str,
     bed: pd.DataFrame,
     file_path: str,
@@ -53,8 +53,11 @@ def make_datasets(
     # dictionary to store chromosome sizes
     chrom_sizes = {}
 
+    # filter the bed file for the given chromosome
+    chrom_bed = bed[bed["chrom"] == chromosome]
+
     # iterate over the BED file
-    for index, row in bed.iterrows():
+    for index, row in chrom_bed.iterrows():
         # get the chromosome and size from the BED file
         chrom = row["chrom"]
         start = row["start"]
@@ -165,6 +168,12 @@ def main():
         default="/home/mica/gamba/data_processing/data/240-mammalian/splits.json",
         help="Path to the splits JSON file",
     )
+    parser.add_argument(
+        "--chromosome",
+        type=str,
+        default="chr1",
+        help="Chromosome to analyze",
+    )
     args = parser.parse_args()
 
     # load the BED file to pandas df
@@ -172,8 +181,10 @@ def main():
         args.bed_file, sep="\t", header=None, names=["chrom", "start", "end"]
     )
 
+    print("chromosome is:", args.chromosome)
+
     make_datasets(
-        args.bigwig_file, bed, args.file_path, args.genome_fasta, args.splits_file
+        args.chromosome, args.bigwig_file, bed, args.file_path, args.genome_fasta, args.splits_file
     )
 
 
