@@ -107,12 +107,12 @@ def load_config_and_model(
     )
     # create the model
     model, block = create_model(
-        task, config["model_type"], config["model_config"], tokenizer.mask_id.item()
+        task, config["model_type"], config["model_config"], tokenizer.mask_id.item(), 
     )
 
     #get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
-    d_model = config.get("d_model", 576)
-    nhead = config.get("n_head", 8)
+    d_model = config.get("d_model", 576) #576/2
+    nhead = config.get("n_head", 8)  
     n_layers = config.get("n_layers", 6)
     dim_feedforward = config.get("dim_feedforward", d_model)
     padding_id = config.get("padding_id", 0)
@@ -200,20 +200,30 @@ def get_dataloader(
         train_sortish_sampler = SortishSampler(
             len_train, config["bucket_size"], num_replicas=WORLD_SIZE, rank=RANK
         )
-        train_sampler = ApproxBatchSampler(
-            train_sortish_sampler,
-            config["max_tokens"],
-            config["max_batch_size"],
-            len_train,
-            #batch_mult=8,
-        )
-        dl_train = DataLoader(
-            dataset=ds_train,
-            shuffle=True,
-            batch_size=32,
-            num_workers=4,
-            collate_fn=collator,
-        )
+        
+        if WORLD_SIZE > 1:
+            train_sampler = ApproxBatchSampler(
+                train_sortish_sampler,
+                config["max_tokens"],
+                config["max_batch_size"],
+                len_train,
+                #batch_mult=8,
+                )
+            dl_train = DataLoader(
+                dataset=ds_train,
+                shuffle=True,
+                batch_sampler=train_sampler,
+                num_workers=4,
+                collate_fn=collator,
+            )
+        else:
+            dl_train = DataLoader(
+                dataset=ds_train,
+                shuffle=True,
+                batch_size=32,
+                num_workers=4,
+                collate_fn=collator,
+            )
         # load the val dataset:
         ds_val = ConservationDataset(
             data_dir,
@@ -227,14 +237,14 @@ def get_dataloader(
         dl_val = DataLoader(
             dataset=ds_val,
             shuffle=True,
-            batch_size=64,
+            batch_size=32,
             num_workers=16,
             collate_fn=collator,
         )
     else:
         # load the dataset
         ds_train = ConservationDataset(
-            data_dir, "train", num_sequences=3000000, max_len=config["max_len"]
+            data_dir, "train", num_sequences=800000, max_len=config["max_len"]
         )
         # load the val dataset
         ds_val = ConservationDataset(
@@ -260,14 +270,15 @@ def get_dataloader(
 
         dl_train = DataLoader(
             dataset=ds_train,
-            batch_sampler=train_sampler,
+            batch_size=48,
+            #batch_sampler=train_sampler,
             num_workers=8,
             collate_fn=collator,
             pin_memory=True,
         )
         dl_val = DataLoader(
             dataset=ds_val,
-            batch_size=64,
+            batch_size=48,
             num_workers=8,
             collate_fn=collator,
             pin_memory=True,
@@ -345,8 +356,10 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
     total_seqs = 0
     total_ce_loss = 0
     total_gaussian_loss = 0
+    num_batches= 0
     for batch in val_loader:
         output = step(model, batch, None, None, training=False)
+        num_batches += 1
         with torch.no_grad():
             reduce_tensor = torch.stack(
                 (
@@ -358,10 +371,15 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
             )
             if WORLD_SIZE > 1:
                 dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
-        total_tokens += int(reduce_tensor[0].item())
-        total_seqs += int(reduce_tensor[1].item())
-        total_ce_loss += reduce_tensor[2].item()
-        total_gaussian_loss += reduce_tensor[3].item()
+                total_tokens += int(reduce_tensor[0].item())
+                total_seqs += int(reduce_tensor[1].item())
+                total_ce_loss += reduce_tensor[2].item()
+                total_gaussian_loss += reduce_tensor[3].item()
+            else:
+                total_tokens += output["n_processed"]
+                total_seqs += output["n_seqs"]
+                total_ce_loss += output["cross_entropy_loss"]
+                total_gaussian_loss += output["gaussian_loss"]
     if RANK == 0:
         with open(csv_fpath, "a") as f:
             f.write(
@@ -369,8 +387,8 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
             )
         wandb.log(
             {
-                "val_ce_loss": total_ce_loss,
-                "val_gaussian_loss": total_gaussian_loss,
+                "val_ce_loss": total_ce_loss / num_batches,
+                "val_gaussian_loss": total_gaussian_loss/ num_batches,
                 "tokens_validated": total_tokens,
                 "nsteps": train_step,
                 "epoch": epoch,
@@ -391,15 +409,24 @@ def save_checkpoint(
 ) -> None:
     # save the new checkpoint
     out_path = os.path.join(out_dir, f"dcp_{step}")
+    # ensure that the outpath directory exists
+    os.makedirs(out_path, exist_ok=True)
     print(f"Saving checkpoint to {out_path}", flush=True)
+
     model_state, optim_state = get_state_dict(model, optimizer)
     sd = {
         "model_state_dict": model_state,
         "optimizer_state_dict": optim_state,
     }
-    fs_storage_writer = torch.distributed.checkpoint.FileSystemWriter(out_path)
-    _ = dcp.save(sd, storage_writer=fs_storage_writer)
-    
+
+    if WORLD_SIZE > 1:
+        # distributed saving
+        fs_storage_writer = torch.distributed.checkpoint.FileSystemWriter(out_path)
+        _ = dcp.save(sd, storage_writer=fs_storage_writer)
+    else:
+        # non-distributed saving
+        torch.save(sd, os.path.join(out_path, "model_optimizer.pt"))
+
     if RANK == 0:
         sched_state = scheduler.state_dict()
         sd = {
@@ -411,7 +438,7 @@ def save_checkpoint(
         }
         torch.save(sd, os.path.join(out_path, "scheduler.pt"))
 
-    # old checkpoints
+    # managing old checkpoints
     checkpoint_pattern = os.path.join(out_dir, "dcp_*")
     checkpoints = sorted(glob.glob(checkpoint_pattern), key=os.path.getmtime)  # Sort by modification time
     
@@ -473,7 +500,8 @@ def epoch(
                     output["gaussian_loss"],
                 )
             )
-            dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
+            if WORLD_SIZE > 1:
+                dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
 
         total_steps += 1
         total_tokens += int(reduce_tensor[0].item())
@@ -543,17 +571,25 @@ def load_checkpoint(
             "model_state_dict": model_state_dict,
             "optimizer_state_dict": optimizer_state_dict,
         }
-        dcp.load(
-            state_dict=state_dict,
-            storage_reader=fs_storage_reader,
-        )
-        # sets our state dicts on the model and optimizer, now that we've loaded
-        set_state_dict(
-            model,
-            optimizer,
-            model_state_dict=model_state_dict,
-            optim_state_dict=optimizer_state_dict,
-        )
+        if WORLD_SIZE > 1:
+            print("Using distributed checkpoint loading...", flush=True)
+            dcp.load(
+                state_dict=state_dict,
+                storage_reader=fs_storage_reader,
+            )
+            # sets our state dicts on the model and optimizer, now that we've loaded
+            set_state_dict(
+                model,
+                optimizer,
+                model_state_dict=model_state_dict,
+                optim_state_dict=optimizer_state_dict,
+            )
+        else:
+            #non-distributed loading
+            print("Using standard checkpoint loading...", flush=True)
+            checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"))
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
         sd = torch.load(
             os.path.join(ckpt_path, "scheduler.pt"), map_location=torch.device("cpu")
@@ -687,7 +723,8 @@ def train(args: argparse.Namespace) -> None:
         if not args.mini_run:
             if args.verbose:
                 print(RANK, "Setting epoch")
-            dl_train.batch_sampler.sampler.set_epoch(e + 1)
+            if WORLD_SIZE > 1:
+                dl_train.batch_sampler.sampler.set_epoch(e + 1)
 
         print("going into epoch")
         total_steps, total_tokens, total_seqs = epoch(
@@ -723,6 +760,8 @@ def train(args: argparse.Namespace) -> None:
             csv_fpath,
         )
         print(f"Epoch {e} complete in {datetime.datetime.now() - start_time}")
+        #get new dataset for validation & training each epoch:
+        dl_train, dl_valid = get_dataloader(config, tokenizer, args)
 
 
 def main():
