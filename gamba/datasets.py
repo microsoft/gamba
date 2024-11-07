@@ -236,7 +236,8 @@ class ConservationDataset(Dataset):
             ):
                 raise ValueError("Chromosome not in split")
             self.chromosomes = self.specific_chromosomes
-        chrom_sizes_file = osp.join(data_dir, "chrom_sizes.txt")
+        #change to cleaned
+        chrom_sizes_file = osp.join(data_dir, "cleaned_chrom_sizes.txt")
 
         # read the chrom_sizes.txt file and create a dictionary with modified keys
         with open(chrom_sizes_file, "r") as f:
@@ -307,9 +308,10 @@ class ConservationDataset(Dataset):
         chrom, seq_idx = self.sequences[idx]
        
         #load seq npy as mmap_mode='r'
-        seq_file = np.load(osp.join(self.data_dir, self.split, f"{chrom}_sequence.npy"), mmap_mode='r')
+        #get small dataset
+        seq_file = np.load(osp.join(self.data_dir, self.split, f"{chrom}_sequence_small.npy"), mmap_mode='r')
         #load cons npy as mmap_mode='r'
-        cons_file = np.load(osp.join(self.data_dir, self.split, f"{chrom}_conservation.npy"), mmap_mode='r')
+        cons_file = np.load(osp.join(self.data_dir, self.split, f"{chrom}_conservation_small.npy"), mmap_mode='r')
 
         # print("current chromosome size:", self.chrom_sizes[chrom])
         # print("file data length of sequence:", len(file_data["sequence"]))
