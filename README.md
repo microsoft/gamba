@@ -25,6 +25,9 @@ curl https://storage.googleapis.com/basenji_barnyard2/hg38.ml.fa.gz > data_proce
 # download centromere locations
 curl https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/centromeres.txt.gz > data_processing/data/240-mammalian/centromeres.txt.gz
 gunzip data_processing/data/240-mammalian/centromeres.txt.gz
+#download the repeat locations
+curl https://www.dfam.org/releases/current/annotations/hg38/hg38.nrph.hits.gz > data_processing/data/240-mammalian/hg38.nrph.hits.gz
+gunzip data_processing/data/240-mammalian/hg38.nrph.hits.gz
 curl https://cgl.gi.ucsc.edu/data/cactus/241-mammalian-2020v2-hub/Homo_sapiens/241-mammalian-2020v2.bigWig > data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig
 gunzip data_processing/data/240-mammalian/hg38.ml.fa.gz
 python data_processing/generate_per_nucleotide_conservation.py
