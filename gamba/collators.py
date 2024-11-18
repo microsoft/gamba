@@ -262,32 +262,64 @@ class gLMCollator:
     def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray]]):
         # unpack the input data
         # there are num_workers of data, so i need to do for each worker in data, unzip the sequence, scaling
+        # convert sequences & cons to tensor
+        sequence = [torch.tensor(s, dtype=torch.long) for s, _ in data]
+        scaling = [torch.tensor(s, dtype=torch.float32) for _, s in data]
 
-        # sequence, scaling, gap = zip(*data)[]
-        # sequence is already tokenized
-        # wrap sequence in start and stop
+        # randomly reverse complement sequences
+        reverse_flags = torch.rand(len(sequence)) > 0.5  # 50% chance to reverse complement
+        for i, reverse in enumerate(reverse_flags):
+            if reverse:
+                if (sequence[i] == 4).any():
+                    continue
+                sequence[i] = self.reverse_complement(sequence[i])
+                #reverse the corresponding scaling
+                scaling[i] = scaling[i].flip(dims=[0])
+                
+         # wrap sequence in start and stop
         sequence = [
-            np.concatenate([self.start_id, s, self.stop_id], axis=0) for s, _ in data
+            torch.cat([torch.tensor(self.start_id, dtype=torch.long), s, torch.tensor(self.stop_id, dtype=torch.long)])
+            for s in sequence
         ]
+
         # add 0s as start and stop around the scaling and error params
         scaling = [
-            np.pad(s, (1, 1), "constant", constant_values=(0, 0)) for _, s in data
+            torch.nn.functional.pad(s, (1, 1), value=0) for s in scaling
         ]
-        # gap = [np.pad(g, (1, 1), "constant", constant_values=(0, 0)) for g in gap]
+        
         # pad each array type accordingly
         sequence, seq_lbls = self.pad_arrays(sequence, dtype=torch.long)
         scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
-        # print(
-        #     "shape of padded arrays (sequence & scaling): ",
-        #     sequence.shape,
-        #     scaling.shape,
-        # )
-        # gap, gap_lbs = self.pad_arrays(gap, dtype=torch.float32)
 
-        out = torch.stack([sequence, scaling], dim=1)  # , gap])
-        lbls = torch.stack([seq_lbls, scale_lbs], dim=1)  # , gap_lbs])
+        out = torch.stack([sequence, scaling], dim=1)
+        lbls = torch.stack([seq_lbls, scale_lbs], dim=1)
 
         return out, lbls
+        # sequence, scaling, gap = zip(*data)[]
+        # sequence is already tokenized
+        # wrap sequence in start and stop
+        # sequence = [
+        #     np.concatenate([self.start_id, s, self.stop_id], axis=0) for s, _ in data
+        # ]
+        # # add 0s as start and stop around the scaling and error params
+        # scaling = [
+        #     np.pad(s, (1, 1), "constant", constant_values=(0, 0)) for _, s in data
+        # ]
+        # # gap = [np.pad(g, (1, 1), "constant", constant_values=(0, 0)) for g in gap]
+        # # pad each array type accordingly
+        # sequence, seq_lbls = self.pad_arrays(sequence, dtype=torch.long)
+        # scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
+        # # print(
+        # #     "shape of padded arrays (sequence & scaling): ",
+        # #     sequence.shape,
+        # #     scaling.shape,
+        # # )
+        # # gap, gap_lbs = self.pad_arrays(gap, dtype=torch.float32)
+
+        # out = torch.stack([sequence, scaling], dim=1)  # , gap])
+        # lbls = torch.stack([seq_lbls, scale_lbs], dim=1)  # , gap_lbs])
+
+        # return out, lbls
 
     def pad_arrays(self, sequence, dtype):
         # pad to a multiple of pad_to_mult
@@ -309,6 +341,16 @@ class gLMCollator:
         lbls[lbls == self.tokenizer.pad_id] = -100
 
         return out, lbls
+    
+    def reverse_complement(self, sequence: torch.Tensor) -> torch.Tensor:
+        """
+        Reverse complement DNA sequences where:
+        G=0, A=1, T=2, C=3
+        """
+        complement_map = torch.tensor([3, 2, 1, 0], device=sequence.device)  # C, T, A, G
+        # apply complement and reverse
+        reverse_comp = complement_map[sequence.flip(dims=[-1])]
+        return reverse_comp
 
 
 class MSAOAMasksCollator:
