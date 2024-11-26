@@ -268,14 +268,20 @@ class gLMCollator:
 
         # randomly reverse complement sequences
         reverse_flags = torch.rand(len(sequence)) > 0.5  # 50% chance to reverse complement
-        for i, reverse in enumerate(reverse_flags):
-            if reverse:
-                if (sequence[i] == 4).any():
-                    continue
-                sequence[i] = self.reverse_complement(sequence[i])
-                #reverse the corresponding scaling
-                scaling[i] = scaling[i].flip(dims=[0])
-                
+        reverse_indices = torch.where(reverse_flags)[0]
+        for i in reverse_indices:
+            if (sequence[i] == 4).any():
+                continue
+            sequence[i] = self.reverse_complement(sequence[i])
+            scaling[i] = scaling[i].flip(dims=[0])
+
+        # 50% of the time, flip the sequence
+        flip_flags = torch.rand(len(sequence)) > 0.5
+        flip_indices = torch.where(flip_flags)[0]
+        sequence[flip_indices] = sequence[flip_indices].flip(dims=[1])
+        scaling[flip_indices] = scaling[flip_indices].flip(dims=[1])
+
+
          # wrap sequence in start and stop
         sequence = [
             torch.cat([torch.tensor(self.start_id, dtype=torch.long), s, torch.tensor(self.stop_id, dtype=torch.long)])
