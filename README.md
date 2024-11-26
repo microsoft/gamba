@@ -49,5 +49,28 @@ touch data_processing/data/240-mammalian/splits.json
 # }
 #make exclusions and generate clean data
 python data_processing/exclusion_regions.py
-python data_processing/generate_clean_phyloP.py
+python data_processing/generate_clean_phyloP.py #this needs to be run for EACH chromosome something like:
+# #!/bin/bash
+# # loop through chromosomes 1 to 22 and X
+# for chrom in {1..22} X
+# do
+#     echo "running for chromosome chr$chrom"
+#     python data_processing/generate_clean_phyloP.py --chromosome "chr$chrom"
+# done
+# now need to uncompress the data before running 
+python data_procesing/uncompress_npz.py --type "small"
+python assert_chromosome_sizes.py --type "small" #check this returns correct
+#at the end you should have this file structure in data_processing/data/240-mammalian
+# test /
+#      2_conservation_small.npy
+#      2_sequence_small.npy
+#      2.npz
+#      22_conservation_small.npy
+#      22_sequence_small.npy
+#      22.npz
+# train/
+#    (with similar but for chr1,4,5,6,7,8,9,10,11,12,13,14,15,17,18,19,20,21,X )
+# valid/
+#    (with similar but for chr3 and 16)
+python /src/test_sequence.py #(do not do mini-run)
 ```
