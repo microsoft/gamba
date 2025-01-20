@@ -124,8 +124,12 @@ class GaussianNLLLoss(nn.Module):
         mean = torch.exp(mean)
 
         #print the mean and variance
-        print(f"mean: {mean}")
-        print(f"var: {var}")
+        #print(f"mean: {mean}")
+        #print(f"var: {var}")
+
+        #print variance if very small
+        if torch.any(var < 1e-6):
+            print("variance is very small: ", var)
 
         # loss using PyTorch's built-in GaussianNLLLoss
         loss = self.loss_fn(mean, tgt, var)

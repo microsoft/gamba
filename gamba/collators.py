@@ -252,12 +252,14 @@ class gLMCollator:
         self,
         tokenizer: Tokenizer,
         pad_to_multiple_of: Optional[int] = None,
+        test: bool = False,
     ) -> None:
         """A collator pads sequences for glm"""
         self.tokenizer = tokenizer
         self.start_id = self.tokenizer.tokenize([START])
         self.stop_id = self.tokenizer.tokenize([STOP])
         self.pad_to_mult = pad_to_multiple_of
+        self.test = test
 
     def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray]]):
         # unpack the input data
@@ -267,22 +269,23 @@ class gLMCollator:
         scaling = [torch.tensor(s, dtype=torch.float32) for _, s in data]
 
         # randomly reverse complement sequences
-        reverse_flags = torch.rand(len(sequence)) > 0.5  # 50% chance to reverse complement
-        reverse_indices = torch.where(reverse_flags)[0]
-        for i in reverse_indices:
-            if (sequence[i] == 4).any():
-                continue
-            sequence[i] = self.reverse_complement(sequence[i])
-            scaling[i] = scaling[i].flip(dims=[0])
+        if not self.test:
+            reverse_flags = torch.rand(len(sequence)) > 0.5  # 50% chance to reverse complement
+            reverse_indices = torch.where(reverse_flags)[0]
+            for i in reverse_indices:
+                if (sequence[i] == 4).any():
+                    continue
+                sequence[i] = self.reverse_complement(sequence[i])
+                scaling[i] = scaling[i].flip(dims=[0])
 
         # 50% of the time, flip the sequence
-        flip_flags = torch.rand(len(sequence)) > 0.5
-        flip_indices = torch.where(flip_flags)[0]
-        sequence[flip_indices] = sequence[flip_indices].flip(dims=[1])
-        scaling[flip_indices] = scaling[flip_indices].flip(dims=[1])
+        # flip_flags = torch.rand(len(sequence)) > 0.5
+        # flip_indices = torch.where(flip_flags)[0]
+        # sequence[flip_indices] = sequence[flip_indices].flip(dims=[1])
+        # scaling[flip_indices] = scaling[flip_indices].flip(dims=[1])
 
 
-         # wrap sequence in start and stop
+        # wrap sequence in start and stop
         sequence = [
             torch.cat([torch.tensor(self.start_id, dtype=torch.long), s, torch.tensor(self.stop_id, dtype=torch.long)])
             for s in sequence
@@ -358,6 +361,64 @@ class gLMCollator:
         reverse_comp = complement_map[sequence.flip(dims=[-1])]
         return reverse_comp
 
+class gLMCollatorWithDegeneracies(gLMCollator):
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        pad_to_multiple_of: Optional[int] = None,
+        test: bool = False,
+    ) -> None:
+        """A collator pads sequences for glm with degeneracies"""
+        super().__init__(tokenizer, pad_to_multiple_of, test)
+
+    def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray]]):
+        # Unpack the input data
+        sequence = [torch.tensor(s, dtype=torch.long) for s, _, _ in data]
+        scaling = [torch.tensor(s, dtype=torch.float32) for _, s, _ in data]
+        degeneracies = [torch.tensor([int(d) for d in deg.split()], dtype=torch.long) for _, _, deg in data]
+
+        print(f"lengths of sequences: {len(sequence[0])}, lengths of scalings: {len(scaling[0])}, lengths of degeneracies: {len(degeneracies[0])}")
+        print(f"lengths of sequences: {len(sequence[1])}, lengths of scalings: {len(scaling[1])}, lengths of degeneracies: {len(degeneracies[1])}")
+        
+        # Randomly reverse complement sequences
+        if not self.test:
+            reverse_flags = torch.rand(len(sequence)) > 0.5  # 50% chance to reverse complement
+            reverse_indices = torch.where(reverse_flags)[0]
+            for i in reverse_indices:
+                if (sequence[i] == 4).any():
+                    continue
+                sequence[i] = self.reverse_complement(sequence[i])
+                scaling[i] = scaling[i].flip(dims=[0])
+                degeneracies[i] = degeneracies[i].flip(dims=[0])
+
+        # Wrap sequence in start and stop
+        sequence = [
+            torch.cat([torch.tensor(self.start_id, dtype=torch.long), s, torch.tensor(self.stop_id, dtype=torch.long)])
+            for s in sequence
+        ]
+
+        # Add 0s as start and stop around the scaling and degeneracies
+        scaling = [
+            torch.nn.functional.pad(s, (1, 1), value=0) for s in scaling
+        ]
+        degeneracies = [
+            torch.nn.functional.pad(d, (1, 1), value=0) for d in degeneracies
+        ]
+
+        #reprint the lengths
+        print("AFTEER PADDING")
+        print(f"lengths of sequences: {len(sequence[0])}, lengths of scalings: {len(scaling[0])}, lengths of degeneracies: {len(degeneracies[0])}")
+        print(f"lengths of sequences: {len(sequence[1])}, lengths of scalings: {len(scaling[1])}, lengths of degeneracies: {len(degeneracies[1])}")
+        
+        # Pad each array type accordingly
+        sequence, seq_lbls = self.pad_arrays(sequence, dtype=torch.long)
+        scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
+        degeneracies, degen_lbs = self.pad_arrays(degeneracies, dtype=torch.long)
+
+        out = torch.stack([sequence, scaling, degeneracies], dim=1)
+        lbls = torch.stack([seq_lbls, scale_lbs, degen_lbs], dim=1)
+
+        return out, lbls
 
 class MSAOAMasksCollator:
     def __init__(

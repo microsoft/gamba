@@ -185,7 +185,7 @@ class JambagambaModel(nn.Module):
 
         # need to split d_model into lm head, scaling head and gap head
         # self.each_dim = int(d_model / 3)
-        #self.each_dim = int(d_model / 2)
+        self.each_dim = int(d_model / 2)
         self.lm_head = nn.Linear(d_model, jambalm.vocab_size)
         self.scaling_head = nn.Linear(d_model, 2)
         # self.gap_head = nn.Linear(self.each_dim, 1)
@@ -215,19 +215,19 @@ class JambagambaModel(nn.Module):
         seq_tgt, conservation_tgt = tgt.split(1, dim=1)
         seq_tgt = seq_tgt.squeeze(1).long()
         conservation_tgt = conservation_tgt.squeeze(1)
-        print(f"conservation tgt shape:", conservation_tgt.shape)
-        print(f"seq tgt shape:", seq_tgt.shape)
+        #print(f"conservation tgt shape:", conservation_tgt.shape)
+        #print(f"seq tgt shape:", seq_tgt.shape)
         # gap_tgt = gap_tgt.squeeze(0)
         # 0 is a token not a padding
         n_tokens = (seq_tgt >= 0).sum()
 
         # seq, conservation, gap = src.split(1, dim=0)
         seq, conservation = src.split(1, dim=1)
-        print("shape of seq: ", seq.shape)
+        #print("shape of seq: ", seq.shape)
         seq = seq.squeeze(1).long()
-        print("post squeeze & long shape of seq: ", seq.shape)
+        #print("post squeeze & long shape of seq: ", seq.shape)
         conservation = conservation.squeeze(1)
-        print(f"conservation shape:", conservation.shape)
+        #print(f"conservation shape:", conservation.shape)
         # gap = gap.squeeze(0)
         device = src.device
 
@@ -236,7 +236,7 @@ class JambagambaModel(nn.Module):
 
         # embed seq, conservation and gap separately
         emb_seq = self.seq_embedding(seq)
-        print(f"embed seq/input embeds shape:", emb_seq.shape)
+        #print(f"embed seq/input embeds shape:", emb_seq.shape)
 
         # gap has shape (batch, seq_length)
         # gap_reshaped = gap.view(-1, 1)  # reshape to (seq_length, batch)
@@ -258,15 +258,16 @@ class JambagambaModel(nn.Module):
         # print(
         #     f"shapes of emb_seq, emb_conservation, emb_gap: {emb_seq.shape}, {emb_conservation.shape}, {emb_gap.shape}"
         # )
-        # next, concatenate the embeddings along the hidden dimension and send to the model
-        # inputs_embeds = torch.cat([emb_seq, emb_conservation, emb_gap], dim=-1)
+        #next, concatenate the embeddings along the hidden dimension and send to the model
+        #inputs_embeds = torch.cat([emb_seq, emb_conservation, emb_gap], dim=-1)
 
         #no more conservation embedding
         #inputs_embeds = torch.cat([emb_seq, emb_conservation], dim=-1)
 
-        inputs_embeds = emb_seq#torch.transpose(emb_seq, 1, 2)
+        inputs_embeds = emb_seq
+        #inputs_embeds= torch.transpose(emb_seq, 1, 2)
 
-        print(f"shape of input_embeds: {inputs_embeds.shape}")
+        #print(f"shape of input_embeds: {inputs_embeds.shape}")
         # need to set the embedded inputs to inputs_embeds to values in the Jamba model
         output = self.embedder(inputs_embeds=inputs_embeds)["last_hidden_state"]
         # take the output of the model and split it along the last dimension
@@ -306,15 +307,15 @@ class JambagambaModel(nn.Module):
         # apply PoissonNLLLoss from losses.py on the gap_logits
         # poisson_loss = self.gap_loss_func(gap_logits[:, :-1, :], gap_tgt[:, 1:])
 
-        print("CE LOSS: ", ce_loss)
-        print("GAUSSIAN LOSS: ", gaussian_loss)
+        #print("CE LOSS: ", ce_loss)
+        #print("GAUSSIAN LOSS: ", gaussian_loss)
         # check if any loss is NaN
         if math.isnan(ce_loss):
             raise ValueError("CE Loss is NaN")
         if math.isnan(gaussian_loss):
             raise ValueError("Gaussian Loss is NaN")
         # print("POISSON LOSS: ", poisson_loss)
-        print("LOSS:", ce_loss + gaussian_loss)
+        #print("LOSS:", ce_loss + gaussian_loss)
 
         # print(f"shape of the gap_logits: {gap_logits.shape}")
         # print(f"shape of the scaling_logits: {scaling_logits.shape}")
@@ -340,13 +341,125 @@ class JambagambaModel(nn.Module):
             "cross_entropy_loss": ce_loss,
             "gaussian_loss": gaussian_loss,
             OTHER_METRICS_KEY: other_metrics,
+            "accuracy": seq_accu,
             "n_tokens": n_tokens,
             "n_seqs": n_seq,
             "n_processed": n_processed,
+            "representation": output,
+            "conservation_tgt": conservation_tgt,
         }
         return outputs
 
+class JambaGambaModelWithDegeneracies(nn.Module):
+    def __init__(
+        self,
+        jambalm: nn.Module,
+        d_model: int,
+        nhead: int,
+        dim_feedfoward: int,
+        n_layers: int,
+        padding_id: int,
+    ):
+        super(JambaGambaModelWithDegeneracies, self).__init__()
+        self.embedder = ARDiffusionModel(jambalm).module.model
 
+        # need to split d_model into lm head, scaling head
+        self.each_dim = int(d_model / 2)
+        self.lm_head = nn.Linear(d_model, jambalm.vocab_size)
+        self.scaling_head = nn.Linear(d_model, 2)
+       
+
+        #seq_embedding gets full dimensionality, there is no more any value embedding
+        self.seq_embedding = nn.Embedding(jambalm.vocab_size, d_model)
+        
+
+        # real number loss
+        self.cons_loss_func = GaussianNLLLoss()
+
+     
+
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> dict:
+        # Split the target tensor into sequence and conservation targets
+        seq_tgt, conservation_tgt, degeneracies_tgt = tgt.split(1, dim=1)
+        seq_tgt = seq_tgt.squeeze(1).long()
+        conservation_tgt = conservation_tgt.squeeze(1)
+        degeneracies_tgt = degeneracies_tgt.squeeze(1)
+        n_tokens = (seq_tgt >= 0).sum()
+
+        # Split the source tensor into sequence and conservation inputs
+        seq, conservation, degeneracies = src.split(1, dim=1)
+        seq = seq.squeeze(1).long()
+        conservation = conservation.squeeze(1)
+        degeneracies = degeneracies.squeeze(1)
+        device = src.device
+
+        n_seq = torch.tensor(seq.size(1), device=device)
+        n_processed = n_tokens - seq_tgt.size(1)  # -1 token per sequence for the shift
+
+        # Embed the sequence
+        emb_seq = self.seq_embedding(seq)
+        inputs_embeds = emb_seq
+
+        # Pass the embedded inputs through the model
+        output = self.embedder(inputs_embeds=inputs_embeds)["last_hidden_state"]
+
+        # Generate logits for sequence and scaling
+        seq_logits = self.lm_head(output)
+        scaling_logits = self.scaling_head(output)
+
+        # Exclude the logits for the first and last tokens for conservation
+        scaling_logits = scaling_logits[:, 1:-1]
+        conservation_tgt = conservation_tgt[:, 1:-1]
+        degeneracies_tgt = degeneracies_tgt[:, 1:-1]
+
+        # Apply cross-entropy loss on the sequence logits
+        ce_loss = F.cross_entropy(
+            seq_logits[:, :-1, :].reshape(-1, seq_logits.shape[-1]),
+            seq_tgt[:, 1:].flatten(),
+            reduction="mean",
+        )
+
+        # Apply GaussianNLLLoss on the scaling logits
+        gaussian_loss = self.cons_loss_func(
+            scaling_logits[:, :-1, :], conservation_tgt[:, 1:]
+        )
+
+        # Check if any loss is NaN
+        if math.isnan(ce_loss):
+            raise ValueError("CE Loss is NaN")
+        if math.isnan(gaussian_loss):
+            raise ValueError("Gaussian Loss is NaN")
+
+        # Compute the accuracy
+        with torch.no_grad():
+            pred_tok_seq = torch.argmax(seq_logits[:, :-1, :], dim=-1)
+            seq_accu = (
+                (pred_tok_seq == seq_tgt[:, 1:]) * (seq_tgt[:, 1:] >= 0)
+            ).float().sum() / n_tokens
+
+        other_metrics = {
+            "accuracy": seq_accu,
+        }
+        if hasattr(output, "aux_loss"):
+            other_metrics["ce_loss"] = ce_loss
+
+        outputs = {
+            "seq_logits": seq_logits,
+            "scaling_logits": scaling_logits,
+            "loss": ce_loss + gaussian_loss,
+            "cross_entropy_loss": ce_loss,
+            "gaussian_loss": gaussian_loss,
+            OTHER_METRICS_KEY: other_metrics,
+            "accuracy": seq_accu,
+            "n_tokens": n_tokens,
+            "n_seqs": n_seq,
+            "n_processed": n_processed,
+            "representation": output,
+            "conservation_tgt": conservation_tgt,
+            "degeneracies_tgt": degeneracies_tgt,
+        }
+        return outputs
+    
 def _create_bytenet(
     task: TaskType, model_config: dict, pad_id: int
 ) -> Tuple[ByteNetLM, Set[Type[ByteNetBlock]]]:
