@@ -7,7 +7,6 @@ import random
 import glob
 from typing import Optional, Sequence, Tuple, Type
 
-
 import numpy as np
 import wandb
 
@@ -176,7 +175,56 @@ def get_dataloader(
     else:
         raise ValueError(f"Unknown task: {config['task']}")
 
+
     # create the dataloader
+    if args.run_type =="test":
+        # load the dataset
+        print("making the dataset")
+        ds_test = ConservationDataset(
+            data_dir,
+            "test",
+            num_sequences=10000,
+            max_len=config["max_len"],
+            specific_chromosomes=["2", "22"],
+        )
+        test_idx = ds_test.indices
+        len_train = len(test_idx)
+        print(f"len(test_idx): {len(test_idx)}")
+        #print("validating sequences")
+        # start_time = time.time()
+        # ds_train.validate_sequences()
+        # end_time = time.time()
+        # print("done validating sequences")
+        # print(f"Validation took {end_time - start_time:.2f} seconds")
+
+        train_sortish_sampler = SortishSampler(
+            len_train, config["bucket_size"], num_replicas=WORLD_SIZE, rank=RANK
+        )
+        
+        if WORLD_SIZE > 1:
+            train_sampler = ApproxBatchSampler(
+                train_sortish_sampler,
+                config["max_tokens"],
+                config["max_batch_size"],
+                len_train,
+                #batch_mult=8,
+                )
+            dl_test = DataLoader(
+                dataset=ds_test,
+                shuffle=True,
+                batch_sampler=train_sampler,
+                num_workers=4,
+                collate_fn=collator,
+            )
+        else:
+            dl_test = DataLoader(
+                dataset=ds_test,
+                shuffle=True,
+                batch_size=48,
+                num_workers=4,
+                collate_fn=collator,
+            )
+        return dl_test
     if args.mini_run:
         # load the dataset
         print("making the dataset")
@@ -601,6 +649,44 @@ def load_checkpoint(
     else:
         return 0, 0, 0, 0
 
+def evaluate_model(model, dataloader, device):
+    model.eval()
+    total_ce_loss = 0
+    total_gaussian_loss = 0
+    num_batches = 0
+    total_tokens = 0
+    total_seqs = 0
+    total_accuracy = 0
+    with torch.no_grad():
+        for batch in dataloader:
+            output = step(model, batch, None, None, training=False)
+            num_batches += 1
+            with torch.no_grad():
+                reduce_tensor = torch.stack(
+                    (
+                        output["n_processed"],
+                        output["n_seqs"],
+                        output["cross_entropy_loss"],
+                        output["gaussian_loss"],
+                        output["accuracy"]
+                    )
+                )
+                if WORLD_SIZE > 1:
+                    dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
+                    total_tokens += int(reduce_tensor[0].item())
+                    total_seqs += int(reduce_tensor[1].item())
+                    total_ce_loss += reduce_tensor[2].item()
+                    total_gaussian_loss += reduce_tensor[3].item()
+                else:
+                    total_tokens += output["n_processed"]
+                    total_seqs += output["n_seqs"]
+                    total_ce_loss += output["cross_entropy_loss"]
+                    total_gaussian_loss += output["gaussian_loss"]
+                    total_accuracy += output["accuracy"]
+    ce_loss = total_ce_loss / num_batches
+    gaussian_loss = total_gaussian_loss / num_batches
+    accuracy = total_accuracy / num_batches
+    return accuracy, ce_loss, gaussian_loss
 
 def train(args: argparse.Namespace) -> None:
     print(
@@ -652,11 +738,18 @@ def train(args: argparse.Namespace) -> None:
     if args.verbose:
         print("Initializing data...", RANK)
     print("Initializing data for training...")
-    dl_train, dl_valid = get_dataloader(config, tokenizer, args)
+    if args.run_type == "test":
+        dl_test = get_dataloader(config, tokenizer, args)
+        #run eval with no epochs, no validation
+    else:
+        dl_train, dl_valid = get_dataloader(config, tokenizer, args)
     if args.verbose:
         print("Done initializing data.", RANK)
-    if RANK == 0:
+    if RANK == 0 and args.run_type != "test":
         print(f"Training on {len(dl_train.dataset)} sequences.")
+    else: 
+        if RANK == 0 and args.run_type == "test":
+            print(f"Testing on {len(dl_test.dataset)} sequences.")
     if args.verbose:
         print("Moving and sharding model...", RANK)
     # set the default device
@@ -705,6 +798,12 @@ def train(args: argparse.Namespace) -> None:
     initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
         model, optimizer, scheduler, args.out_fpath, args.last_step
     )
+    if args.run_type == "test":
+        accuracy, avg_ce_loss, avg_gaussian_loss = evaluate_model(model, dl_test, device=DEVICE)
+        print(f"Accuracy on test: {accuracy}")
+        print(f"Average CE Loss on test: {avg_ce_loss}")
+        print(f"Average Gaussian Loss on test: {avg_gaussian_loss}")
+        return
     initial_epoch = 0
     total_steps = 0
     total_tokens = 0
@@ -781,6 +880,7 @@ def main():
     parser.add_argument(
         "--random_seed", type=int, default=0
     )  # lambda reweighting term from Austin D3PM
+    parser.add_argument("--run_type", type=str, default="train")
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--no_wandb", action="store_true")
