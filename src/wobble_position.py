@@ -113,6 +113,27 @@ def load_gene_positions(input_file):
         return pickle.load(f)
 
 
+def check_continuous_stretches_bed_file(bed_file):
+    # Read the BED file into a DataFrame with specified data types
+    bed_df = pd.read_csv(bed_file, sep='\t', header=None, names=['chrom', 'start', 'end', 'degeneracy', 'reverse_complement', 'gene'])
+
+    # Check that the length of each continuous stretch matches the length of degeneracies
+    for index, row in bed_df.iterrows():
+        start = row['start']
+        end = row['end']
+        degeneracy = row['degeneracy']
+        degeneracy = degeneracy.split(' ')
+        degeneracy = [int(x) if x != '.' else -500 for x in degeneracy]
+        length_of_stretch = end - start 
+        length_of_degeneracies = len(degeneracy)
+
+        if length_of_stretch != length_of_degeneracies:
+            print(f"Error: Length of stretch ({length_of_stretch}) does not match length of degeneracies ({length_of_degeneracies}) for row {index}")
+        else:
+            continue
+            #print(f"Row {index} is valid: Length of stretch ({length_of_stretch}) matches length of degeneracies ({length_of_degeneracies})")
+
+
 class SequenceDataset(Dataset):
     def __init__(self, sequences, scores, deg):
         self.sequences = sequences
@@ -180,14 +201,24 @@ def evaluate_model_and_get_predictions(model, dataloader, device):
             true_degeneracies.append(degeneracies_tgt)
 
     print("NUM BATCHES: ", num_batches)
+    # Find the maximum length of the tensors
+    max_len = max([tensor.size(1) for tensor in conservation_logits])
+
+    # Pad all tensors to the maximum length using -100 as the padding value
+    conservation_logits = [torch.nn.functional.pad(tensor, (0, 0, 0, max_len - tensor.size(1)), value=-100) for tensor in conservation_logits]
+    true_phyloP = [torch.nn.functional.pad(tensor, (0, max_len - tensor.size(1)), value=-100) for tensor in true_phyloP]
+    true_degeneracies = [torch.nn.functional.pad(tensor, (0, max_len - tensor.size(1)), value=-100) for tensor in true_degeneracies]
+
+    # Stack the tensors
     conservation_logits = torch.cat(conservation_logits, dim=0)
     true_phyloP = torch.cat(true_phyloP, dim=0)
     true_degeneracies = torch.cat(true_degeneracies, dim=0)
- 
-    ce_loss = total_ce_loss / num_batches
-    gaussian_loss = total_gaussian_loss / num_batches
-    accuracy = total_accuracy / num_batches
-    return accuracy, ce_loss, gaussian_loss, conservation_logits, true_phyloP, true_degeneracies
+
+    avg_accuracy = total_accuracy / num_batches
+    avg_ce_loss = total_ce_loss / num_batches
+    avg_gaussian_loss = total_gaussian_loss / num_batches
+
+    return avg_accuracy, avg_ce_loss, avg_gaussian_loss, conservation_logits, true_phyloP, true_degeneracies
 
 def save_continuous_stretches_to_bed(chromosome, gene_positions, output_file):
     bed_data = []
@@ -273,7 +304,7 @@ def extract_gene_positions(bed_df):
         for i in range(1, len(gene_df)):
             start = gene_df.iloc[i]['start']
             end = gene_df.iloc[i]['end']
-            print(f"gene start {start}, gene end {end}")
+            #print(f"gene start {start}, gene end {end}")
             #check if degeneracy value is an integer, if not, we're going to end the gene here (this . is either at the start or end of a gene)
             if gene_df.iloc[i]['degeneracy'] == '.':
                 degeneracy = int(-500)
@@ -376,14 +407,16 @@ def process_bed_file(bed_df, genome, bw, tokenizer):
     scores_list = []
     degeneracies = []
     #valid_chromosomes = "chr1 chr2 chr3 chr4 chr5 chr6 chr7 chr8 chr9 chr10 chr11 chr12 chr13 chr14 chr15 chr16 chr17 chr18 chr19 chr20 chr21 chr22 chrX".split()
-    valid_chromosomes = "chr2 chr22".split()
+    #valid_chromosomes = "chr2 chr22".split()
+    valid_chromosomes = "chr19"
 
     for index, row in bed_df.iterrows():
         #get chromosomes start and end by tab
         chromosome = row['chrom']
         start = row['start']
         end = row['end']
-        degeneracy = row['degeneracy']
+        degeneracy = row['degeneracy'].split(' ')  
+        degeneracy = [int(x) if x != '.' else -500 for x in degeneracy]
         reverse_complement = row['reverse_complement']
 
         #print(f"Processing {label} sequence {index} on chromosome {chromosome} from {start} to {end}")
@@ -440,7 +473,6 @@ def process_bed_file(bed_df, genome, bw, tokenizer):
     return sequences, scores_list, degeneracies
 
 def check_actual_degeneracies(exon_scores, exon_degeneracies):
-    print("exon scores shape:", ((exon_scores.shape)))
     # Check to see if the actual phyloP scores coincide with degeneracy of sites
     avg_scores_by_degeneracy = {0: [], 1: [], 2: [], 3: [], 4: []}
     
@@ -458,10 +490,12 @@ def check_actual_degeneracies(exon_scores, exon_degeneracies):
             if len(deg_scores) > 0:
                 avg_scores_by_degeneracy[deg].append(np.mean(deg_scores))
     
+    print("TRUE:")
     for deg in [0, 1, 2, 3, 4]:
         if avg_scores_by_degeneracy[deg]:
             avg_score = np.mean(avg_scores_by_degeneracy[deg])
-            print(f"Average conservation for {deg}-fold sites: {avg_score}")
+            num_sites = len(avg_scores_by_degeneracy[deg])
+            print(f"Average true conservation for {deg}-fold sites: {avg_score} (Number of sites: {num_sites})")
         else:
             print(f"No scores for {deg}-fold sites")
 
@@ -487,17 +521,17 @@ def check_predicted_degeneracies(conservation_logits, exon_scores, exon_degenera
 
         degeneracies = np.array(degeneracies.cpu(), dtype=int)
         var = np.exp(log_var)
-        mean = np.exp(mean)
         
         for deg in [0, 1, 2, 3, 4]:
             deg_scores = mean[degeneracies == deg]
             if len(deg_scores) > 0:
                 avg_scores_by_degeneracy[deg].append(np.mean(deg_scores))
-    
+    print("PREDICTED:")
     for deg in [0, 1, 2, 3, 4]:
         if avg_scores_by_degeneracy[deg]:
             avg_score = np.mean(avg_scores_by_degeneracy[deg])
-            print(f"Average predicted conservation for {deg}-fold sites: {avg_score}")
+            num_sites = len(avg_scores_by_degeneracy[deg])
+            print(f"Average predicted conservation for {deg}-fold sites: {avg_score} (Number of sites: {num_sites})")
         else:
             print(f"No scores for {deg}-fold sites")
 
@@ -506,9 +540,9 @@ def main():
     parser = argparse.ArgumentParser(description="Process exon and intron sequences and get representations")
     parser.add_argument('--genome_fasta', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_file', type=str, default='/home/mica/gamba/data_processing/data/degeneracy/chr2', help='Path to the output file')
+    parser.add_argument('--output_file', type=str, default='/home/mica/gamba/data_processing/data/degeneracy/chr19', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
-    parser.add_argument('--chr_coding_sites', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/chr2_degenotate/degeneracy-all-sites.bed', help='Path to the BED file with the degenotate annotated chromosomes')
+    parser.add_argument('--chr_coding_sites', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/chr19_degenotate/degeneracy-all-sites.bed', help='Path to the BED file with the degenotate annotated chromosomes')
     args = parser.parse_args()
 
     # Load BED files
@@ -545,7 +579,7 @@ def main():
     else:
         # extract gene_positions
         gene_positions = extract_gene_positions(gene_df)
-        print(f"Gene positions: {gene_positions}")
+        #print(f"Gene positions: {gene_positions}")
         # save gene_positions to a file
         save_gene_positions(gene_positions, gene_positions_file)
 
@@ -558,6 +592,9 @@ def main():
         # load from file
         bed_output_file = os.path.join(args.output_file, 'continuous_stretches.bed')
 
+
+    #check_continuous_stretches_bed_file(bed_output_file)
+    check_continuous_stretches_bed_file(bed_output_file)
     #load the bed_output_file
     exon_bed_df = load_exon_bed_file(bed_output_file)
 
@@ -651,6 +688,11 @@ def main():
     check_predicted_degeneracies(conservation_logits, true_phyloP, true_degeneracies)
     #check if drops in sequence logit prediction accuracy are correlated with drops in phyloP scores TO-DO
     
+    with open(os.path.join(args.output_file, 'results.txt'), 'w') as f:
+        sys.stdout = f
+        check_actual_degeneracies(true_phyloP, true_degeneracies)
+        check_predicted_degeneracies(conservation_logits, true_phyloP, true_degeneracies)
+        sys.stdout = sys.__stdout__  # reset redirect
 
 
 if __name__ == "__main__":
