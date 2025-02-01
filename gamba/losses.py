@@ -119,9 +119,8 @@ class GaussianNLLLoss(nn.Module):
         log_var = log_var[mask]
         tgt = tgt[mask]
 
-        # exponentiate variance and mean
+        # exponentiate variance 
         var = torch.exp(log_var)
-        mean = torch.exp(mean)
 
         #print the mean and variance
         #print(f"mean: {mean}")
@@ -130,6 +129,11 @@ class GaussianNLLLoss(nn.Module):
         #print variance if very small
         if torch.any(var < 1e-6):
             print("variance is very small: ", var)
+
+        #save means and variances to a file in /tmp
+        with open("/tmp/means_and_vars.txt", "a") as f:
+            f.write(f"mean: {mean}\n")
+            f.write(f"var: {var}\n")
 
         # loss using PyTorch's built-in GaussianNLLLoss
         loss = self.loss_fn(mean, tgt, var)

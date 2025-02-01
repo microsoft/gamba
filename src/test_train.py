@@ -405,6 +405,7 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
     total_ce_loss = 0
     total_gaussian_loss = 0
     num_batches= 0
+    total_mse_loss = 0
     for batch in val_loader:
         output = step(model, batch, None, None, training=False)
         num_batches += 1
@@ -415,6 +416,7 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
                     output["n_seqs"],
                     output["cross_entropy_loss"],
                     output["gaussian_loss"],
+                    output["mse_loss"]
                 )
             )
             if WORLD_SIZE > 1:
@@ -423,11 +425,13 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
                 total_seqs += int(reduce_tensor[1].item())
                 total_ce_loss += reduce_tensor[2].item()
                 total_gaussian_loss += reduce_tensor[3].item()
+                total_mse_loss += reduce_tensor[4].item()
             else:
                 total_tokens += output["n_processed"]
                 total_seqs += output["n_seqs"]
                 total_ce_loss += output["cross_entropy_loss"]
                 total_gaussian_loss += output["gaussian_loss"]
+                total_mse_loss += output["mse_loss"]
     if RANK == 0:
         with open(csv_fpath, "a") as f:
             f.write(
@@ -437,6 +441,7 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
             {
                 "val_ce_loss": total_ce_loss / num_batches,
                 "val_gaussian_loss": total_gaussian_loss/ num_batches,
+                "val_mse_loss": total_mse_loss/ num_batches,
                 "tokens_validated": total_tokens,
                 "nsteps": train_step,
                 "epoch": epoch,
@@ -546,6 +551,7 @@ def epoch(
                     output["n_seqs"],
                     output["cross_entropy_loss"],
                     output["gaussian_loss"],
+                    output["mse_loss"]
                 )
             )
             if WORLD_SIZE > 1:
@@ -562,6 +568,7 @@ def epoch(
                     "loss": output["loss"].item(),
                     "cross_entropy_loss": output["cross_entropy_loss"].item(),
                     "gaussian_loss": output["gaussian_loss"].item(),
+                    "mse_loss": output["mse_loss"].item(),
                     "nsteps": total_steps,
                     "epoch": current_epoch,
                     "token_trained": total_tokens,

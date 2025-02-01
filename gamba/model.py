@@ -201,6 +201,7 @@ class JambagambaModel(nn.Module):
 
         # real number loss
         self.cons_loss_func = GaussianNLLLoss()
+        self.mse_loss_func = nn.MSELoss()
         # self.gap_loss_func = PoissonNLLLoss()
         # # self.embed_tokens = nn.Embedding(jambalm.vocab_size, d_model)
         # self.padding_id = padding_id
@@ -287,8 +288,11 @@ class JambagambaModel(nn.Module):
         # )
 
         # exclude the logits for the first and last tokens for conservation and gap
+
+        #shift over conservation logits by 1 from sequence so you can see the start token + first position to make prediction
         scaling_logits = scaling_logits[:, 1:-1]
         # gap_logits = gap_logits[:, 1:-1]
+        #dont change cause ground truth is the same
         conservation_tgt = conservation_tgt[:, 1:-1]
         # gap_tgt = gap_tgt[:, 1:-1]
 
@@ -302,6 +306,24 @@ class JambagambaModel(nn.Module):
         gaussian_loss = self.cons_loss_func(
             scaling_logits[:, :-1, :], conservation_tgt[:, 1:]
         )
+        #extract mean and variance from scaling logits
+        pred = scaling_logits[:, :-1, :]
+        tgt = conservation_tgt[:, 1:]
+        # mask is where tgt is not equal to -100
+        mask = tgt != -100
+
+        mean = pred[:, :, 0]
+        log_var = pred[:, :, 1]
+
+        # apply the mask to mean, log_var and tgt
+        mean = mean[mask]
+        log_var = log_var[mask]
+        tgt = tgt[mask]
+
+        #check MSE loss on the unmasked portions
+        mse_loss = self.mse_loss_func(mean, tgt)
+        
+
         #clip the gaussian loss
         #gaussian_loss = torch.clamp(gaussian_loss, min=0.0, max=1.0)
         # apply PoissonNLLLoss from losses.py on the gap_logits
@@ -347,6 +369,7 @@ class JambagambaModel(nn.Module):
             "n_processed": n_processed,
             "representation": output,
             "conservation_tgt": conservation_tgt,
+            "mse_loss": mse_loss,
         }
         return outputs
 

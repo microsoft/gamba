@@ -375,11 +375,8 @@ class gLMCollatorWithDegeneracies(gLMCollator):
         # Unpack the input data
         sequence = [torch.tensor(s, dtype=torch.long) for s, _, _ in data]
         scaling = [torch.tensor(s, dtype=torch.float32) for _, s, _ in data]
-        degeneracies = [torch.tensor([int(d) for d in deg.split()], dtype=torch.long) for _, _, deg in data]
+        degeneracies = [torch.tensor(deg, dtype=torch.long) for _, _, deg in data]
 
-        print(f"lengths of sequences: {len(sequence[0])}, lengths of scalings: {len(scaling[0])}, lengths of degeneracies: {len(degeneracies[0])}")
-        print(f"lengths of sequences: {len(sequence[1])}, lengths of scalings: {len(scaling[1])}, lengths of degeneracies: {len(degeneracies[1])}")
-        
         # Randomly reverse complement sequences
         if not self.test:
             reverse_flags = torch.rand(len(sequence)) > 0.5  # 50% chance to reverse complement
@@ -406,10 +403,6 @@ class gLMCollatorWithDegeneracies(gLMCollator):
         ]
 
         #reprint the lengths
-        print("AFTEER PADDING")
-        print(f"lengths of sequences: {len(sequence[0])}, lengths of scalings: {len(scaling[0])}, lengths of degeneracies: {len(degeneracies[0])}")
-        print(f"lengths of sequences: {len(sequence[1])}, lengths of scalings: {len(scaling[1])}, lengths of degeneracies: {len(degeneracies[1])}")
-        
         # Pad each array type accordingly
         sequence, seq_lbls = self.pad_arrays(sequence, dtype=torch.long)
         scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
