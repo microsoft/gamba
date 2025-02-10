@@ -47,35 +47,28 @@ def safe_mean(arr, axis=None):
 def get_representations(model, dataloader, device, original_spans):
     model.eval()
     representations = []
-    conservations = []
+    pred_conservations = []
+    true_conservations = []
     variances = []
-    
-    # Special tokens to mask
-    special_tokens = [-100, 8, 9]
+    sequence_conservation_profiles = []
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
-            sequences, scores = batch
-            sequences = sequences.to(device)
-            scores = scores.to(device)
-            output = model(sequences, scores)
+            inputs, labels = batch  # inputs shape: [batch, 2, seq_len]
+            inputs = inputs.to(device)
+            labels = labels.to(device)
             
-            # Get raw tensors
-            batch_representations = output["representation"].cpu().numpy()  # [batch, seq_len+2, hidden]
-            scaling_logits = output["scaling_logits"].cpu().numpy()  # [batch, seq_len, 2]
-            sequence_data = sequences.cpu().numpy()  # [batch, 2, seq_len+2]
+            # Pass both inputs and labels to the model
+            output = model(inputs, labels)
             
-            print(f"\nBatch {batch_idx} shapes:")
-            print(f"Sequence data: {sequence_data.shape}")
-            print(f"Batch representations: {batch_representations.shape}")
-            print(f"Scaling logits: {scaling_logits.shape}")
+            batch_representations = output["representation"].cpu().numpy()
+            scaling_logits = output["scaling_logits"].cpu().numpy()
+            sequence_data = inputs[:, 0].cpu().numpy()  # Sequences
+            true_scores = inputs[:, 1].cpu().numpy()    # Conservation scores
             
-            # Get sequence length for scaling logits
-            seq_len = scaling_logits.shape[1]
             
-            # Split scaling logits into mean and variance
-            batch_conservations = scaling_logits[..., 0]  # [batch, seq_len]
-            batch_log_var = scaling_logits[..., 1]  # [batch, seq_len]
+            batch_pred_conservation = scaling_logits[..., 0]
+            batch_log_var = scaling_logits[..., 1]
             batch_variances = np.exp(batch_log_var)
             
             for idx in range(len(batch_representations)):
@@ -83,56 +76,216 @@ def get_representations(model, dataloader, device, original_spans):
                 if span_idx < len(original_spans):
                     start, end = original_spans[span_idx]
                     
-                    if start < end and end <= seq_len:
-                        # Get sequence tokens for this span
-                        seq_tokens = sequence_data[idx, 0, start:end]  # Take first channel
-                        valid_mask = ~np.isin(seq_tokens, special_tokens)
-                        
-                        # Create expanded mask for representations
-                        repr_mask = np.expand_dims(valid_mask, -1)
-                        repr_mask = np.tile(repr_mask, (1, batch_representations.shape[-1]))
-                        
-                        # Get slices
-                        repr_slice = batch_representations[idx, start:end]
-                        cons_slice = batch_conservations[idx, start:end]
+                    if start < end:
+                        pred_cons_slice = batch_pred_conservation[idx, start:end]
+                        true_cons_slice = true_scores[idx, start:end]
                         var_slice = batch_variances[idx, start:end]
+                        repr_slice = batch_representations[idx, start:end]
                         
-                        # Apply masks
-                        repr_slice_masked = repr_slice[valid_mask]
-                        cons_slice_masked = cons_slice[valid_mask]
-                        var_slice_masked = var_slice[valid_mask]
+                        pred_cons_mean = np.mean(pred_cons_slice)
+                        true_cons_mean = np.mean(true_cons_slice)
+                        var_mean = np.mean(var_slice)
+                        repr_mean = np.mean(repr_slice, axis=0)
                         
-                        if len(repr_slice_masked) > 0:
-                            repr_mean = np.mean(repr_slice_masked, axis=0)
-                            cons_mean = np.mean(cons_slice_masked)
-                            var_mean = np.mean(var_slice_masked)
-                            
-                            representations.append(repr_mean)
-                            conservations.append(cons_mean)
-                            variances.append(var_mean)
-                            
-                            print(f"\nSample {idx}:")
-                            print(f"Valid tokens: {np.sum(valid_mask)}/{len(valid_mask)}")
-                            print(f"Conservation: {cons_mean:.3f}")
-                            print(f"Variance: {var_mean:.3f}")
+                        representations.append(repr_mean)
+                        pred_conservations.append(pred_cons_mean)
+                        true_conservations.append(true_cons_mean)
+                        variances.append(var_mean)
+                        
+                        full_profile = {
+                            'predicted': batch_pred_conservation[idx],
+                            'true': true_scores[idx],
+                            'start': start,
+                            'end': end
+                        }
+                        sequence_conservation_profiles.append(full_profile)
+                        
+                        print(f"\nSample {idx}:")
+                        print(f"Region length: {end-start}")
+                        print(f"Predicted Conservation (region only): {pred_cons_mean:.3f}")
+                        print(f"True Conservation (region only): {true_cons_mean:.3f}")
+                        print(f"Variance: {var_mean:.3f}")
             
-            del sequences, scores, output
+            del inputs, labels, output
             torch.cuda.empty_cache()
     
-    if not representations:
-        print("Warning: No valid representations generated")
-        return np.array([]), np.array([]), np.array([])
+    return (np.array(representations), 
+            np.array(pred_conservations), 
+            np.array(true_conservations), 
+            np.array(variances), 
+            sequence_conservation_profiles)
+
+def plot_conservation_profiles(profiles, output_path, dataset_name):
+    """Create visualization of conservation profiles."""
+    plt.figure(figsize=(20, 10))  # Reduced height since we removed middle plot
     
-    repr_array = np.array(representations)
-    cons_array = np.array(conservations)
-    var_array = np.array(variances)
+    # Plot 1: Average profiles with confidence intervals
+    plt.subplot(2, 1, 1)
+    seq_length = len(profiles[0]['predicted'])
+    x = np.arange(seq_length)
     
-    print("\nFinal statistics:")
-    print(f"Total samples: {len(repr_array)}")
-    print(f"Conservation mean: {np.mean(cons_array):.3f} ± {np.std(cons_array):.3f}")
-    print(f"Variance mean: {np.mean(var_array):.3f} ± {np.std(var_array):.3f}")
+    # Process data
+    all_pred = np.array([p['predicted'] for p in profiles])
+    all_true = np.array([p['true'][1:-1] if len(p['true']) > seq_length else p['true'] 
+                        for p in profiles])
     
-    return repr_array, cons_array, var_array
+    # Calculate means and confidence intervals
+    pred_mean = np.nanmean(all_pred, axis=0)
+    pred_ci = np.nanstd(all_pred, axis=0) * 1.96 / np.sqrt(len(profiles))
+    true_mean = np.nanmean(all_true, axis=0)
+    true_ci = np.nanstd(all_true, axis=0) * 1.96 / np.sqrt(len(profiles))
+    
+    # Plot means with confidence intervals
+    plt.plot(x, pred_mean, label='Predicted', color='blue', linewidth=2)
+    plt.fill_between(x, pred_mean-pred_ci, pred_mean+pred_ci, color='blue', alpha=0.2)
+    plt.plot(x, true_mean, label='True', color='red', linewidth=2)
+    plt.fill_between(x, true_mean-true_ci, true_mean+true_ci, color='red', alpha=0.2)
+    
+    # Add ROI indication
+    start_mean = int(np.mean([p['start'] for p in profiles]))
+    end_mean = int(np.mean([p['end'] for p in profiles]))
+    plt.axvspan(start_mean, end_mean, color='gray', alpha=0.1, label='Typical ROI')
+    
+    plt.title(f'Average Conservation Profile - {dataset_name}')
+    plt.ylabel('Conservation Score')
+    plt.legend()
+    
+    # Plot 2: Distribution of scores
+    plt.subplot(2, 1, 2)
+    
+    # Collect scores
+    roi_pred = []
+    roi_true = []
+    non_roi_pred = []
+    non_roi_true = []
+    
+    for p in profiles:
+        start, end = p['start'], p['end']
+        mask = np.zeros(seq_length, dtype=bool)
+        mask[start:end] = True
+        
+        true_vals = p['true'][1:-1] if len(p['true']) > seq_length else p['true']
+        
+        roi_pred.extend(p['predicted'][mask])
+        roi_true.extend(true_vals[mask])
+        non_roi_pred.extend(p['predicted'][~mask])
+        non_roi_true.extend(true_vals[~mask])
+    
+    # Plot distributions
+    plt.hist(roi_pred, bins=50, alpha=0.5, color='blue', 
+             label='Predicted (ROI)', density=True)
+    plt.hist(roi_true, bins=50, alpha=0.5, color='red', 
+             label='True (ROI)', density=True)
+    plt.hist(non_roi_pred, bins=50, alpha=0.3, color='lightblue', 
+             label='Predicted (non-ROI)', density=True, linestyle='--')
+    plt.hist(non_roi_true, bins=50, alpha=0.3, color='pink', 
+             label='True (non-ROI)', density=True, linestyle='--')
+    
+    plt.title('Distribution of Conservation Scores')
+    plt.xlabel('Conservation Score')
+    plt.ylabel('Density')
+    plt.legend()
+    
+    # Add summary statistics as text
+    stats_text = (
+        f'ROI Stats:\n'
+        f'  Pred: {np.mean(roi_pred):.3f}±{np.std(roi_pred):.3f}\n'
+        f'  True: {np.mean(roi_true):.3f}±{np.std(roi_true):.3f}\n'
+        f'Non-ROI Stats:\n'
+        f'  Pred: {np.mean(non_roi_pred):.3f}±{np.std(non_roi_pred):.3f}\n'
+        f'  True: {np.mean(non_roi_true):.3f}±{np.std(non_roi_true):.3f}'
+    )
+    plt.text(0.95, 0.95, stats_text, transform=plt.gca().transAxes,
+             verticalalignment='top', horizontalalignment='right',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+
+def plot_individual_examples(profiles, output_path, dataset_name, seed=42):
+    """Create visualization of conservation profiles for 3 random examples."""
+    np.random.seed(seed)
+    
+    # Randomly select 3 examples
+    example_indices = np.random.choice(len(profiles), size=3, replace=False)
+    selected_profiles = [profiles[i] for i in example_indices]
+    
+    plt.figure(figsize=(20, 15))
+    
+    # Plot each example in its own subplot
+    for idx, p in enumerate(selected_profiles):
+        plt.subplot(3, 1, idx + 1)
+        seq_length = len(p['predicted'])
+        x = np.arange(seq_length)
+        
+        # Get true values with proper handling of length
+        true_vals = p['true'][1:-1] if len(p['true']) > seq_length else p['true']
+        
+        # Plot predicted and true values for this example
+        plt.plot(x, p['predicted'], color='blue', linestyle='-', 
+                label='Predicted', alpha=0.7)
+        plt.plot(x, true_vals, color='red', linestyle='-', 
+                label='True', alpha=0.7)
+        
+        # Add ROI indication for this example
+        plt.axvspan(p['start'], p['end'], color='gray', alpha=0.1, 
+                   label='Region of Interest')
+        
+        plt.title(f'{dataset_name} Example {idx+1} (ROI: {p["start"]}-{p["end"]})')
+        plt.ylabel('Conservation Score')
+        plt.xlabel('Position')
+        plt.legend()
+        
+        # Add stats text for this example
+        roi_mask = np.zeros(seq_length, dtype=bool)
+        roi_mask[p['start']:p['end']] = True
+        
+        stats_text = (
+            f'ROI Stats:\n'
+            f'  Pred: {np.mean(p["predicted"][roi_mask]):.3f}±{np.std(p["predicted"][roi_mask]):.3f}\n'
+            f'  True: {np.mean(true_vals[roi_mask]):.3f}±{np.std(true_vals[roi_mask]):.3f}\n'
+            f'Non-ROI Stats:\n'
+            f'  Pred: {np.mean(p["predicted"][~roi_mask]):.3f}±{np.std(p["predicted"][~roi_mask]):.3f}\n'
+            f'  True: {np.mean(true_vals[~roi_mask]):.3f}±{np.std(true_vals[~roi_mask]):.3f}'
+        )
+        plt.text(0.95, 0.95, stats_text, transform=plt.gca().transAxes,
+                verticalalignment='top', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+    
+def print_detailed_stats(profiles, dataset_name):
+    """Print detailed statistics about conservation scores."""
+    roi_pred = []
+    roi_true = []
+    non_roi_pred = []
+    non_roi_true = []
+    
+    seq_length = len(profiles[0]['predicted'])
+    
+    for p in profiles:
+        start, end = p['start'], p['end']
+        mask = np.zeros(seq_length, dtype=bool)
+        mask[start:end] = True
+        
+        true_vals = p['true'][1:-1] if len(p['true']) > seq_length else p['true']
+        
+        roi_pred.extend(p['predicted'][mask])
+        roi_true.extend(true_vals[mask])
+        non_roi_pred.extend(p['predicted'][~mask])
+        non_roi_true.extend(true_vals[~mask])
+    
+    print(f"\nDetailed Statistics for {dataset_name}:")
+    print("\nROI Regions:")
+    print(f"  Predicted: {np.mean(roi_pred):.3f} ± {np.std(roi_pred):.3f}")
+    print(f"  True:      {np.mean(roi_true):.3f} ± {np.std(roi_true):.3f}")
+    print("\nNon-ROI Regions:")
+    print(f"  Predicted: {np.mean(non_roi_pred):.3f} ± {np.std(non_roi_pred):.3f}")
+    print(f"  True:      {np.mean(non_roi_true):.3f} ± {np.std(non_roi_true):.3f}")
+
 
 def get_latest_dcp_checkpoint_path(ckpt_dir: str, last_step: int = -1) -> Optional[str]:
     ckpt_path = None
@@ -254,12 +407,22 @@ def process_dataset(bed_path_or_df, genome, chrom_sizes, bw, tokenizer,
     """Process a single dataset and return representations and scores."""
     if os.path.exists(output_path):
         print(f"Loading existing representations from {output_path}")
-        data = np.load(output_path)
-        return data['repr'], data['cons'], data['var']
+        data = np.load(output_path, allow_pickle=True)
+        
+        # Try to reconstruct profiles if we have all needed data
+        if all(k in data for k in ['sequences', 'scores', 'spans']):
+            print(f"Reconstructing profiles for {dataset_name} from saved data...")
+            profiles = reconstruct_profiles_from_saved(
+                output_path, data['sequences'], data['scores'], data['spans']
+            )
+        else:
+            profiles = []
+            
+        return (data['repr'], data['pred_cons'], data['true_cons'], 
+                data['var'], profiles)
     
     print(f"Processing sequences from {dataset_name}...")
     
-    # Handle both DataFrame and file path inputs
     if isinstance(bed_path_or_df, pd.DataFrame):
         bed_df = bed_path_or_df
     else:
@@ -273,18 +436,29 @@ def process_dataset(bed_path_or_df, genome, chrom_sizes, bw, tokenizer,
         
     dataset = SequenceDataset(sequences, cons_scores)
     loader = DataLoader(dataset, batch_size=20, collate_fn=collator)
-    representations, conservations, variances = get_representations(model, loader, device, spans)
+    representations, pred_cons, true_cons, variances, profiles = get_representations(
+        model, loader, device, spans
+    )
     
-    if np.all(np.isnan(conservations)) or np.all(np.isnan(variances)):
+    if (np.all(np.isnan(pred_cons)) or np.all(np.isnan(true_cons)) 
+            or np.all(np.isnan(variances))):
         print(f"Warning: All values are NaN for {dataset_name}")
     
+    # Save everything needed to reconstruct profiles
     np.savez_compressed(output_path,
                        repr=representations,
-                       cons=conservations,
-                       var=variances)
+                       pred_cons=pred_cons,
+                       true_cons=true_cons,
+                       var=variances,
+                       sequences=np.array([p['predicted'] for p in profiles]),
+                       scores=np.array([p['true'] for p in profiles]),
+                       spans=np.array([(p['start'], p['end']) for p in profiles]))
     
     print(f"Saved {len(representations)} representations to {output_path}")
-    return representations, conservations, variances
+    return representations, pred_cons, true_cons, variances, profiles
+
+
+
 
 def ensure_2d(array):
     """Ensure array is 2D."""
@@ -314,7 +488,7 @@ def visualize_embeddings(repr1, repr2, labels1, labels2, output_path):
     for label in set(labels):
         mask = np.array(labels) == label
         plt.scatter(embeddings[mask, 0], embeddings[mask, 1], 
-                   color=colors[label], label=label, s=5)
+                   color=colors[label], label=label, s=5, alpha=0.2)
     
     plt.legend()
     plt.title('UMAP of Sequence Embeddings')
@@ -322,16 +496,19 @@ def visualize_embeddings(repr1, repr2, labels1, labels2, output_path):
     plt.close()
 
 
-def print_stats(cons1, var1, cons2, var2, group1_name="Group 1", group2_name="Group 2"):
-    """Print conservation and variance statistics."""
-    print("\nStatistics:")
-    print(f"{group1_name}:")
-    print(f"  Conservation: {np.mean(cons1):.3f} ± {np.std(cons1):.3f}")
-    print(f"  Variance: {np.mean(var1):.3f} ± {np.std(var1):.3f}")
-    print(f"{group2_name}:")
-    print(f"  Conservation: {np.mean(cons2):.3f} ± {np.std(cons2):.3f}")
-    print(f"  Variance: {np.mean(var2):.3f} ± {np.std(var2):.3f}")
-
+def reconstruct_profiles_from_saved(output_path, sequences, scores, spans):
+    """Reconstruct profile data from saved sequences and scores."""
+    profiles = []
+    for i in range(len(spans)):
+        start, end = spans[i]
+        profile = {
+            'predicted': sequences[i],  # The full sequence predictions
+            'true': scores[i],         # The full sequence true scores
+            'start': start,
+            'end': end
+        }
+        profiles.append(profile)
+    return profiles
 
 def main():
     parser = argparse.ArgumentParser(description="Get representations of sequences")
@@ -340,8 +517,10 @@ def main():
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
     parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/conserved_elements/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
-    parser.add_argument('--bed_file1', type=str, default ='/home/mica/gamba/data_processing/data/conserved_elements/hg19_UCNE_coordinates.bed', help='First BED file')
+    parser.add_argument('--bed_file1', type=str, default ='/home/mica/gamba/data_processing/data/conserved_elements/unseen_hg38UCNE_coordinates.bed', help='First BED file')
     parser.add_argument('--bed_file2', help='Second BED file (optional)')
+    parser.add_argument('--force_recompute', action='store_true', help='Force recomputation even if cached results exist')
+    
     args = parser.parse_args()
     
     # Load data
@@ -431,26 +610,47 @@ def main():
     print(f"bed1_repr_path: {bed1_repr_path}, bed2_repr_path: {bed2_repr_path}")
     print(f"bed1_filename: {bed1_filename}, bed2_filename: {bed2_filename}")
     
-     # Process both datasets
-    repr1, cons1, var1 = process_dataset(
+    # Remove existing files if force_recompute is True
+    if args.force_recompute:
+        if os.path.exists(bed1_repr_path):
+            os.remove(bed1_repr_path)
+        if os.path.exists(bed2_repr_path):
+            os.remove(bed2_repr_path)
+    
+    # Process both datasets
+    repr1, pred_cons1, true_cons1, var1, profiles1 = process_dataset(
         bed1, genome, args.chrom_sizes, bw, tokenizer,
         model, device, collator, bed1_repr_path, "UCNE dataset"
     )
     
-    repr2, cons2, var2 = process_dataset(
+    repr2, pred_cons2, true_cons2, var2, profiles2 = process_dataset(
         bed2, genome, args.chrom_sizes, bw, tokenizer,
         model, device, collator, bed2_repr_path, "random dataset"
     )
     
-    # Visualize results
-    plot_path = f'{args.output_dir}/umap_plot_{bed1_filename}_{bed2_filename}.png'
-    visualize_embeddings(repr1, repr2, 'UCNE', 'random', plot_path)
+    # Create conservation profile plots if we have profiles or --force_replot
+    if (profiles1 and profiles2) or args.force_replot:
+        cons_plot_path1 = f'{args.output_dir}/conservation_profiles_UCNE_{bed1_filename}_{bed2_filename}.png'
+        cons_plot_path2 = f'{args.output_dir}/conservation_profiles_random_{bed1_filename}_{bed2_filename}.png'
+        cons_indivplot_path1 = f'{args.output_dir}/indiv_conservation_profiles_UCNE_{bed1_filename}_{bed2_filename}.png'
+        cons_indivplot_path2 = f'{args.output_dir}/indiv_conservation_profiles_random_{bed1_filename}_{bed2_filename}.png'
+        print("Creating conservation profile plots...")
+        plot_conservation_profiles(profiles1, cons_plot_path1, 'UCNE')
+        plot_conservation_profiles(profiles2, cons_plot_path2, 'Random')
+        plot_individual_examples(profiles1, cons_indivplot_path1, "UCNE")
+        plot_individual_examples(profiles2, cons_indivplot_path2,  "Random")
+    else:
+        print("\nSkipping conservation profile plots (no profile data available).")
+        print("Use --force_recompute to regenerate all data or --force_replot to regenerate plots.")
+    
+    # Create UMAP visualization
+    umap_plot_path = f'{args.output_dir}/umap_plot_{bed1_filename}_{bed2_filename}.png'
+    visualize_embeddings(repr1, repr2, 'UCNE', 'random', umap_plot_path)
     
     # Print statistics
-    print_stats(cons1, var1, cons2, var2, "UCNE regions", "Random regions")
+    print_detailed_stats(profiles1, 'UCNE')
+    print_detailed_stats(profiles2, 'Random')
 
 
 if __name__ == "__main__":
     main()
-
-
