@@ -457,6 +457,30 @@ def process_dataset(bed_path_or_df, genome, chrom_sizes, bw, tokenizer,
     print(f"Saved {len(representations)} representations to {output_path}")
     return representations, pred_cons, true_cons, variances, profiles
 
+def generate_flanking_regions(bed_df, output_dir):
+    """Generate flanking regions 500bp upstream of each UCNE region and save to bed file."""
+    flanking_regions = []
+    
+    for _, row in bed_df.iterrows():
+        # Original region info
+        chrom = row['chrom']
+        start = row['start']
+        end = row['end']
+        length = end - start
+        
+        # Generate flanking region 500bp upstream
+        flanking_start = start - 500  # Shift up by 500bp
+        flanking_end = flanking_start + length  # Keep same length as original
+        
+        # Add label and info columns to match bed format
+        flanking_regions.append([chrom, flanking_start, flanking_end, "flanking", "flanking_region"])
+    
+    # Create flanking bed file
+    flanking_df = pd.DataFrame(flanking_regions, columns=['chrom', 'start', 'end', 'label', 'info'])
+    flanking_bed_path = os.path.join(output_dir, "flanking_regions.bed")
+    flanking_df.to_csv(flanking_bed_path, sep='\t', header=False, index=False)
+    
+    return flanking_bed_path
 
 
 
@@ -469,6 +493,18 @@ def ensure_2d(array):
 def visualize_embeddings(repr1, repr2, labels1, labels2, output_path):
     """Create and save UMAP visualization of embeddings."""
     print(f"Shapes - Group 1: {repr1.shape}, Group 2: {repr2.shape}")
+
+     # Get output directory from output_path
+    output_dir = os.path.dirname(output_path)
+    
+    # Analyze neighborhood overlap
+    overlap_stats = analyze_neighbourhood_overlap(repr1, repr2, labels1, labels2, 
+                                              k=1, output_dir=output_dir)
+    print(f"\nNeighbourhood Overlap Analysis:")
+    print(f"{labels1} points with {labels1} neighbours: {overlap_stats['class1']:.1f}%")
+    print(f"{labels2} points with {labels2} neighbours: {overlap_stats['class2']:.1f}%")
+    print(f"Overall neighbourhood preservation: {overlap_stats['overall']:.1f}%")
+    print(f"Overall accuracy: {overlap_stats['accuracy']:.1f}%")
     
     # Ensure 2D arrays
     repr1 = ensure_2d(repr1)
@@ -483,7 +519,7 @@ def visualize_embeddings(repr1, repr2, labels1, labels2, output_path):
     
     # Create plot
     plt.figure(figsize=(10, 6))
-    colors = {'UCNE': 'blue', 'random': 'orange'}
+    colors = {'UCNE': 'blue', f"{labels2}": 'orange'}
     
     for label in set(labels):
         mask = np.array(labels) == label
@@ -510,6 +546,102 @@ def reconstruct_profiles_from_saved(output_path, sequences, scores, spans):
         profiles.append(profile)
     return profiles
 
+def analyze_neighbourhood_overlap(repr1: np.ndarray, 
+                                repr2: np.ndarray, 
+                                labels1: str,
+                                labels2: str,
+                                k: int = 1,
+                                output_dir: str = None) -> dict:
+    """
+    Analyze overlap between two classes using k-nearest neighbours.
+    
+    Args:
+        repr1: Representations from first class (e.g., UCNE)
+        repr2: Representations from second class (e.g., Random/Flanking)
+        labels1: Name of first class for plotting
+        labels2: Name of second class for plotting
+        k: Number of nearest neighbours to consider
+        output_dir: Directory to save confusion matrix plot
+        
+    Returns:
+        Dictionary with overlap statistics
+    """
+    from sklearn.neighbors import NearestNeighbors
+    import seaborn as sns
+    
+    # Combine representations and create labels
+    combined_repr = np.concatenate([repr1, repr2])
+    labels = np.array([0] * len(repr1) + [1] * len(repr2))
+    
+    # Fit nearest neighbours
+    nn = NearestNeighbors(n_neighbors=k+1)  # +1 because point is its own nearest neighbour
+    nn.fit(combined_repr)
+    
+    # Get nearest neighbours for all points
+    distances, indices = nn.kneighbors(combined_repr)
+    
+    # Initialize confusion matrix
+    confusion_matrix = np.zeros((2, 2))
+    
+    # Calculate statistics for each class and fill confusion matrix
+    stats = {}
+    for class_idx, class_name in enumerate(['class1', 'class2']):
+        class_mask = labels == class_idx
+        class_points = np.where(class_mask)[0]
+        
+        # For each point in class, check its neighbors
+        same_class_neighbors = 0
+        total_neighbors = 0
+        
+        for point_idx in class_points:
+            # Get neighbors (excluding the point itself)
+            neighbor_indices = indices[point_idx][1:] 
+            neighbor_labels = labels[neighbor_indices]
+            
+            # For k=1, we're only looking at the closest neighbor
+            predicted_class = neighbor_labels[0]
+            confusion_matrix[class_idx, predicted_class] += 1
+            
+            # Count neighbors of same class
+            same_class_neighbors += np.sum(neighbor_labels == class_idx)
+            total_neighbors += len(neighbor_indices)
+        
+        # Calculate percentage
+        pct_same_class = (same_class_neighbors / total_neighbors) * 100
+        stats[class_name] = pct_same_class
+    
+    # Calculate overall statistics
+    stats['overall'] = (stats['class1'] + stats['class2']) / 2
+    
+    # Create confusion matrix plot
+    if output_dir:
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(confusion_matrix, 
+                   annot=True, 
+                   fmt='g',
+                   xticklabels=[labels1, labels2],
+                   yticklabels=[labels1, labels2],
+                   cmap='Blues')
+        plt.title(f'Nearest Neighbor Confusion Matrix\nk={k}')
+        plt.xlabel('Predicted Class')
+        plt.ylabel('True Class')
+        
+        # Save plot
+        confusion_matrix_path = f"{output_dir}/confusion_matrix_{labels2}_k{k}.png"
+        plt.savefig(confusion_matrix_path)
+        plt.close()
+        
+        # Add additional metrics to stats
+        total = confusion_matrix.sum()
+        stats['true_positive'] = confusion_matrix[0,0]
+        stats['false_positive'] = confusion_matrix[1,0]
+        stats['false_negative'] = confusion_matrix[0,1]
+        stats['true_negative'] = confusion_matrix[1,1]
+        stats['accuracy'] = (confusion_matrix[0,0] + confusion_matrix[1,1]) / total * 100
+    
+    return stats
+
+
 def main():
     parser = argparse.ArgumentParser(description="Get representations of sequences")
     parser.add_argument('--genome_fasta', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
@@ -517,23 +649,32 @@ def main():
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
     parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/conserved_elements/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
-    parser.add_argument('--bed_file1', type=str, default ='/home/mica/gamba/data_processing/data/conserved_elements/unseen_hg38UCNE_coordinates.bed', help='First BED file')
+    parser.add_argument('--bed_file1', type=str, default ='/home/mica/gamba/data_processing/data/conserved_elements/filteredunseen_hg38UCNE_coordinates.bed', help='First BED file')
     parser.add_argument('--bed_file2', help='Second BED file (optional)')
     parser.add_argument('--force_recompute', action='store_true', help='Force recomputation even if cached results exist')
-    
+    parser.add_argument('--flanking', action='store_true', help='Generate flanking regions instead of random')
+    parser.add_argument('--checkpoint_num', type=int, default=78000, help='Checkpoint number to load')
+
     args = parser.parse_args()
     
     # Load data
     bed1 = load_bed_file(args.bed_file1)
+    checkpoint_num = args.checkpoint_num
+
+    COMPARISON_TYPE = "flanking" if args.flanking else "random"
+    args.output_dir = args.output_dir +f"dcp_{checkpoint_num}_results/"
     if args.bed_file2:
         bed2 = load_bed_file(args.bed_file2)
+    if args.flanking:
+        bed2_path = generate_flanking_regions(bed1, args.output_dir)
+        bed2 = load_bed_file(bed2_path)
     else:
         bed2 = generate_random_regions(len(bed1), args.chrom_sizes)
     
     genome = Fasta(args.genome_fasta)
     bw = pyBigWig.open(args.big_wig)
     ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
-    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, 18000)
+    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
 
 
     # Load model configuration
@@ -602,7 +743,7 @@ def main():
         bed2_name = os.path.splitext(os.path.basename(args.bed_file2))[0]
         bed2_filename = f"representations_{bed2_name}.npz"
     else:
-        bed2_filename = f"representations_{bed1_name}_random.npz"
+        bed2_filename = f"representations_{bed1_name}_{COMPARISON_TYPE}.npz"
     
     bed1_repr_path = os.path.join(args.output_dir, bed1_filename)
     bed2_repr_path = os.path.join(args.output_dir, bed2_filename)
@@ -625,31 +766,31 @@ def main():
     
     repr2, pred_cons2, true_cons2, var2, profiles2 = process_dataset(
         bed2, genome, args.chrom_sizes, bw, tokenizer,
-        model, device, collator, bed2_repr_path, "random dataset"
+        model, device, collator, bed2_repr_path, f"{COMPARISON_TYPE} dataset"
     )
     
     # Create conservation profile plots if we have profiles or --force_replot
     if (profiles1 and profiles2) or args.force_replot:
         cons_plot_path1 = f'{args.output_dir}/conservation_profiles_UCNE_{bed1_filename}_{bed2_filename}.png'
-        cons_plot_path2 = f'{args.output_dir}/conservation_profiles_random_{bed1_filename}_{bed2_filename}.png'
+        cons_plot_path2 = f'{args.output_dir}/conservation_profiles_{COMPARISON_TYPE}_{bed1_filename}_{bed2_filename}.png'
         cons_indivplot_path1 = f'{args.output_dir}/indiv_conservation_profiles_UCNE_{bed1_filename}_{bed2_filename}.png'
-        cons_indivplot_path2 = f'{args.output_dir}/indiv_conservation_profiles_random_{bed1_filename}_{bed2_filename}.png'
+        cons_indivplot_path2 = f'{args.output_dir}/indiv_conservation_profiles_{COMPARISON_TYPE}_{bed1_filename}_{bed2_filename}.png'
         print("Creating conservation profile plots...")
         plot_conservation_profiles(profiles1, cons_plot_path1, 'UCNE')
-        plot_conservation_profiles(profiles2, cons_plot_path2, 'Random')
+        plot_conservation_profiles(profiles2, cons_plot_path2, f"{COMPARISON_TYPE}")
         plot_individual_examples(profiles1, cons_indivplot_path1, "UCNE")
-        plot_individual_examples(profiles2, cons_indivplot_path2,  "Random")
+        plot_individual_examples(profiles2, cons_indivplot_path2,  f"{COMPARISON_TYPE}")
     else:
         print("\nSkipping conservation profile plots (no profile data available).")
         print("Use --force_recompute to regenerate all data or --force_replot to regenerate plots.")
     
     # Create UMAP visualization
     umap_plot_path = f'{args.output_dir}/umap_plot_{bed1_filename}_{bed2_filename}.png'
-    visualize_embeddings(repr1, repr2, 'UCNE', 'random', umap_plot_path)
+    visualize_embeddings(repr1, repr2, 'UCNE', f"{COMPARISON_TYPE}", umap_plot_path)
     
     # Print statistics
     print_detailed_stats(profiles1, 'UCNE')
-    print_detailed_stats(profiles2, 'Random')
+    print_detailed_stats(profiles2, f"{COMPARISON_TYPE}")
 
 
 if __name__ == "__main__":
