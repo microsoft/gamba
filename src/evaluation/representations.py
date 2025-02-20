@@ -150,7 +150,7 @@ def main():
 
     #get checkpoint path with step=5400
     ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
-    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, 80000)
+    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, 18000)
 
 
     # Load model configuration

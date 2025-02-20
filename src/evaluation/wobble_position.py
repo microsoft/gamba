@@ -146,7 +146,81 @@ class SequenceDataset(Dataset):
     def __getitem__(self, idx):
         return self.sequences[idx], self.scores[idx], self.degeneracies[idx]
 
+def process_bed_file(bed_df, genome, bw, tokenizer, context_size=1000):
+    """Process bed file with context, using -100 padding for non-degenerate regions."""
+    sequences = []
+    scores_list = []
+    degeneracies = []
+    valid_chromosomes = "chr22" #"chr2"  #"chr19"
+
+    for index, row in bed_df.iterrows():
+        chromosome = row['chrom']
+        if chromosome not in valid_chromosomes:
+            continue
+
+        # Original region
+        start = row['start']
+        end = row['end']
+        degeneracy = row['degeneracy'].split(' ')
+        degeneracy = [int(x) if x != '.' else -500 for x in degeneracy]
+        reverse_complement = row['reverse_complement']
+        
+        # Add context
+        context_start = max(0, start - context_size)
+        context_end = min(end + context_size, len(genome[chromosome]))
+        
+        # Get sequence with context
+        ref_sequence = Seq(genome[chromosome][context_start:context_end].seq)
+        
+        # Create padded degeneracy array
+        full_degeneracy = [-100] * context_size + degeneracy + [-100] * context_size
+        # Trim if necessary due to chromosome boundaries
+        if context_start > 0:
+            full_degeneracy = full_degeneracy[context_size-context_start:]
+        if context_end < len(genome[chromosome]):
+            full_degeneracy = full_degeneracy[:-(context_end-end)]
+
+        # Get conservation scores
+        vals = np.zeros(context_end - context_start, dtype=np.float64)
+        intervals = bw.intervals(chromosome, context_start, context_end)
+        
+        if intervals is None:
+            continue
+            
+        for interval_start, interval_end, value in intervals:
+            relative_start = interval_start - context_start
+            relative_end = interval_end - context_start
+            vals[relative_start:relative_end] = value
+            
+        scores = np.round(vals, 2)
+
+        if reverse_complement:
+            ref_sequence = ref_sequence.reverse_complement()
+            scores = scores[::-1].copy()
+            full_degeneracy = full_degeneracy[::-1]
+
+        # Tokenize sequence
+        ref_sequence_tokens = tokenizer.tokenizeMSA(ref_sequence)
+
+        # Ensure everything has the same length
+        min_len = min(len(ref_sequence_tokens), len(scores), len(full_degeneracy))
+        ref_sequence_tokens = ref_sequence_tokens[:min_len]
+        scores = scores[:min_len]
+        full_degeneracy = full_degeneracy[:min_len]
+
+        if len(ref_sequence_tokens) > 2048:  # Keep your existing length limit
+            ref_sequence_tokens = ref_sequence_tokens[:2048]
+            scores = scores[:2048]
+            full_degeneracy = full_degeneracy[:2048]
+
+        sequences.append(ref_sequence_tokens)
+        scores_list.append(scores)
+        degeneracies.append(full_degeneracy)
+
+    return sequences, scores_list, degeneracies
+
 def evaluate_model_and_get_predictions(model, dataloader, device):
+    """Modified evaluation function to handle context."""
     model.eval()
     total_ce_loss = 0
     total_gaussian_loss = 0
@@ -154,62 +228,39 @@ def evaluate_model_and_get_predictions(model, dataloader, device):
     total_tokens = 0
     total_seqs = 0
     total_accuracy = 0
-    #intialize conservation logits as empty tuple of tensors
     conservation_logits = []
     true_phyloP = []
     true_degeneracies = []
+    
     with torch.no_grad():
         for batch in dataloader:
             output = step(model, batch, None, None, training=False)
             num_batches += 1
-            # with torch.no_grad():
-            #     reduce_tensor = torch.stack(
-            #         (
-            #             output["n_processed"],
-            #             output["n_seqs"],
-            #             output["cross_entropy_loss"],
-            #             output["gaussian_loss"],
-            #             output["accuracy"],
-            #             output["scaling_logits"],
-            #             output["conservation_tgt"]
-            #         )
-            #     )
-            #     if WORLD_SIZE > 1:
-            #         dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
-            #         total_tokens += int(reduce_tensor[0].item())
-            #         total_seqs += int(reduce_tensor[1].item())
-            #         total_ce_loss += reduce_tensor[2].item()
-            #         total_gaussian_loss += reduce_tensor[3].item()
-            #         total_accuracy += reduce_tensor[4].item()
-            # else:
+            
             total_tokens += output["n_processed"]
             total_seqs += output["n_seqs"]
             total_ce_loss += output["cross_entropy_loss"]
             total_gaussian_loss += output["gaussian_loss"]
             total_accuracy += output["accuracy"]
             
-            seq_logits = output["seq_logits"]
-            scaling_logits = output["scaling_logits"]
-            conservation_tgt = output["conservation_tgt"]
-            accuracy = output["accuracy"]
-            ce_loss = output["cross_entropy_loss"]
-            gaussian_loss = output["gaussian_loss"]
-            degeneracies_tgt = output["degeneracies_tgt"]
-           
+            # Get next-position predictions by shifting
+            scaling_logits = output["scaling_logits"][:, :-1]  # Remove last prediction
+            conservation_tgt = output["conservation_tgt"][:, 1:]  # Shift targets right
+            degeneracies_tgt = output["degeneracies_tgt"][:, 1:]  # Shift targets right
+            
             conservation_logits.append(scaling_logits)
             true_phyloP.append(conservation_tgt)
             true_degeneracies.append(degeneracies_tgt)
 
-    print("NUM BATCHES: ", num_batches)
-    # Find the maximum length of the tensors
+    # Process tensors
     max_len = max([tensor.size(1) for tensor in conservation_logits])
+    conservation_logits = [torch.nn.functional.pad(tensor, (0, 0, 0, max_len - tensor.size(1)), value=-100) 
+                          for tensor in conservation_logits]
+    true_phyloP = [torch.nn.functional.pad(tensor, (0, max_len - tensor.size(1)), value=-100) 
+                   for tensor in true_phyloP]
+    true_degeneracies = [torch.nn.functional.pad(tensor, (0, max_len - tensor.size(1)), value=-100) 
+                         for tensor in true_degeneracies]
 
-    # Pad all tensors to the maximum length using -100 as the padding value
-    conservation_logits = [torch.nn.functional.pad(tensor, (0, 0, 0, max_len - tensor.size(1)), value=-100) for tensor in conservation_logits]
-    true_phyloP = [torch.nn.functional.pad(tensor, (0, max_len - tensor.size(1)), value=-100) for tensor in true_phyloP]
-    true_degeneracies = [torch.nn.functional.pad(tensor, (0, max_len - tensor.size(1)), value=-100) for tensor in true_degeneracies]
-
-    # Stack the tensors
     conservation_logits = torch.cat(conservation_logits, dim=0)
     true_phyloP = torch.cat(true_phyloP, dim=0)
     true_degeneracies = torch.cat(true_degeneracies, dim=0)
@@ -219,6 +270,43 @@ def evaluate_model_and_get_predictions(model, dataloader, device):
     avg_gaussian_loss = total_gaussian_loss / num_batches
 
     return avg_accuracy, avg_ce_loss, avg_gaussian_loss, conservation_logits, true_phyloP, true_degeneracies
+
+def check_predicted_degeneracies(conservation_logits, true_phyloP, true_degeneracies):
+    """Evaluate PhyloP predictions against next-position degeneracies."""
+    avg_scores_by_degeneracy = {0: [], 1: [], 2: [], 3: [], 4: []}
+    std_scores_by_degeneracy = {0: [], 1: [], 2: [], 3: [], 4: []}
+    
+    for logits, tgt, degeneracies in zip(conservation_logits, true_phyloP, true_degeneracies):
+        mean = logits[:, 0]
+        log_var = logits[:, 1]
+        
+        # Only look at valid positions (not padding and actual degeneracy sites)
+        mask = (tgt != -100) & (degeneracies >= 0) & (degeneracies <= 4)
+        mean = mean[mask]
+        log_var = log_var[mask]
+        degeneracies = degeneracies[mask]
+        
+        mean = mean.cpu().numpy()
+        log_var = log_var.cpu().numpy()
+        degeneracies = degeneracies.cpu().numpy()
+        
+        for deg in [0, 1, 2, 3, 4]:
+            deg_mask = degeneracies == deg
+            if np.any(deg_mask):
+                avg_scores_by_degeneracy[deg].append(np.mean(mean[deg_mask]))
+                std_scores_by_degeneracy[deg].append(np.std(mean[deg_mask]))
+    
+    print("\nPREDICTED NEXT-TOKEN PHYLOP SCORES:")
+    for deg in [0, 1, 2, 3, 4]:
+        if avg_scores_by_degeneracy[deg]:
+            avg_score = np.mean(avg_scores_by_degeneracy[deg])
+            avg_std = np.mean(std_scores_by_degeneracy[deg])
+            num_sites = len(avg_scores_by_degeneracy[deg])
+            print(f"Degeneracy {deg}-fold sites:")
+            print(f"  Average predicted conservation: {avg_score:.3f} ± {avg_std:.3f}")
+            print(f"  Number of sites: {num_sites}")
+        else:
+            print(f"No scores for {deg}-fold sites")
 
 def save_continuous_stretches_to_bed(chromosome, gene_positions, output_file):
     bed_data = []
@@ -401,76 +489,35 @@ def step(
             outputs = model(*batch)
     return outputs
 
-
-def process_bed_file(bed_df, genome, bw, tokenizer):
-    sequences = []
-    scores_list = []
-    degeneracies = []
-    #valid_chromosomes = "chr1 chr2 chr3 chr4 chr5 chr6 chr7 chr8 chr9 chr10 chr11 chr12 chr13 chr14 chr15 chr16 chr17 chr18 chr19 chr20 chr21 chr22 chrX".split()
-    #valid_chromosomes = "chr2 chr22".split()
-    valid_chromosomes = "chr19"
-
-    for index, row in bed_df.iterrows():
-        #get chromosomes start and end by tab
-        chromosome = row['chrom']
-        start = row['start']
-        end = row['end']
-        degeneracy = row['degeneracy'].split(' ')  
-        degeneracy = [int(x) if x != '.' else -500 for x in degeneracy]
-        reverse_complement = row['reverse_complement']
-
-        #print(f"Processing {label} sequence {index} on chromosome {chromosome} from {start} to {end}")
-
-        #cut sequence to 3000bp max:
-        if end - start > 2048:
-            end=start+2048
-            #cut degeneracy array
-            degeneracy = degeneracy[:2048]
-
-        if chromosome not in valid_chromosomes:
-            continue
+def test_prediction_alignment(model, dataloader):
+    model.eval()
+    batch = next(iter(dataloader))
     
-        # Get the reference sequence
-        ref_sequence = Seq(genome[chromosome][start:end].seq)
+    with torch.no_grad():
+        output = step(model, batch, None, None, training=False)
+        
+        # Get non-padded length
+        seq_input = batch[0][0, :, 0]
+        valid_len = ((seq_input != -100) & (seq_input != 8)).sum()
+        
+        # Slice to valid length
+        seq_input = seq_input[:valid_len]
+        seq_target = batch[1][0, :valid_len, 0]
+        seq_preds = torch.argmax(output['seq_logits'][0, :valid_len], dim=-1)
+        
+        cons_input = batch[0][0, :valid_len, 1]
+        cons_target = batch[1][0, :valid_len, 1]
+        cons_means = output['scaling_logits'][0, :valid_len, 0]
 
+        print("\nSequence positions:")
+        for i in range(valid_len-1):
+            print(f"Pos {i}: Input {seq_input[i]} → Pred {seq_preds[i]} → Target (+1) {seq_target[i+1]}")
+            print(f"Pos {i}: Input {seq_input[i]} → Pred {seq_preds[i]} → Target {seq_target[i]}")
 
-        if reverse_complement:
-            ref_sequence = ref_sequence.reverse_complement()
-
-        # Tokenize the reference sequence
-        ref_sequence_tokens = tokenizer.tokenizeMSA(ref_sequence)
-
-        # Initialize vals with zeros
-        vals = np.zeros(end - start, dtype=np.float64)
-
-        # Get the conservation scores from the bigwig file
-        intervals = bw.intervals(chromosome, start, end)
-
-        # Check if intervals is None
-        if intervals is None:
-            # print(f"Chromosome: {chromosome}, Start: {start}, End: {end}")
-            # print("Error: intervals is None")
-            continue
-        else:
-            for interval_start, interval_end, value in intervals:
-                vals[interval_start - start : interval_end - start] = value
-
-        # Round scores to 2 decimal places
-        scores = np.round(vals, 2)
-
-        #if reverse complement, reverse the scores and degeneracies
-        if reverse_complement:
-            scores = scores[::-1].copy()
-            degeneracy = degeneracy[::-1]
-
-        #ensure scores, sequences and degeneracies are the same length, if not, cut the longer one
-        if len(scores) == len(ref_sequence_tokens) and len(degeneracy) == len(ref_sequence_tokens):
-            sequences.append(ref_sequence_tokens)
-            scores_list.append(scores)
-            degeneracies.append(degeneracy)
-        else:
-            continue
-    return sequences, scores_list, degeneracies
+        print("\nConservation positions:") 
+        for i in range(valid_len-1):
+            print(f"Pos {i}: Input {cons_input[i]:.3f} → Pred {cons_means[i]:.3f} → Target (+1) {cons_target[i+1]:.3f}")
+            print(f"Pos {i}: Input {cons_input[i]:.3f} → Pred {cons_means[i]:.3f} → Target {cons_target[i]:.3f}")
 
 def check_actual_degeneracies(exon_scores, exon_degeneracies):
     # Check to see if the actual phyloP scores coincide with degeneracy of sites
@@ -500,49 +547,13 @@ def check_actual_degeneracies(exon_scores, exon_degeneracies):
             print(f"No scores for {deg}-fold sites")
 
 
-def check_predicted_degeneracies(conservation_logits, exon_scores, exon_degeneracies):
-    avg_scores_by_degeneracy = {0: [], 1: [], 2: [], 3: [], 4: []}
-    for logits, tgt, degeneracies in zip(conservation_logits, exon_scores, exon_degeneracies):
-        # conservation logits are mean and var
-        mean = logits[:, 0]
-        log_var = logits[:, 1]
-
-        
-        # apply  mask to ignore positions with -100
-        mask = tgt != -100
-        mean = mean[mask]
-        log_var = log_var[mask]
-        degeneracies = degeneracies[mask]
-
-        
-        #turn log_var and mean to numpy arrays
-        log_var = np.array(log_var.cpu(), dtype=float)
-        mean = np.array(mean.cpu(), dtype=float)
-
-        degeneracies = np.array(degeneracies.cpu(), dtype=int)
-        var = np.exp(log_var)
-        
-        for deg in [0, 1, 2, 3, 4]:
-            deg_scores = mean[degeneracies == deg]
-            if len(deg_scores) > 0:
-                avg_scores_by_degeneracy[deg].append(np.mean(deg_scores))
-    print("PREDICTED:")
-    for deg in [0, 1, 2, 3, 4]:
-        if avg_scores_by_degeneracy[deg]:
-            avg_score = np.mean(avg_scores_by_degeneracy[deg])
-            num_sites = len(avg_scores_by_degeneracy[deg])
-            print(f"Average predicted conservation for {deg}-fold sites: {avg_score} (Number of sites: {num_sites})")
-        else:
-            print(f"No scores for {deg}-fold sites")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Process exon and intron sequences and get representations")
     parser.add_argument('--genome_fasta', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_file', type=str, default='/home/mica/gamba/data_processing/data/degeneracy/chr19', help='Path to the output file')
+    parser.add_argument('--output_file', type=str, default='/home/mica/gamba/data_processing/data/degeneracy/chr22', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
-    parser.add_argument('--chr_coding_sites', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/chr19_degenotate/degeneracy-all-sites.bed', help='Path to the BED file with the degenotate annotated chromosomes')
+    parser.add_argument('--chr_coding_sites', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/chr22_degenotate/degeneracy-all-sites.bed', help='Path to the BED file with the degenotate annotated chromosomes')
     args = parser.parse_args()
 
     # Load BED files
@@ -606,7 +617,7 @@ def main():
 
     # Get checkpoint path with step=5400
     ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
-    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, 80000)
+    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, 18000)
 
     # Load model configuration
     with open(args.config_fpath, "r") as f:
@@ -655,6 +666,7 @@ def main():
     model.to(device)
     model.eval()
 
+
     collator = gLMCollatorWithDegeneracies(
         tokenizer=tokenizer,
         pad_to_multiple_of=None,
@@ -667,6 +679,10 @@ def main():
     exon_dataset = SequenceDataset(exon_sequences, exon_scores, exon_degeneracies)
     print("number of examples in exon dataset:", len(exon_dataset))
     exon_dataloader = DataLoader(exon_dataset, batch_size=2, collate_fn=collator)
+
+    #test and return
+    #test_prediction_alignment(model, exon_dataloader)
+    #return
     
     
     #check the accuracy of the model in predicting on coding sequences as a whole
