@@ -290,6 +290,8 @@ class JambagambaModel(nn.Module):
         # exclude the logits for the first and last tokens for conservation and gap
 
         #shift over conservation logits by 1 from sequence so you can see the start token + first position to make prediction
+       
+        #STOP MIGHT BE WRONG
         scaling_logits = scaling_logits[:, 1:-1]
         # gap_logits = gap_logits[:, 1:-1]
         #dont change cause ground truth is the same

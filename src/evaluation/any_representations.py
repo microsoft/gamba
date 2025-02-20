@@ -697,7 +697,7 @@ def main():
     )
 
     #get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
-    d_model = config.get("d_model", 576) #576/2
+    d_model = config.get("d_model", 512) #512/2
     nhead = config.get("n_head", 8)  
     n_layers = config.get("n_layers", 6)
     dim_feedforward = config.get("dim_feedforward", d_model)
