@@ -183,53 +183,38 @@ class JambagambaModel(nn.Module):
         super().__init__()
         self.embedder = ARDiffusionModel(jambalm).module.model
 
-        # need to split d_model into lm head, scaling head and gap head
-        # self.each_dim = int(d_model / 3)
+        # need to split d_model into lm head and scaling head 
         self.each_dim = int(d_model / 2)
         self.lm_head = nn.Linear(d_model, jambalm.vocab_size)
         self.scaling_head = nn.Linear(d_model, 2)
-        # self.gap_head = nn.Linear(self.each_dim, 1)
-
-        # self.down = nn.Linear(
-        #     2 * jambalm.model.embed_tokens.weight.shape[-1] + d_model, d_model
-        # )
-
+       
         #seq_embedding gets full dimensionality, there is no more any value embedding
         self.seq_embedding = nn.Embedding(jambalm.vocab_size, d_model)
-        #self.value_embedding = nn.Linear(1, self.each_dim)
         
-
         # real number loss
         self.cons_loss_func = GaussianNLLLoss()
         self.mse_loss_func = nn.MSELoss()
-        # self.gap_loss_func = PoissonNLLLoss()
-        # # self.embed_tokens = nn.Embedding(jambalm.vocab_size, d_model)
-        # self.padding_id = padding_id
-        # self.decoder = nn.Linear(2 * jambalm.model.embed_tokens.weight.shape[-1], jambalm.vocab_size)
-        # self.decoder = nn.Linear(2 * jambalm.vocab_size, jambalm.vocab_size)
-        # self.lm_head = self.jambalm.module.lm_head
+
 
     def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> dict:
         # print("shape of tgt: ", tgt.shape)
         # print("shape of src: ", src.shape)
-        # seq_tgt, conservation_tgt, gap_tgt = tgt.split(1, dim=0)
+       
         seq_tgt, conservation_tgt = tgt.split(1, dim=1)
         seq_tgt = seq_tgt.squeeze(1).long()
         conservation_tgt = conservation_tgt.squeeze(1)
-        #print(f"conservation tgt shape:", conservation_tgt.shape)
-        #print(f"seq tgt shape:", seq_tgt.shape)
-        # gap_tgt = gap_tgt.squeeze(0)
-        # 0 is a token not a padding
+      
+        # 0 is a token not a padding for sequence
         n_tokens = (seq_tgt >= 0).sum()
 
-        # seq, conservation, gap = src.split(1, dim=0)
+        
         seq, conservation = src.split(1, dim=1)
         #print("shape of seq: ", seq.shape)
         seq = seq.squeeze(1).long()
         #print("post squeeze & long shape of seq: ", seq.shape)
         conservation = conservation.squeeze(1)
         #print(f"conservation shape:", conservation.shape)
-        # gap = gap.squeeze(0)
+        
         device = src.device
 
         n_seq = torch.tensor(seq.size(1), device=device)
@@ -237,67 +222,18 @@ class JambagambaModel(nn.Module):
 
         # embed seq, conservation and gap separately
         emb_seq = self.seq_embedding(seq)
-        #print(f"embed seq/input embeds shape:", emb_seq.shape)
-
-        # gap has shape (batch, seq_length)
-        # gap_reshaped = gap.view(-1, 1)  # reshape to (seq_length, batch)
-        # embed
-        # emb_gap = self.value_embedding(gap_reshaped)
-        # reshape the output back to (batch, seq_length, embedding dim)
-        # emb_gap = emb_gap.view(1, -1, self.each_dim)
-
-
-        #no more conservation embedding
-        # conservation_reshaped = conservation.reshape(
-        #     -1, 1
-        # )  # reshape to (batch * seq_length, 1)
-        # emb_conservation = self.value_embedding(conservation_reshaped)
-        # emb_conservation = emb_conservation.view(
-        #     seq.size(0), -1, self.each_dim
-        # )  # reshape back to (batch, seq_length, embedding_dim)
-
-        # print(
-        #     f"shapes of emb_seq, emb_conservation, emb_gap: {emb_seq.shape}, {emb_conservation.shape}, {emb_gap.shape}"
-        # )
-        #next, concatenate the embeddings along the hidden dimension and send to the model
-        #inputs_embeds = torch.cat([emb_seq, emb_conservation, emb_gap], dim=-1)
-
-        #no more conservation embedding
-        #inputs_embeds = torch.cat([emb_seq, emb_conservation], dim=-1)
-
+        
         inputs_embeds = emb_seq
-        #inputs_embeds= torch.transpose(emb_seq, 1, 2)
+       
 
         #print(f"shape of input_embeds: {inputs_embeds.shape}")
         # need to set the embedded inputs to inputs_embeds to values in the Jamba model
         output = self.embedder(inputs_embeds=inputs_embeds)["last_hidden_state"]
-        # take the output of the model and split it along the last dimension
-        #seq_output, scaling_output = output.split(output.shape[-1] // 2, dim=-1)
-        # seq_output, scaling_output, gap_output = output.split(
-        #     output.shape[-1] // 3, dim=-1
-        # )
+       
         # put the outputs through their respective linear layers
         seq_logits = self.lm_head(output)
         scaling_logits = self.scaling_head(output)
-        # gap_logits = self.gap_head(gap_output)
-        # print(
-        #     f"shapes of seq_logits, scaling_logits, gap_logits: {seq_logits.shape}, {scaling_logits.shape},"  # {gap_logits.shape}"
-        # )
-        # print(
-        #     f"seq_logits: {seq_logits}, scaling_logits: {scaling_logits}"  # , gap_logits: {gap_logits}"
-        # )
-
-        # exclude the logits for the first and last tokens for conservation and gap
-
-        #shift over conservation logits by 1 from sequence so you can see the start token + first position to make prediction
-       
-        #STOP MIGHT BE WRONG
-        scaling_logits = scaling_logits[:, 1:-1]
-        # gap_logits = gap_logits[:, 1:-1]
-        #dont change cause ground truth is the same
-        conservation_tgt = conservation_tgt[:, 1:-1]
-        # gap_tgt = gap_tgt[:, 1:-1]
-
+        
         # apply CE loss on the seq_logits
         ce_loss = F.cross_entropy(
             seq_logits[:, :-1, :].reshape(-1, seq_logits.shape[-1]),
@@ -341,7 +277,6 @@ class JambagambaModel(nn.Module):
         # print("POISSON LOSS: ", poisson_loss)
         #print("LOSS:", ce_loss + gaussian_loss)
 
-        # print(f"shape of the gap_logits: {gap_logits.shape}")
         # print(f"shape of the scaling_logits: {scaling_logits.shape}")
         # print(f"shape of the seq_logits: {seq_logits.shape}")
         # compute the accuracy
@@ -372,6 +307,65 @@ class JambagambaModel(nn.Module):
             "representation": output,
             "conservation_tgt": conservation_tgt,
             "mse_loss": mse_loss,
+        }
+        return outputs
+    
+class JambaGambaNoConsModel(nn.Module):
+    def __init__(
+        self,
+        jambalm: nn.Module,
+        d_model: int,
+        nhead: int,
+        dim_feedfoward: int,
+        n_layers: int,
+        padding_id: int,
+    ):
+        super().__init__()
+        self.embedder = ARDiffusionModel(jambalm).module.model
+        self.lm_head = nn.Linear(d_model, jambalm.vocab_size)
+        self.seq_embedding = nn.Embedding(jambalm.vocab_size, d_model)
+
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> dict:
+        # Get sequence data only
+        seq_tgt = tgt[:, 0].long()  # Take first channel only
+        seq = src[:, 0].long()      # Take first channel only
+        
+        # Count valid tokens (not padding)
+        n_tokens = (seq_tgt >= 0).sum()
+        n_seq = torch.tensor(seq.size(1), device=src.device)
+        n_processed = n_tokens - seq_tgt.size(1)
+
+        # Embed sequences
+        emb_seq = self.seq_embedding(seq)
+        
+        # Get model outputs
+        output = self.embedder(inputs_embeds=emb_seq)["last_hidden_state"]
+        seq_logits = self.lm_head(output)
+
+        # Calculate CE loss
+        ce_loss = F.cross_entropy(
+            seq_logits[:, :-1, :].reshape(-1, seq_logits.shape[-1]),
+            seq_tgt[:, 1:].flatten(),
+            reduction="mean",
+        )
+
+        # Calculate accuracy
+        with torch.no_grad():
+            pred_tok_seq = torch.argmax(seq_logits[:, :-1, :], dim=-1)
+            seq_accu = (
+                (pred_tok_seq == seq_tgt[:, 1:]) * (seq_tgt[:, 1:] >= 0)
+            ).float().sum() / n_tokens
+
+        outputs = {
+            "seq_logits": seq_logits,
+            "loss": ce_loss,
+            "cross_entropy_loss": ce_loss,
+            OTHER_METRICS_KEY: {"accuracy": seq_accu},
+            "accuracy": seq_accu,
+            "n_tokens": n_tokens,
+            "n_seqs": n_seq,
+            "n_processed": n_processed,
+            "representation": output,
         }
         return outputs
 
