@@ -14,6 +14,7 @@ from gamba.constants import MSA_ALPHABET_PLUS, TaskType
 from gamba.losses import (
     OAMaskedCrossEntropyLoss,
     GaussianNLLLoss,
+    WeightedGaussianNLLLoss,
     InverseGammaNLLLoss,
     PoissonNLLLoss,
 )
@@ -179,6 +180,7 @@ class JambagambaModel(nn.Module):
         dim_feedfoward: int,
         n_layers: int,
         padding_id: int,
+        weights_path="/home/mica/gamba/data_processing/data/240-mammalian/phyloP_weights.pkl",
     ):
         super().__init__()
         self.embedder = ARDiffusionModel(jambalm).module.model
@@ -192,7 +194,8 @@ class JambagambaModel(nn.Module):
         self.seq_embedding = nn.Embedding(jambalm.vocab_size, d_model)
         
         # real number loss
-        self.cons_loss_func = GaussianNLLLoss()
+        #self.cons_loss_func = GaussianNLLLoss()
+        self.cons_loss_func = WeightedGaussianNLLLoss(weights_path=weights_path)
         self.mse_loss_func = nn.MSELoss()
 
 
@@ -319,6 +322,7 @@ class JambaGambaNoConsModel(nn.Module):
         dim_feedfoward: int,
         n_layers: int,
         padding_id: int,
+
     ):
         super().__init__()
         self.embedder = ARDiffusionModel(jambalm).module.model

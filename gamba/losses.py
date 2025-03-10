@@ -140,6 +140,73 @@ class GaussianNLLLoss(nn.Module):
         
         return loss
 
+
+def load_phylop_weights(weights_path="/home/mica/gamba/data_processing/data/240-mammalian/phyloP_weights.pkl"):
+    """Load phyloP weights from pickle file."""
+    with open(weights_path, 'rb') as f:
+        weights_data = pickle.load(f)
+    
+    bin_edges = weights_data['bin_edges']
+    bin_weights = weights_data['bin_weights']
+    
+    return bin_edges, bin_weights
+
+
+class WeightedGaussianNLLLoss(nn.Module):
+    def __init__(self, weights_path="/home/mica/gamba/data_processing/data/240-mammalian/phyloP_weights.pkl", 
+                 full=False, eps=1e-6, reduction='none'):
+        super().__init__()
+        # Use 'none' as reduction to apply weights per sample
+        self.loss_fn = nn.GaussianNLLLoss(full=full, eps=eps, reduction='none')
+        
+        # Load weights
+        self.bin_edges, self.bin_weights = load_phylop_weights(weights_path)
+        self.register_buffer('bin_edges_tensor', self.bin_edges)
+        self.register_buffer('bin_weights_tensor', self.bin_weights)
+        
+    def get_weights_for_scores(self, scores):
+        """Lookup weights for given conservation scores using fast vectorized operations."""
+        # Find which bin each score belongs to
+        bin_indices = torch.searchsorted(self.bin_edges_tensor, scores) - 1
+        
+        # Clamp to valid bin indices
+        bin_indices = torch.clamp(bin_indices, 0, len(self.bin_weights_tensor) - 1)
+        
+        # Get weights for each score
+        weights = self.bin_weights_tensor[bin_indices]
+        return weights
+        
+    def forward(self, pred, tgt):
+        # Mask where tgt is not equal to -100
+        mask = tgt != -100
+        
+        mean = pred[:, :, 0]
+        log_var = pred[:, :, 1]
+        
+        # Apply the mask
+        mean_masked = mean[mask]
+        log_var_masked = log_var[mask]
+        tgt_masked = tgt[mask]
+        
+        # Calculate variance
+        var_masked = torch.exp(log_var_masked)
+        
+        # Optional: Add debug logging similar to original
+        if torch.any(var_masked < 1e-6):
+            print("variance is very small: ", var_masked[var_masked < 1e-6])
+        
+        # Calculate loss per sample (using reduction='none')
+        sample_losses = self.loss_fn(mean_masked, tgt_masked, var_masked)
+        
+        # Get weights for each target score
+        weights = self.get_weights_for_scores(tgt_masked)
+        
+        # Apply weights to individual losses
+        weighted_losses = sample_losses * weights
+        
+        # Return mean of weighted losses
+        return weighted_losses.mean()
+        
 class InverseGammaNLLLoss(nn.Module):
     def __init__(self):
         super().__init__()
