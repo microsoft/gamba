@@ -194,8 +194,8 @@ class JambagambaModel(nn.Module):
         self.seq_embedding = nn.Embedding(jambalm.vocab_size, d_model)
         
         # real number loss
-        #self.cons_loss_func = GaussianNLLLoss()
-        self.cons_loss_func = WeightedGaussianNLLLoss(weights_path=weights_path)
+        self.cons_loss_func = GaussianNLLLoss()
+        #self.cons_loss_func = WeightedGaussianNLLLoss(weights_path=weights_path)
         self.mse_loss_func = nn.MSELoss()
 
 
@@ -526,7 +526,7 @@ def _get_hf_model(
     *,
     model_config: Optional[dict] = None,
     pretrained: bool = False,
-    trust_remote_code: bool = False,
+    trust_remote_code: bool = True,
 ) -> nn.Module:
     if model_config and pretrained:
         # can't overwrite the config of a pretrained model
@@ -577,17 +577,17 @@ def _get_hf_model(
 
 
 def _create_jamba(
-    task: TaskType, model_config: dict, pad_id: int
+    task: TaskType, model_config: dict, pad_id: int, trust_remote_code:bool=True,
 ) -> Tuple[nn.Module, Set[Type[nn.Module]]]:
     pretrained = model_config.pop("pretrained", False)
     model = _get_hf_model(
-        "ai21labs/Jamba-v0.1", pad_id, pretrained=pretrained, model_config=model_config
+        "ai21labs/Jamba-v0.1", pad_id, pretrained=pretrained, model_config=model_config, trust_remote_code=trust_remote_code,
     )
     return model, {type(layer) for layer in model.model.layers}
 
 
 def create_model(
-    task: TaskType, model_type: str, model_config: dict, pad_id: int
+    task: TaskType, model_type: str, model_config: dict, pad_id: int, trust_remote_code:bool=True,
 ) -> Tuple[nn.Module, Set[Type[nn.Module]]]:
     if model_type == "bytenet":
         model, blocks = _create_bytenet(task, model_config, pad_id)

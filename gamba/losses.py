@@ -139,8 +139,8 @@ class GaussianNLLLoss(nn.Module):
         loss = self.loss_fn(mean, tgt, var)
         
         return loss
-
-
+  
+import pickle
 def load_phylop_weights(weights_path="/home/mica/gamba/data_processing/data/240-mammalian/phyloP_weights.pkl"):
     """Load phyloP weights from pickle file."""
     with open(weights_path, 'rb') as f:
@@ -150,6 +150,89 @@ def load_phylop_weights(weights_path="/home/mica/gamba/data_processing/data/240-
     bin_weights = weights_data['bin_weights']
     
     return bin_edges, bin_weights
+
+class WeightedMSELoss(nn.Module):
+    def __init__(self, weights_path="/home/mica/gamba/data_processing/data/240-mammalian/phyloP_weights.pkl", 
+                 reduction='mean'):
+        super().__init__()
+        self.reduction = reduction
+        
+        # Load weights
+        self.bin_edges, self.bin_weights = load_phylop_weights(weights_path)
+        self.register_buffer('bin_edges_tensor', self.bin_edges)
+        self.register_buffer('bin_weights_tensor', self.bin_weights)
+        
+    def get_weights_for_scores(self, scores):
+        """Lookup weights for given conservation scores using fast vectorized operations."""
+        # Find which bin each score belongs to
+        bin_indices = torch.searchsorted(self.bin_edges_tensor, scores) - 1
+        
+        # Clamp to valid bin indices
+        bin_indices = torch.clamp(bin_indices, 0, len(self.bin_weights_tensor) - 1)
+        
+        # Get weights for each score
+        weights = self.bin_weights_tensor[bin_indices]
+        return weights
+        
+    def forward(self, pred, tgt):
+        # Mask where tgt is not equal to -100 (padding value)
+        mask = tgt != -100
+        
+        # For MSE, we just need the predicted values, not the variance
+        # If your model outputs both mean and variance, use only the mean
+        if pred.shape[-1] > 1:
+            # If the model is still outputting mean and log_var, take just the mean
+            pred_values = pred[:, :, 0]
+        else:
+            # If the model is already outputting only predictions
+            pred_values = pred.squeeze(-1)
+        
+        # Apply the mask
+        pred_masked = pred_values[mask]
+        tgt_masked = tgt[mask]
+        
+        # Calculate MSE loss per sample
+        sample_losses = (pred_masked - tgt_masked) ** 2
+        
+        # Get weights for each target score
+        weights = self.get_weights_for_scores(tgt_masked)
+        
+        # Apply weights to individual losses
+        weighted_losses = sample_losses * weights
+        
+        # Return based on reduction method
+        if self.reduction == 'none':
+            return weighted_losses
+        elif self.reduction == 'sum':
+            return weighted_losses.sum()
+        else:  # default is 'mean'
+            return weighted_losses.mean()
+
+class ConsMSELoss(nn.Module):
+    def __init__(self, reduction: str = 'mean'):
+        super().__init__()
+        self.loss_fn = nn.MSELoss(reduction=reduction)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tgt: torch.Tensor,
+    ) -> torch.Tensor:
+        # pred: torch.Tensor now has shape (batch, seq_length, 1) - just the predicted value
+        # mask is where tgt is not equal to -100
+        mask = tgt != -100
+        
+        # Get just the predicted values (not variance)
+        pred_values = pred[:, :, 0]
+        
+        # Apply the mask to predictions and targets
+        pred_values = pred_values[mask]
+        tgt_values = tgt[mask]
+        
+        # Calculate MSE loss
+        loss = self.loss_fn(pred_values, tgt_values)
+        
+        return loss
 
 
 class WeightedGaussianNLLLoss(nn.Module):
