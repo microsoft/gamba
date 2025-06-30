@@ -57,6 +57,7 @@ python data_processing/generate_clean_phyloP.py #this needs to be run for EACH c
 #     echo "running for chromosome chr$chrom"
 #     python data_processing/generate_clean_phyloP.py --chromosome "chr$chrom"
 # done
+#to make a fasta of the same data run data_processing/generate_same_data_fasta.py
 # now need to uncompress the data before running 
 python data_procesing/uncompress_npz.py --type "small"
 python assert_chromosome_sizes.py --type "small" #check this returns correct
@@ -73,4 +74,5 @@ python assert_chromosome_sizes.py --type "small" #check this returns correct
 # valid/
 #    (with similar but for chr3 and 16)
 python /src/test_sequence.py #(do not do mini-run)
+# promoters from https://epd.expasy.org/ftp/epdnew/human/current/
 ```
