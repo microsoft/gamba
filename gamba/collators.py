@@ -246,6 +246,113 @@ class LMCollator:
 
         return out, lbls
 
+class gLMMLMCollator:
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        pad_to_multiple_of: Optional[int] = None,
+        test: bool = False,
+    ) -> None:
+        """A collator for masked language modeling on genome data"""
+        self.tokenizer = tokenizer
+        self.start_id = self.tokenizer.tokenize([START])
+        self.stop_id = self.tokenizer.tokenize([STOP])
+        self.pad_to_mult = pad_to_multiple_of
+        self.test = test
+
+    def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray]]):
+        sequence = [torch.tensor(s, dtype=torch.long) for s, _ in data]
+        scaling = [torch.tensor(s, dtype=torch.float32) for _, s in data]
+
+        if not self.test:
+            reverse_flags = torch.rand(len(sequence)) > 0.5
+            reverse_indices = torch.where(reverse_flags)[0]
+            for i in reverse_indices:
+                if (sequence[i] == 4).any():
+                    continue
+                sequence[i] = self.reverse_complement(sequence[i])
+                scaling[i] = scaling[i].flip(dims=[0])
+
+        # add special tokens
+        sequence = [
+            torch.cat([torch.tensor(self.start_id, dtype=torch.long), s, torch.tensor(self.stop_id, dtype=torch.long)])
+            for s in sequence
+        ]
+        scaling = [torch.nn.functional.pad(s, (1, 1), value=0) for s in scaling]
+
+        sequence, _ = self.pad_arrays(sequence, dtype=torch.long)
+        scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
+
+        if self.test:
+            # No masking in test mode
+            labels = sequence.clone()
+            labels[labels == self.tokenizer.pad_id] = -100
+            return (
+                torch.stack([sequence, scaling], dim=1),
+                torch.stack([labels, scale_lbs], dim=1),
+            )
+
+        # MLM masking
+        input_ids, labels_seq, masked_scaling, labels_scaling = self.mask_inputs(sequence, scaling)
+        return (
+            torch.stack([input_ids, masked_scaling], dim=1),
+            torch.stack([labels_seq, labels_scaling], dim=1),
+        )
+
+
+    def mask_inputs(
+        self, 
+        input_ids: torch.Tensor, 
+        scaling: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Apply BERT-style 15% masking to sequence and conservation scores"""
+        labels_seq = input_ids.clone()
+        labels_scaling = scaling.clone()
+
+        # Create 15% mask, avoiding pads
+        probability_matrix = torch.full(input_ids.shape, 0.15, device=input_ids.device)
+        special_tokens_mask = (input_ids == self.tokenizer.pad_id)
+        probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
+        mask = torch.bernoulli(probability_matrix).bool()
+
+        # Apply to sequence (as before)
+        indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8, device=input_ids.device)).bool() & mask
+        input_ids[indices_replaced] = self.tokenizer.mask_id
+
+        indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5, device=input_ids.device)).bool() & mask & ~indices_replaced
+        vocab_size = 11
+        random_words = torch.randint(vocab_size, input_ids.shape, dtype=torch.long, device=input_ids.device)
+        input_ids[indices_random] = random_words[indices_random]
+
+        labels_seq[~mask] = -100  # standard MLM label ignore
+        labels_scaling[~mask] = -100.0  # for conservation loss ignore
+        print("label_seq min:", labels_seq.min(), "label_seq max:", labels_seq.max())
+        assert labels_seq.min() >= -100
+        assert labels_seq.max() < vocab_size
+
+
+        return input_ids, labels_seq, scaling, labels_scaling
+
+
+    def pad_arrays(self, sequence, dtype):
+        max_len = max(len(s) for s in sequence)
+        if self.pad_to_mult is not None:
+            max_len = (
+                self.pad_to_mult * np.ceil(max_len / self.pad_to_mult).astype(int)
+            ).item()
+
+        out = torch.full((len(sequence), max_len), self.tokenizer.pad_id, dtype=dtype)
+        for i, s in enumerate(sequence):
+            out[i, : len(s)] = s.to(out.device)
+
+        lbls = out.clone()
+        lbls[lbls == self.tokenizer.pad_id] = -100
+        return out, lbls
+
+    def reverse_complement(self, sequence: torch.Tensor) -> torch.Tensor:
+        complement_map = torch.tensor([3, 2, 1, 0], device=sequence.device)  # C, T, A, G
+        return complement_map[sequence.flip(dims=[-1])]
+
 
 class gLMCollator:
     def __init__(
