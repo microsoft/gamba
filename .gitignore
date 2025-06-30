@@ -2,3 +2,6 @@
 /data_processing/data/
 /wandb
 /gamba/__pycache__
+/clean_dcps/
+/clean_caduceus_dcps/
+/dcps/
