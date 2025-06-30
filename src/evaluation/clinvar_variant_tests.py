@@ -95,6 +95,11 @@ def process_variants(name, bigwig_file, genome_fasta, model, collator, tokenizer
     valid_chromosomes = "chr1 chr2 chr3 chr4 chr5 chr6 chr7 chr8 chr9 chr10 chr11 chr12 chr13 chr14 chr15 chr16 chr17 chr18 chr19 chr20 chr21 chr22 chrX".split()
     non_matching =0
     total = len(df)
+    print(f"Total number of variants: {total}")
+    #df = df[df['label'].isin(['Common', 'Pathogenic'])]
+    #get first 100
+    df = df.head(100)
+    print(f"Total number of subsetted variants: {len(df)}")
     for index, row in df.iterrows():
         #Lifted_Chr,Lifted_Position
         chromosome = "chr" + str(row['chrom'])
@@ -176,7 +181,8 @@ def process_variants(name, bigwig_file, genome_fasta, model, collator, tokenizer
         if mutation_pos >= len(mutated_sequence_tokens):
             print(f"Mutation position {mutation_pos} is out of bounds for mutated sequence length {len(mutated_sequence_tokens)}")
             continue
-
+        
+        print("Calculating log-likelihood ratio for", chromosome, position, ref, ">", alt)
          # Calculate average log-likelihood for the mutated sequence at the mutation position
         mutated_log_likelihood = calculate_average_log_likelihood(mutated_sequence_tokens, scores, model, collator, device, mutation_pos)
 
@@ -208,6 +214,7 @@ def plot_log_likelihood_ratios(common_log_likelihood_ratios, pathogenic_log_like
     plt.title(f'Log-Likelihood Ratio for {mutation_file} Variants')
     plt.legend(loc='upper right')
     plt.savefig(output_file)
+    print(f"File saved to {output_file}")
 
 
 def get_latest_dcp_checkpoint_path(ckpt_dir: str, last_step: int = -1) -> Optional[str]:
@@ -231,7 +238,7 @@ def main():
     parser.add_argument('--name', type=str, default ="clinvar", help='type of clinvar variant to use')
     parser.add_argument('--genome_fasta', type=str,  default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_file', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/', help='Path to the output file')
+    parser.add_argument('--output_file', type=str, default='/home/mica/gamba/data_processing/data/VEP/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str,  default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     args = parser.parse_args()
 
@@ -243,7 +250,7 @@ def main():
 
     #get checkpoint path with step=5400
     ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
-    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, 80000)
+    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, 78000)
 
     
     with open(args.config_fpath, "r") as f:

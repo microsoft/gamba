@@ -1,4 +1,12 @@
 import argparse
+import torch
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from pyfaidx import Fasta
+import pyBigWig
+
+import argparse
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -25,7 +33,7 @@ from sequence_models.utils import transformer_lr, warmup
 import torch.nn.functional as F 
 from evodiff.utils import Tokenizer
 from gamba.collators import gLMCollator
-from gamba.model import create_model, JambaGambaModelWithDegeneracies
+from gamba.model import create_model, JambagambaModel
 from gamba.constants import TaskType, DNA_ALPHABET_PLUS
 import pyBigWig
 import json
@@ -62,8 +70,6 @@ from torch.utils.data import DataLoader, Subset
 from sequence_models.samplers import SortishSampler, ApproxBatchSampler
 from sequence_models.utils import transformer_lr, warmup
 
-from evodiff.utils import Tokenizer
-
 #import GradScaler
 from torch.cuda.amp import GradScaler
 
@@ -73,7 +79,6 @@ import sys
 sys.path.append(os.environ["PWD"])  # allow import from project directory.
 
 from gamba.activation_checkpointing import apply_activation_checkpointing
-from gamba.collators import gLMCollatorWithDegeneracies, LMCollator, OAMaskCollator
 from gamba.constants import TaskType, DNA_ALPHABET_PLUS
 from gamba.datasets import ConservationDataset
 from gamba.model import (
@@ -135,16 +140,15 @@ def check_continuous_stretches_bed_file(bed_file):
 
 
 class SequenceDataset(Dataset):
-    def __init__(self, sequences, scores, deg):
+    def __init__(self, sequences, scores):
         self.sequences = sequences
         self.scores = scores
-        self.degeneracies = deg
 
     def __len__(self):
         return len(self.sequences)
 
     def __getitem__(self, idx):
-        return self.sequences[idx], self.scores[idx], self.degeneracies[idx]
+        return self.sequences[idx], self.scores[idx]
 
 def process_bed_file(bed_df, genome, bw, tokenizer, context_size=1000):
     """Process bed file with context, using -100 padding for non-degenerate regions."""
@@ -433,7 +437,7 @@ def extract_gene_positions(bed_df):
             'continuous_stretches': continuous_stretches,
             'reverse_complemented': reverse_complement
         }
-        print(f"continuous_stretches: {continuous_stretches}")
+        #print(f"continuous_stretches: {continuous_stretches}")
 
     return gene_positions
 
@@ -490,74 +494,121 @@ def step(
             outputs = model(*batch)
     return outputs
 
-def test_prediction_alignment(model, dataloader):
+import os
+import pickle
+
+def compute_per_token_perplexities(model, dataloader, degeneracies_list, device="cuda", output_file=None):
     model.eval()
-    batch = next(iter(dataloader))
-    
+    model.to(device)
+
+    all_perplexities = []
+    all_degeneracies = []
+    from collections import defaultdict
+    per_deg_perplexities = defaultdict(list) 
+
     with torch.no_grad():
-        output = step(model, batch, None, None, training=False)
-        
-        # Get non-padded length
-        seq_input = batch[0][0, :, 0]
-        valid_len = ((seq_input != -100) & (seq_input != 8)).sum()
-        
-        # Slice to valid length
-        seq_input = seq_input[:valid_len]
-        seq_target = batch[1][0, :valid_len, 0]
-        seq_preds = torch.argmax(output['seq_logits'][0, :valid_len], dim=-1)
-        
-        cons_input = batch[0][0, :valid_len, 1]
-        cons_target = batch[1][0, :valid_len, 1]
-        cons_means = output['scaling_logits'][0, :valid_len, 0]
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Per-token perplexity")):
+            out, lbls = batch
+            #print(f"type of out: {type(out)}, should be torch tensor")
+            #print(f"shape of out: {(out.shape)}, should be batch, 2, seq_len")
+            #print(f"type of lbls: {type(lbls)}, should be torch tensor")
+            #print(f"shape of lbls: {(lbls.shape)}, should be batch, 2, seq_len")
+            #out is batch, 2, seq_len where the first item of second dimension is sequence and second is scaling
+            cons_scores = out[:, 1, :]
+            #print(f"shape of cons_scores: {cons_scores.shape}, should be (batch, seq_len)")
+            sequence = out[:, 0, :]
+            #print(f"shape of sequence: {sequence.shape}, should be (batch, seq_len)")
+            #lbls is the same format as out, so seq_lbls is the first item of dim 2, second is scaling_lbls
+            seq_lbls = lbls[:, 0, :]
+            #print(f"shape of seq_lbls: {seq_lbls.shape}, should be (batch, seq_len)")
+            scaling_lbls = lbls[:, 1, :]
+            #print(f"shape of scaling_lbls: {scaling_lbls.shape}, should be (batch, seq_len)")
+            sequence = sequence[0].to(device)        # (seq_len,)
+            #print(f"shape of sequence: {sequence.shape}, should be: (seq_len,)")
+            cons_scores = cons_scores[0].to(device)  # (seq_len,)
+            #print(f"shape of cons_scores: {cons_scores.shape}, should be: (seq_len,)")
+            degeneracies = degeneracies_list[batch_idx]
+            #print(f"shape of degeneracies: {len(degeneracies)}, should be: (seq_len,)")
 
-        print("\nSequence positions:")
-        for i in range(valid_len-1):
-            print(f"Pos {i}: Input {seq_input[i]} → Pred {seq_preds[i]} → Target (+1) {seq_target[i+1]}")
-            print(f"Pos {i}: Input {seq_input[i]} → Pred {seq_preds[i]} → Target {seq_target[i]}")
+            seq_len = sequence.size(0)
+            print(f"Sequence length: {seq_len}, Batch index: {batch_idx}")
+            print(f"Degeneracies: {degeneracies}")
+            for pos in range(1, seq_len -1 ):
+                print("pos:", pos)
+                input_tokens = sequence[:pos].unsqueeze(0)      # (1, pos)
+                print(f"shape of input_tokens: {input_tokens.shape}, should be (1, pos)")
+                input_scores = cons_scores[:pos].unsqueeze(0)   # (1, pos)
+                print(f"shape of input_scores: {input_scores.shape}, should be (1, pos)")
+                next_token = sequence[:pos].unsqueeze(0)            # (1, 1)
+                print(f"shape of next_token: {next_token.shape}, should be (1, pos)")
+                next_score = cons_scores[:pos].unsqueeze(0)         # (1, 1)
+                print(f"shape of next_score: {next_score.shape}, should be (1, pos)")
 
-        print("\nConservation positions:") 
-        for i in range(valid_len-1):
-            print(f"Pos {i}: Input {cons_input[i]:.3f} → Pred {cons_means[i]:.3f} → Target (+1) {cons_target[i+1]:.3f}")
-            print(f"Pos {i}: Input {cons_input[i]:.3f} → Pred {cons_means[i]:.3f} → Target {cons_target[i]:.3f}")
+                # Stack as (batch, 2, seq_len) → model expects this
+                src = torch.stack([input_tokens, input_scores], dim=1)  # (1, 2, pos)
+                print(f"shape of src: {src.shape}, should be (1, 2, pos)")
+                tgt = torch.stack([next_token, next_score], dim=1)      # (1, 2, pos)
+                print(f"shape of tgt: {tgt.shape}, should be (1, 2, pos)")
+                #print degeneracies unless at the end of the sequence
+                # if pos < seq_len - 2:
+                #     print(f"Degeneracy at pos {pos}: {degeneracies[pos]}")
+                try:
+                    outputs = model(src, tgt)
+                    logits = outputs["seq_logits"]  # (1, pos, vocab_size)
+                    print(f"seq_logits shape: {outputs['seq_logits'].shape}")
+                    log_probs = F.log_softmax(logits[0, -1], dim=-1)
+                    #need to get the next token from tgt, which is the last pos of the first dimension, tgt shape is (1, 2, pos) i need to ignore batch, then get the first item of dim 2 at pos
+                    next_token = tgt[0, 0, -1]
+                    print("next_token dtype:", tgt[0, 0, -1].dtype, "value:", tgt[0, 0, -1])
+                    next_token = int(next_token.item())  # Convert to int for indexing
+                    print(f"next_token: {next_token}, log_probs shape: {log_probs.shape}")
+                    nll = -log_probs[next_token]
+                    perplexity = torch.exp(nll).item()
+                    print(f"✅ Success at batch {batch_idx}, pos {pos} — perplexity: {perplexity:.3f}")
 
-def check_actual_degeneracies(exon_scores, exon_degeneracies):
-    # Check to see if the actual phyloP scores coincide with degeneracy of sites
-    avg_scores_by_degeneracy = {0: [], 1: [], 2: [], 3: [], 4: []}
-    
-    for scores, degeneracies in zip(exon_scores, exon_degeneracies):
-        scores = np.array(scores.cpu().numpy(), dtype=float)
-        
-        mask = scores != -100
-        scores = scores[mask]
-        degeneracies = degeneracies[mask]
 
-        #turn degeneracies to cpu
-        degeneracies = np.array(degeneracies.cpu(), dtype=int)
-        for deg in [0, 1, 2, 3, 4]:
-            deg_scores = scores[degeneracies == deg]
-            if len(deg_scores) > 0:
-                avg_scores_by_degeneracy[deg].append(np.mean(deg_scores))
-    
-    print("TRUE:")
-    for deg in [0, 1, 2, 3, 4]:
-        if avg_scores_by_degeneracy[deg]:
-            avg_score = np.mean(avg_scores_by_degeneracy[deg])
-            num_sites = len(avg_scores_by_degeneracy[deg])
-            print(f"Average true conservation for {deg}-fold sites: {avg_score} (Number of sites: {num_sites})")
-        else:
-            print(f"No scores for {deg}-fold sites")
+                    all_perplexities.append(perplexity)
+                    all_degeneracies.append(degeneracies[pos])
+                    per_deg_perplexities[degeneracies[pos]].append(perplexity) 
+                except Exception as e:
+                    print(f"Error at batch {batch_idx}, pos {pos}: {e}")
+                    continue
+
+            #break
+    # Convert to numpy arrays for easier handling
+    # === Mean ± SEM per degeneracy level ===
+    if not per_deg_perplexities:
+        print("⚠️ No valid perplexities were collected. Check for model output issues.")
+
+    print("\n📊 Mean ± SEM Perplexity by Degeneracy:")
+    #don't include -100 as a key
+    per_deg_perplexities = {k: v for k, v in per_deg_perplexities.items() if k != -100}
+    for deg in sorted(per_deg_perplexities.keys()):
+        values = per_deg_perplexities[deg]
+        mean = np.mean(values)
+        sem = np.std(values, ddof=1) / np.sqrt(len(values))
+        print(f"  Degeneracy {deg}-fold: {mean:.3f} ± {sem:.3f}  (N = {len(values)})")
+
+    return all_perplexities, all_degeneracies
+
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Process exon and intron sequences and get representations")
-    parser.add_argument('--genome_fasta', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
-    parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_file', type=str, default='/home/mica/gamba/data_processing/data/degeneracy/chr22', help='Path to the output file')
-    parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
-    parser.add_argument('--chr_coding_sites', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/chr22_degenotate/degeneracy-all-sites.bed', help='Path to the BED file with the degenotate annotated chromosomes')
+    parser = argparse.ArgumentParser(description="Token-wise perplexity vs degeneracy")
+    parser.add_argument('--genome_fasta', type=str,
+                        default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa')
+    parser.add_argument('--big_wig', type=str,
+                        default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig')
+    parser.add_argument('--output_file', type=str,
+                        default='/home/mica/gamba/data_processing/data/degeneracy/chr22/')
+    parser.add_argument('--config_fpath', type=str,
+                        default='/home/mica/gamba/configs/jamba-small-240mammalian.json')
+    parser.add_argument('--chr_coding_sites', type=str,
+                        default='/home/mica/gamba/data_processing/data/240-mammalian/chr22_degenotate/degeneracy-all-sites.bed')
+    parser.add_argument('--target_chrom', type=str, default='chr22')
     args = parser.parse_args()
 
-    # Load BED files
+      # Load BED files
     gene_df = load_bed_file(args.chr_coding_sites)
     #intron_bed_df = load_bed_file(args.intron_bed_file)
 
@@ -644,7 +695,7 @@ def main():
     padding_id = config.get("padding_id", 0)
 
     # Set up the model load from last checkpoint
-    model = JambaGambaModelWithDegeneracies(
+    model = JambagambaModel(
             model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
         )
 
@@ -669,48 +720,30 @@ def main():
     model.eval()
 
 
-    collator = gLMCollatorWithDegeneracies(
+    collator = gLMCollator(
         tokenizer=tokenizer,
         pad_to_multiple_of=None,
         test=True,
     )
-
     #exon sequences
+
+
+    # Prepare sequences and degeneracies
     exon_sequences, exon_scores, exon_degeneracies = process_bed_file(exon_bed_df, genome, bw, tokenizer)
 
-    exon_dataset = SequenceDataset(exon_sequences, exon_scores, exon_degeneracies)
+    exon_dataset = SequenceDataset(exon_sequences, exon_scores)  # Note: degeneracies not included
+    exon_dataloader = DataLoader(exon_dataset, batch_size=1, collate_fn=collator)
     print("number of examples in exon dataset:", len(exon_dataset))
-    exon_dataloader = DataLoader(exon_dataset, batch_size=2, collate_fn=collator)
 
-    #test and return
-    #test_prediction_alignment(model, exon_dataloader)
-    #return
-    
-    
-    #check the accuracy of the model in predicting on coding sequences as a whole
-    accuracy, ce_loss, gaussian_loss, conservation_logits, true_phyloP, true_degeneracies = evaluate_model_and_get_predictions(model, exon_dataloader, device)
-    print(f"Accuracy on coding sequences: {accuracy:.4f}")
-    print(f"Cross-Entropy Loss on coding sequences: {ce_loss:.4f}")
-    print(f"Gaussian Loss on coding sequences: {gaussian_loss:.4f}")
-    #put everything .cpu()
+    # Zip degeneracies outside the dataloader
+    perps, degs = compute_per_token_perplexities(model, exon_dataloader, exon_degeneracies, device="cuda")
 
-
-    #check to see if the actual phyloP scores in the exons have a wobble (i.e. the third position is not conserved)
-
-                                         
-    check_actual_degeneracies(true_phyloP, true_degeneracies)
-    # print(f"len(conseration_logits): {len(conservation_logits)}")
-    # print(f"len(exon_degeneracies): {len(exon_degeneracies)}")
-    #check to see if the predicted phyloP scores follow the exon degeneracies
-    #flip the ordering of conservation logits
-    check_predicted_degeneracies(conservation_logits, true_phyloP, true_degeneracies)
-    #check if drops in sequence logit prediction accuracy are correlated with drops in phyloP scores TO-DO
-    
-    with open(os.path.join(args.output_file, 'results.txt'), 'w') as f:
-        sys.stdout = f
-        check_actual_degeneracies(true_phyloP, true_degeneracies)
-        check_predicted_degeneracies(conservation_logits, true_phyloP, true_degeneracies)
-        sys.stdout = sys.__stdout__  # reset redirect
+    # Print per-degeneracy perplexity stats
+    for deg in sorted(set(degs)):
+        mask = [d == deg for d in degs]
+        scores = [p for p, m in zip(perps, mask) if m]
+        avg_score = sum(scores) / len(scores)
+        print(f"Average perplexity for {deg}-fold sites: {avg_score:.3f} (Number of sites: {len(scores)})")
 
 
 if __name__ == "__main__":

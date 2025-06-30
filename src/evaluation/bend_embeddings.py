@@ -17,7 +17,7 @@ yaml = __import__('yaml')
 
 sys.path.append("../gamba")
 from gamba.constants import TaskType, DNA_ALPHABET_PLUS
-from gamba.model import create_model, JambagambaModel
+from gamba.model import create_model, JambagambaModel, JambaGambaNoConsModel
 from gamba.collators import gLMCollator
 from evodiff.utils import Tokenizer
 
@@ -63,13 +63,22 @@ class GambaEmbedder:
             padding_id=config.get("padding_id", 0)
         ).to(self.device).eval()
 
+        # self.model = JambaGambaNoConsModel(
+        #     model_core,
+        #     d_model=config.get("d_model", 512),
+        #     nhead=config.get("n_head", 8),
+        #     n_layers=config.get("n_layers", 6),
+        #     dim_feedfoward=config.get("dim_feedforward", 512),
+        #     padding_id=config.get("padding_id", 0)
+        # ).to(self.device).eval()
+
         ckpt = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location=self.device)
         self.model.load_state_dict(ckpt["model_state_dict"])
 
         self.collator = gLMCollator(tokenizer=self.tokenizer, test=True)
         self.max_length = 2048
 
-    def embed_and_save(self, chunked_data, output_dir, split_name, chunk_size=1000, batch_size=48):
+    def embed_and_save(self, chunked_data, output_dir, task, split_name, chunk_size=1000, batch_size=48):
         os.makedirs(output_dir, exist_ok=True)
         total_regions = len(chunked_data)
         num_chunks = math.ceil(total_regions / chunk_size)
@@ -107,11 +116,16 @@ class GambaEmbedder:
 
                     full_embedding = np.concatenate(all_embeddings, axis=0).astype(np.float32)
 
-                    true_seq_len = region_data.get('true_seq_len', full_embedding.shape[0])
-                    if full_embedding.shape[0] > true_seq_len:
-                        print(f"[DEBUG] Trimming padded tokens: {full_embedding.shape[0]} → {true_seq_len}")
-                        full_embedding = full_embedding[:true_seq_len]
-                    full_embedding = full_embedding[np.newaxis, ...]
+                    if "variant_effects" in task:
+                        snp_pos = region_data.get('snp_relative_pos', 2047)
+                        print(f"[DEBUG] Extracting SNP position embedding at {snp_pos}")
+                        full_embedding = full_embedding[snp_pos][np.newaxis, np.newaxis, :]  # shape (1, 1, dim)
+                    else:
+                        true_seq_len = region_data.get('true_seq_len', full_embedding.shape[0])
+                        if full_embedding.shape[0] > true_seq_len:
+                            print(f"[DEBUG] Trimming padded tokens: {full_embedding.shape[0]} → {true_seq_len}")
+                            full_embedding = full_embedding[:true_seq_len]
+                        full_embedding = full_embedding[np.newaxis, ...]  # shape (1, seq_len, dim)
                     label_np = np.array(label, dtype=np.float32)
                     print(f"[DEBUG] Full embedding shape for region {global_id}: {full_embedding.shape}")
                     print(f"[DEBUG] Label shape for region {global_id}: {label_np.shape}")
@@ -138,13 +152,19 @@ def extract_sequences(bed_df, genome_fasta, bigwig_path, label_matrix, seq_len=2
     chunked_data = []
     for idx, row in tqdm(bed_df.iterrows(), total=len(bed_df)):
         chrom = row['chromosome']
-        start = int(row['start']) - flank
-        end = int(row['end']) + flank
+        #if chrom is an int, add "chr" prefix
+        if isinstance(chrom, int):
+            chrom = f"chr{chrom}"
+        if flank >0:
+            start = int(row['start']) - flank
+            end = int(row['start']) + 1
+        else:
+            start = int(row['start']) 
+            end = int(row['end']) #+ flank don't care about downstream context
         strand = row['strand'] if 'strand' in row else '+'
         if chrom not in genome:
             print(f"Skipping missing chrom: {chrom}")
             continue
-
         try:
             seq = genome[chrom][start:end].seq.upper()
             original_seq_len = len(seq)
@@ -215,26 +235,36 @@ def main():
 
     root = "/media/data/BEND_backups/data"
     task = args.task
-    output_dir = f"/media/data2/gamba_embed/{task}/gamba/"
+    output_dir = f"/media/data2/gamba_nocons_embed/{task}/gamba_nocons/"
+
+    #if task contains variant_effects:
+    if "variant_effects" in task:
+        flank = 2047
+        main_dir = "variant_effects"
+    else:
+        main_dir = task
+        flank = args.flank
 
     label_dims = load_label_depths(args.label_depths)
-    label_depth = label_dims.get(f"{task}_label_dim")
+    label_depth = label_dims.get(f"{main_dir}_label_dim")
 
     print("label_depth key:", f"{task}_label_dim")
     print("label_depth value:", label_depth)
 
     embedder = GambaEmbedder(
         config_path="/home/mica/gamba/configs/jamba-small-240mammalian.json",
+        #ckpt_path="/home/mica/gamba/clean_dcps/dcp_nocons_56000"
         ckpt_path="/home/mica/gamba/clean_dcps/dcp_56000"
     )
 
-    bed_path = f"{root}/{task}/{task}.bed"
-    hdf5_path = f"{root}/{task}/{task}.hdf5"
+    bed_path = f"{root}/{main_dir}/{task}.bed"
+    hdf5_path = f"{root}/{main_dir}/{task}.hdf5"
     genome_fasta = "/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa"
     bigwig_path = "/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig"
 
     bed = pd.read_csv(bed_path, sep="\t")
     assert 'split' in bed.columns, "'split' column missing from BED file."
+    print("Loaded BED file with shape:", bed.shape, "and columns:", bed.columns.tolist())
 
     for split in bed['split'].unique():
         print(f"Processing split: {split}")
@@ -246,12 +276,12 @@ def main():
             with h5py.File(hdf5_path, "r") as h5:
                 indices = np.where(split_mask.to_numpy())[0]
                 label_matrix = h5["labels"][indices]
-
         chunked_data = extract_sequences(
             bed_split, genome_fasta, bigwig_path, label_matrix,
-            seq_len=2048, flank=args.flank, label_depth=label_depth
+            seq_len=2048, flank=flank, label_depth=label_depth
         )
-        embedder.embed_and_save(chunked_data, output_dir, split_name=split, chunk_size=1000)
+        print(f"Extracted {len(chunked_data)} regions for split {split}")
+        embedder.embed_and_save(chunked_data, output_dir, task=task, split_name=split, chunk_size=1000)
 
 if __name__ == "__main__":
     main()

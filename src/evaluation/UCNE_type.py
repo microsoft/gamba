@@ -441,7 +441,7 @@ def main():
     parser.add_argument('--meta_dir', type=str, default='/home/mica/gamba/data_processing/data/conserved_elements/meta_dir', help='Path to the metadata directory')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     parser.add_argument('--bed_file', type=str, default ='/home/mica/gamba/data_processing/data/conserved_elements/hg38_UCNE_coordinates.bed', help='BED file for UCNEs')
-    parser.add_argument('--checkpoint_num', type=int, default=78000, help='Checkpoint number to load')
+    parser.add_argument('--checkpoint_num', type=int, default=132250, help='Checkpoint number to load')
    
     args = parser.parse_args()
     checkpoint_num = args.checkpoint_num
@@ -457,8 +457,10 @@ def main():
     genome = Fasta(args.genome_fasta)
     bw = pyBigWig.open(args.big_wig)
     ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
-    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
-
+    #ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
+    #ckpt_path = "/home/mica/gamba/dcps/dcp_34000"
+    #ckpt_path = '/home/mica/gamba/dcps/dcp_89000_only_MSE'
+    ckpt_path="/home/mica/gamba/dcps/dcp_132250_only_MSE"
     
     # Add upstream context
     extended_coords = add_upstream_context(coords)
@@ -488,7 +490,7 @@ def main():
     )
 
     #get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
-    d_model = config.get("d_model", 576) #576/2
+    d_model = config.get("d_model", 512) #576/2
     nhead = config.get("n_head", 8)  
     n_layers = config.get("n_layers", 6)
     dim_feedforward = config.get("dim_feedforward", d_model)

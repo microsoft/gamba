@@ -51,7 +51,6 @@ def get_representations(model, dataloader, device, original_spans):
     true_conservations = []
     variances = []
     sequence_conservation_profiles = []
-    
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             inputs, labels = batch  # inputs shape: [batch, 2, seq_len]
@@ -67,8 +66,10 @@ def get_representations(model, dataloader, device, original_spans):
             true_scores = inputs[:, 1].cpu().numpy()    # Conservation scores
             
             
-            batch_pred_conservation = scaling_logits[..., 0]
-            batch_log_var = scaling_logits[..., 1]
+            # batch_pred_conservation = scaling_logits[..., 0]
+            # batch_log_var = scaling_logits[..., 1]
+            batch_pred_conservation = scaling_logits
+            batch_log_var = np.ones_like(scaling_logits)
             batch_variances = np.exp(batch_log_var)
             
             for idx in range(len(batch_representations)):
@@ -98,7 +99,6 @@ def get_representations(model, dataloader, device, original_spans):
                             'start': start,
                             'end': end
                         }
-                        sequence_conservation_profiles.append(full_profile)
                         
                         print(f"\nSample {idx}:")
                         print(f"Region length: {end-start}")
@@ -469,7 +469,9 @@ def generate_flanking_regions(bed_df, output_dir):
         length = end - start
         
         # Generate flanking region 500bp upstream
-        flanking_start = start - 500  # Shift up by 500bp
+        #flanking_start = start - 500  # Shift up by 500bp 
+        #lets try shift by 2kb
+        flanking_start = start - 2000
         flanking_end = flanking_start + length  # Keep same length as original
         
         # Add label and info columns to match bed format
@@ -650,10 +652,10 @@ def main():
     parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/conserved_elements/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     parser.add_argument('--bed_file1', type=str, default ='/home/mica/gamba/data_processing/data/conserved_elements/filteredunseen_hg38UCNE_coordinates.bed', help='First BED file')
-    parser.add_argument('--bed_file2', help='Second BED file (optional)')
+    parser.add_argument('--bed_file2', type=str, default='/home/mica/gamba/data_processing/data/UCSC coordinates/unseen_exons_chr2_chr22_chr16_chr3.bed', help='Second BED file (optional)')
     parser.add_argument('--force_recompute', action='store_true', help='Force recomputation even if cached results exist')
     parser.add_argument('--flanking', action='store_true', help='Generate flanking regions instead of random')
-    parser.add_argument('--checkpoint_num', type=int, default=78000, help='Checkpoint number to load')
+    parser.add_argument('--checkpoint_num', type=int, default=56000, help='Checkpoint number to load')
 
     args = parser.parse_args()
     
@@ -661,7 +663,7 @@ def main():
     bed1 = load_bed_file(args.bed_file1)
     checkpoint_num = args.checkpoint_num
 
-    COMPARISON_TYPE = "flanking" if args.flanking else "random"
+    COMPARISON_TYPE = "exons" if args.bed_file2 else ("flanking" if args.flanking else "random")
     args.output_dir = args.output_dir +f"dcp_{checkpoint_num}_results/"
     if args.bed_file2:
         bed2 = load_bed_file(args.bed_file2)
@@ -674,8 +676,12 @@ def main():
     genome = Fasta(args.genome_fasta)
     bw = pyBigWig.open(args.big_wig)
     ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
-    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
-
+    #ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
+    #ckpt_path = "/home/mica/gamba/dcps/dcp_34000"
+    #ckpt_path = "/home/mica/gamba/dcps/dcp_4000_reweighted_cons"
+    #ckpt_path ="/home/mica/gamba/dcps/dcp_14000_reweighted_cons"
+    #ckpt_path="/home/mica/gamba/dcps/dcp_132250_only_MSE"
+    ckpt_path="/home/mica/gamba/clean_dcps/dcp_56000"
 
     # Load model configuration
     with open(args.config_fpath, "r") as f:
@@ -770,7 +776,7 @@ def main():
     )
     
     # Create conservation profile plots if we have profiles or --force_replot
-    if (profiles1 and profiles2) or args.force_replot:
+    if (profiles1 and profiles2): #or args.force_replot:
         cons_plot_path1 = f'{args.output_dir}/conservation_profiles_UCNE_{bed1_filename}_{bed2_filename}.png'
         cons_plot_path2 = f'{args.output_dir}/conservation_profiles_{COMPARISON_TYPE}_{bed1_filename}_{bed2_filename}.png'
         cons_indivplot_path1 = f'{args.output_dir}/indiv_conservation_profiles_UCNE_{bed1_filename}_{bed2_filename}.png'
