@@ -309,6 +309,119 @@ class JambagambaModel(nn.Module):
             "mse_loss": mse_loss,
         }
         return outputs
+
+
+
+class JambaGambaNOALMModel(nn.Module):
+    def __init__(
+        self,
+        jambalm: nn.Module,
+        d_model: int,
+        nhead: int,
+        dim_feedfoward: int,
+        n_layers: int,
+        padding_id: int,
+    ):
+        super().__init__()
+        self.embedder = ARDiffusionModel(jambalm).module.model
+        self.scaling_head = nn.Linear(d_model, 2)
+       
+        #seq_embedding gets full dimensionality, there is no more any value embedding
+        self.seq_embedding = nn.Embedding(jambalm.vocab_size, d_model)
+        
+        # real number loss
+        self.cons_loss_func = GaussianNLLLoss()
+        self.mse_loss_func = nn.MSELoss()
+
+
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> dict:
+        # print("shape of tgt: ", tgt.shape)
+        # print("shape of src: ", src.shape)
+       
+        seq_tgt, conservation_tgt = tgt.split(1, dim=1)
+        seq_tgt = seq_tgt.squeeze(1).long()
+        conservation_tgt = conservation_tgt.squeeze(1)
+      
+        # 0 is a token not a padding for sequence
+        n_tokens = (seq_tgt >= 0).sum()
+
+        
+        seq, conservation = src.split(1, dim=1)
+        #print("shape of seq: ", seq.shape)
+        seq = seq.squeeze(1).long()
+        #print("post squeeze & long shape of seq: ", seq.shape)
+        conservation = conservation.squeeze(1)
+        #print(f"conservation shape:", conservation.shape)
+        
+        device = src.device
+
+        n_seq = torch.tensor(seq.size(1), device=device)
+        n_processed = n_tokens - seq_tgt.size(1)  # -1 token per sequence for the shift
+
+        # embed seq, conservation and gap separately
+        emb_seq = self.seq_embedding(seq)
+        
+        inputs_embeds = emb_seq
+       
+
+        #print(f"shape of input_embeds: {inputs_embeds.shape}")
+        # need to set the embedded inputs to inputs_embeds to values in the Jamba model
+        output = self.embedder(inputs_embeds=inputs_embeds)["last_hidden_state"]
+       
+        # put the outputs through their respective linear layers
+        scaling_logits = self.scaling_head(output)
+        
+        # apply GaussianNLLLoss from losses.py on the scaling_logits
+        gaussian_loss = self.cons_loss_func(
+            scaling_logits[:, :-1, :], conservation_tgt[:, 1:]
+        )
+        #extract mean and variance from scaling logits
+        pred = scaling_logits[:, :-1, :]
+        tgt = conservation_tgt[:, 1:]
+        # mask is where tgt is not equal to -100
+        mask = tgt != -100
+
+        mean = pred[:, :, 0]
+        log_var = pred[:, :, 1]
+
+        # apply the mask to mean, log_var and tgt
+        mean = mean[mask]
+        log_var = log_var[mask]
+        tgt = tgt[mask]
+
+        #check MSE loss on the unmasked portions
+        mse_loss = self.mse_loss_func(mean, tgt)
+        
+
+        #clip the gaussian loss
+        #gaussian_loss = torch.clamp(gaussian_loss, min=0.0, max=1.0)
+        # apply PoissonNLLLoss from losses.py on the gap_logits
+        # poisson_loss = self.gap_loss_func(gap_logits[:, :-1, :], gap_tgt[:, 1:])
+
+        #print("CE LOSS: ", ce_loss)
+        #print("GAUSSIAN LOSS: ", gaussian_loss)
+        # check if any loss is NaN
+        if math.isnan(mse_loss):
+            raise ValueError("MSE Loss is NaN")
+        if math.isnan(gaussian_loss):
+            raise ValueError("Gaussian Loss is NaN")
+        # print("POISSON LOSS: ", poisson_loss)
+        #print("LOSS:", ce_loss + gaussian_loss)
+        other_metrics = {}
+        outputs = {
+            "scaling_logits": scaling_logits,
+            # "gap_logits": gap_logits,
+            "loss": gaussian_loss,  # + poisson_loss,
+            "gaussian_loss": gaussian_loss,
+            OTHER_METRICS_KEY: other_metrics,
+            "n_tokens": n_tokens,
+            "n_seqs": n_seq,
+            "n_processed": n_processed,
+            "representation": output,
+            "conservation_tgt": conservation_tgt,
+            "mse_loss": mse_loss,
+        }
+        return outputs
     
 class JambaGambaNoConsModel(nn.Module):
     def __init__(

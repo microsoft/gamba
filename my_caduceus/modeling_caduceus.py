@@ -598,6 +598,80 @@ class CaduceusConservationForMaskedLM(CaduceusPreTrainedModel):
 
 
 
+class CaduceusConservation(CaduceusPreTrainedModel):
+    """Caduceus model with added conservation head for masked conservation continuous value prediction and NO MLM."""
+
+    def __init__(self, config: CaduceusConfig, device=None, dtype=None, **kwargs):
+        super().__init__(config, **kwargs)
+        factory_kwargs = {"device": device, "dtype": dtype}
+        self.caduceus = Caduceus(config, **factory_kwargs, **kwargs)
+
+        self.conservation_head = RCPSConservationHead(
+            true_dim=config.d_model,
+            complement_map=config.complement_map,
+            **factory_kwargs
+        ) if config.rcps else nn.Linear(config.d_model, 2, **factory_kwargs)
+
+        self.cons_loss_func = nn.GaussianNLLLoss(reduction="mean")
+
+        self.post_init()
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        conservation_labels: Optional[torch.FloatTensor] = None,
+        loss_weights: Optional[torch.FloatTensor] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> dict:
+
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.caduceus(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            output_hidden_states=output_hidden_states,
+            return_dict=True,
+        )
+
+        hidden_states = outputs[0]
+        scaling = self.conservation_head(hidden_states).float()
+
+        gaussian_loss = None
+        mse_loss = None
+        masked_positions = labels != -100
+        if conservation_labels is not None:
+            mean = scaling[..., 0]
+            logvar = scaling[..., 1]
+            mask = conservation_labels != -100
+            mean = mean[mask]
+            var = torch.exp(logvar[mask])
+            target = conservation_labels[mask]
+
+            gaussian_loss = self.cons_loss_func(mean, target, var)
+            mse_loss = F.mse_loss(mean, target, reduction="mean")
+
+        loss = 0
+        if gaussian_loss is not None:
+            loss += gaussian_loss
+
+    
+        return {
+            "loss": loss,
+            "gaussian_loss": gaussian_loss,
+            "mse_loss": mse_loss,
+            "scaling": scaling,
+            "hidden_states": outputs.hidden_states,
+            "n_processed": masked_positions.sum(),
+            "n_seqs": torch.tensor(input_ids.size(0), device=scaling.device),
+        }
+
+
 class CaduceusForSequenceClassification(CaduceusPreTrainedModel):
     def __init__(
             self,
