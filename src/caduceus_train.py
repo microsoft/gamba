@@ -124,14 +124,14 @@ def load_config_and_model(
     )
 
     #get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
-    d_model = config.get("d_model", 512) #512/2
-    nhead = config.get("n_head", 8)  
-    n_layers = config.get("n_layers", 6)
-    dim_feedforward = config.get("dim_feedforward", d_model)
-    padding_id = config.get("padding_id", 0)
+    # d_model = config.get("d_model", 512) #512/2
+    # nhead = config.get("n_head", 8)  
+    # n_layers = config.get("n_layers", 6)
+    # dim_feedforward = config.get("dim_feedforward", d_model)
+    # padding_id = config.get("padding_id", 0)
 
-    #print all the values
-    print(f"d_model: {d_model}, nhead: {nhead}, n_layers: {n_layers}, dim_feedforward: {dim_feedforward}, padding_id: {padding_id}")
+    # #print all the values
+    # print(f"d_model: {d_model}, nhead: {nhead}, n_layers: {n_layers}, dim_feedforward: {dim_feedforward}, padding_id: {padding_id}")
 
 
     # add the task-specific wrapper
