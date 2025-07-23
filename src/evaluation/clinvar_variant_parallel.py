@@ -56,14 +56,14 @@ def load_model(config_path, checkpoint_path):
     dim_feedforward = config.get("dim_feedforward", d_model)
     
     # Set up the model
-    # model = JambagambaModel(
-    #     model, d_model=d_model, nhead=nhead, n_layers=n_layers, 
-    #     padding_id=0, dim_feedfoward=dim_feedforward
-    # )
-    model = JambaGambaNoConsModel(
+    model = JambagambaModel(
         model, d_model=d_model, nhead=nhead, n_layers=n_layers, 
         padding_id=0, dim_feedfoward=dim_feedforward
     )
+    # model = JambaGambaNoConsModel(
+    #     model, d_model=d_model, nhead=nhead, n_layers=n_layers, 
+    #     padding_id=0, dim_feedfoward=dim_feedforward
+    # )
     
     # Load the model checkpoint
     #checkpoint = torch.load(os.path.join(checkpoint_path, "model_optimizer.pt"), weights_only=True)
@@ -89,19 +89,48 @@ def load_model(config_path, checkpoint_path):
     
     return model, collator, tokenizer, device
 
+# def get_sequence_window(genome, chromosome, position, window_size=2048):
+#     """Get a sequence window with the mutation at the end position"""
+#     target_pos = window_size - 1  # Position 2047 (last position in 0-indexed sequence)
+#     start = position - target_pos  # Start position to have mutation at end
+#     end = start + window_size  # End position
+    
+#     # Get the reference sequence
+#     sequence = genome[chromosome][start:end].seq.upper()
+    
+#     # Check if we got the full window length
+#     if len(sequence) != window_size:
+#         raise ValueError(f"Could not extract full sequence window of length {window_size}")
+    
+#     return sequence, start, target_pos
+
+
 def get_sequence_window(genome, chromosome, position, window_size=2048):
-    """Get a sequence window with the mutation at the end position"""
-    target_pos = window_size - 1  # Position 2047 (last position in 0-indexed sequence)
-    start = position - target_pos  # Start position to have mutation at end
-    end = start + window_size  # End position
+    """
+    Get a sequence window with the mutation centered in the sequence.
     
-    # Get the reference sequence
+    Args:
+        genome: Indexed genome (e.g., from pyfaidx)
+        chromosome: Chromosome name (e.g., "chr1")
+        position: 0-based genomic coordinate of the mutation
+        window_size: Total window size to extract
+
+    Returns:
+        sequence (str): The reference sequence
+        start (int): The start genomic coordinate of the window
+        target_pos (int): Position of the mutation within the returned sequence
+    """
+    target_pos = window_size // 2  # center the mutation
+    start = position - target_pos
+    end = start + window_size
+
+    # Extract sequence
     sequence = genome[chromosome][start:end].seq.upper()
-    
-    # Check if we got the full window length
+
+    # Validate
     if len(sequence) != window_size:
         raise ValueError(f"Could not extract full sequence window of length {window_size}")
-    
+
     return sequence, start, target_pos
 
 def process_variants(genome, bw, model, collator, tokenizer, device, batch_size=32):
@@ -121,13 +150,14 @@ def process_variants(genome, bw, model, collator, tokenizer, device, batch_size=
     """
     valid_chromosomes = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
     df = pd.read_parquet("hf://datasets/songlab/clinvar/test.parquet")
+    #df = pd.read_parquet("hf://datasets/songlab/omim/test.parquet")
     # Lists to store results
     ref_logits_data = []
     alt_logits_data = []
     conservation_scores = []
     labels = []
     non_matching_refs = []
-    
+    true_conservation_scores = []
     # Process variants in batches
     for start_idx in tqdm(range(0, len(df), batch_size)):
         end_idx = min(start_idx + batch_size, len(df))
@@ -250,6 +280,8 @@ def process_variants(genome, bw, model, collator, tokenizer, device, batch_size=
                     # Get the mean at position model_position
                     conservation_mean = conservation_logits[i, model_position, 0]
                     conservation_scores.append(conservation_mean.item())
+                    true_score = batch_scores[idx][batch_positions[idx]]
+                    true_conservation_scores.append(true_score)
                 except Exception as e:    
                     print(f"Error extracting conservation score: {e}")
                     # Skip this conservation score
@@ -257,7 +289,7 @@ def process_variants(genome, bw, model, collator, tokenizer, device, batch_size=
             
             labels.append(batch_labels[idx])
     print(f"Percentage of non-matching reference alleles: {len(non_matching_refs) / len(df) * 100:.2f}%")
-    return ref_logits_data, alt_logits_data, conservation_scores, labels
+    return ref_logits_data, alt_logits_data, conservation_scores, labels, true_conservation_scores
 
 def plot_results(ref_probs, alt_probs, labels, output_dir, name, metric="loglikelihood"):
     """Plot the results of the analysis"""
@@ -379,14 +411,14 @@ def main():
     # Get checkpoint path
     # ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/")
     # checkpoint_path = get_latest_checkpoint_path(ckpt_dir, 78000)
-    checkpoint_path = "/home/mica/gamba/clean_dcps/dcp_nocons_56000"
+    checkpoint_path = "/home/mica/gamba/clean_dcps/dcp_56000"
     # Load model
     print(f"Loading model from {checkpoint_path}")
     model, collator, tokenizer, device = load_model(args.config_fpath, checkpoint_path)
     
     # Process variants
     print("Processing variants")
-    ref_probs, alt_probs, conservation_scores, labels = process_variants(
+    ref_probs, alt_probs, conservation_scores, labels, true_conservation_scores = process_variants(
         genome, bw, model, collator, tokenizer, device, args.batch_size
     )
     
@@ -395,7 +427,8 @@ def main():
         'ref_probs': ref_probs,
         'alt_probs': alt_probs,
         'conservation_scores': conservation_scores,
-        'labels': labels
+        'labels': labels,
+        'true_conservation_scores': true_conservation_scores,
     }
     torch.save(results, os.path.join(args.output_dir, f"{name}_results.pt"))
     
@@ -420,6 +453,19 @@ def main():
         print(f"Log-likelihood AUC: {ll_auc:.4f}")
         print(f"Probability ratio AUC: {prob_auc:.4f}")
         print("Conservation scores not available")
+
+    if conservation_scores:
+        from scipy.stats import pearsonr, spearmanr
+
+        pred = np.array(conservation_scores)
+        true = np.array(true_conservation_scores)
+
+        pearson_corr, _ = pearsonr(pred, true)
+        spearman_corr, _ = spearmanr(pred, true)
+
+        print(f"Pearson correlation (pred vs. true conservation): {pearson_corr:.4f}")
+        print(f"Spearman correlation (pred vs. true conservation): {spearman_corr:.4f}")
+
 
 if __name__ == "__main__":
     main()
