@@ -227,6 +227,9 @@ class CaduceusMixerModel(nn.Module):
             if output_hidden_states:
                 all_hidden_states.append(hidden_states)
             # TODO: Add support for gradient checkpointing
+            #print(f"[DEBUG] hidden_states shape before norm: {hidden_states.shape}")
+            #print(f"[DEBUG] expected norm.weight shape: {layer.norm.weight.shape}")
+
             hidden_states, residual = layer(
                 hidden_states, residual, inference_params=None
             )
@@ -281,7 +284,7 @@ def cross_entropy(logits, y, ignore_index=-100):
     """Cross entropy loss."""
     logits = logits.view(-1, logits.shape[-1])
     y = y.view(-1)
-    print(f"[DEBUG] logits shape: {logits.shape}, labels shape: {y.shape}")
+    #print(f"[DEBUG] logits shape: {logits.shape}, labels shape: {y.shape}")
 
     return F.cross_entropy(logits, y, ignore_index=ignore_index)
 
@@ -478,24 +481,35 @@ class CaduceusForMaskedLM(CaduceusPreTrainedModel):
         logits = logits.float()
 
         loss = None
-        if labels is not None:
+        accuracy = None
+        masked_positions = None
+        n_processed = None
+        if labels is not None and isinstance(labels, torch.Tensor):
             if loss_weights is not None:
                 loss = weighted_cross_entropy(logits, labels, loss_weights, ignore_index=-100)
             else:
                 loss = cross_entropy(logits, labels, ignore_index=-100)
 
-        # Accuracy
-        preds = logits.argmax(dim=-1)
-        masked_positions = labels != -100
-        correct = (preds == labels) & masked_positions
-        accuracy = correct.sum().float() / masked_positions.sum().float()
+            # Accuracy computation
+            preds = logits.argmax(dim=-1)
+            masked_positions = labels != -100
+
+            if masked_positions.sum().item() > 0:
+                correct = (preds == labels) & masked_positions
+                accuracy = correct.sum().float() / masked_positions.sum().float()
+                n_processed = masked_positions.sum()
+            else:
+                accuracy = torch.tensor(0.0, device=logits.device)
+           
+
 
         return {
             "loss": loss,
             "cross_entropy_loss": loss,
             "logits": logits,
+            "representation": hidden_states,
             "hidden_states": outputs.hidden_states,
-            "n_processed": masked_positions.sum(),
+            "n_processed": n_processed,
             "n_seqs": torch.tensor(input_ids.size(0), device=logits.device),
             "accuracy": accuracy,
         }
@@ -577,11 +591,15 @@ class CaduceusConservationForMaskedLM(CaduceusPreTrainedModel):
             loss += ce_loss
         if gaussian_loss is not None:
             loss += gaussian_loss
-
-        preds = logits.argmax(dim=-1)
-        masked_positions = labels != -100
-        correct = (preds == labels) & masked_positions
-        accuracy = correct.sum().float() / masked_positions.sum().float()
+        masked_positions = None
+        n_processed = None
+        accuracy = None
+        if labels is not None and isinstance(labels, torch.Tensor):
+            preds = logits.argmax(dim=-1)
+            masked_positions = labels != -100
+            correct = (preds == labels) & masked_positions
+            accuracy = correct.sum().float() / masked_positions.sum().float()
+            n_processed = masked_positions.sum()
 
         return {
             "loss": loss,
@@ -590,13 +608,94 @@ class CaduceusConservationForMaskedLM(CaduceusPreTrainedModel):
             "mse_loss": mse_loss,
             "logits": logits,
             "scaling": scaling,
+            "representation": hidden_states,
+            "scaling_logits": self.conservation_head(hidden_states),
             "hidden_states": outputs.hidden_states,
-            "n_processed": masked_positions.sum(),
+            "n_processed": n_processed,
             "n_seqs": torch.tensor(input_ids.size(0), device=logits.device),
             "accuracy": accuracy,
         }
 
 
+class CaduceusConservation(CaduceusPreTrainedModel):
+    """Caduceus model with added conservation head for masked conservation continuous value prediction and NO MLM."""
+
+    def __init__(self, config: CaduceusConfig, device=None, dtype=None, **kwargs):
+        super().__init__(config, **kwargs)
+        factory_kwargs = {"device": device, "dtype": dtype}
+        self.caduceus = Caduceus(config, **factory_kwargs, **kwargs)
+
+        self.conservation_head = RCPSConservationHead(
+            true_dim=config.d_model,
+            complement_map=config.complement_map,
+            **factory_kwargs
+        ) if config.rcps else nn.Linear(config.d_model, 2, **factory_kwargs)
+
+        self.cons_loss_func = nn.GaussianNLLLoss(reduction="mean")
+
+        self.post_init()
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        conservation_labels: Optional[torch.FloatTensor] = None,
+        loss_weights: Optional[torch.FloatTensor] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> dict:
+
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.caduceus(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            output_hidden_states=output_hidden_states,
+            return_dict=True,
+        )
+
+        hidden_states = outputs[0]
+        scaling = self.conservation_head(hidden_states).float()
+
+        gaussian_loss = None
+        mse_loss = None
+        masked_positions = None
+        n_processed = None
+        if labels is not None:
+            masked_positions = labels != -100
+            n_processed = masked_positions.sum()
+        if conservation_labels is not None:
+            mean = scaling[..., 0]
+            logvar = scaling[..., 1]
+            mask = conservation_labels != -100
+            mean = mean[mask]
+            var = torch.exp(logvar[mask])
+            target = conservation_labels[mask]
+
+            gaussian_loss = self.cons_loss_func(mean, target, var)
+            mse_loss = F.mse_loss(mean, target, reduction="mean")
+
+        loss = 0
+        if gaussian_loss is not None:
+            loss += gaussian_loss
+
+    
+        return {
+            "loss": loss,
+            "gaussian_loss": gaussian_loss,
+            "mse_loss": mse_loss,
+            "scaling": scaling,
+            "scaling_logits": self.conservation_head(hidden_states),
+            "hidden_states": outputs.hidden_states,
+            "n_processed": n_processed,
+            "n_seqs": torch.tensor(input_ids.size(0), device=scaling.device),
+        }
+
+ 
 
 class CaduceusForSequenceClassification(CaduceusPreTrainedModel):
     def __init__(
