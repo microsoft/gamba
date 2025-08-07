@@ -17,11 +17,18 @@ from pathlib import Path
 from matplotlib.colors import LinearSegmentedColormap
 from scipy import stats
 sys.path.append("../gamba")
-
+from torch.nn import MSELoss, CrossEntropyLoss
+from sequence_models.constants import MSA_PAD, START, STOP
 from evodiff.utils import Tokenizer
 from gamba.constants import TaskType, DNA_ALPHABET_PLUS
-from gamba.collators import gLMCollator
-from gamba.model import create_model, JambagambaModel
+from gamba.collators import gLMCollator, gLMMLMCollator
+from gamba.model import create_model, JambagambaModel, JambaGambaNoConsModel, JambaGambaNOALMModel
+from my_caduceus.configuration_caduceus import CaduceusConfig
+from my_caduceus.modeling_caduceus import (
+    CaduceusConservationForMaskedLM,
+    CaduceusForMaskedLM,
+    CaduceusConservation
+)
 
 # Configure logging
 logging.basicConfig(
@@ -281,54 +288,117 @@ def get_latest_dcp_checkpoint_path(ckpt_dir, last_step=-1):
     return ckpt_path
 
 
-def load_model(checkpoint_dir, config_fpath, last_step=52000, device=None):
-    """Load the model from a checkpoint."""
+def load_model(
+    checkpoint_dir,
+    config_fpath,
+    last_step=56000,
+    model_type="gamba",
+    training_task="dual",
+    device=None
+):
+    """Load Gamba or Caduceus model depending on model_type and training_task."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-    # Get the latest checkpoint path
-    ckpt_path = get_latest_dcp_checkpoint_path(checkpoint_dir, last_step=last_step)
-    # For reproducibility, use the same checkpoint as in the original code
-    ckpt_path = '/home/mica/gamba/dcps/dcp_183000_only_MSE'
-    
-    # Load configuration
-    with open(config_fpath, "r") as f:
-        config = json.load(f)
-    
-    # Setup tokenizer and task
+
     tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
-    task = TaskType(config["task"].lower().strip())
-    
-    logging.info(f"Task: {task}, Model: {config['model_type']}, Config: {config['model_config']}")
-    
-    # Create model
-    model, block = create_model(
-        task, config["model_type"], config["model_config"], tokenizer.mask_id.item(), 
-    )
-    
-    # Get model parameters from config
-    d_model = config.get("d_model", 512)
-    nhead = config.get("n_head", 8)
-    n_layers = config.get("n_layers", 6)
-    dim_feedforward = config.get("dim_feedforward", d_model)
-    padding_id = config.get("padding_id", 0)
-    
-    # Set up the full model
-    model = JambagambaModel(
-        model, d_model=d_model, nhead=nhead, n_layers=n_layers,
-        padding_id=padding_id, dim_feedfoward=dim_feedforward
-    )
-    
-    # Load checkpoint
-    logging.info(f"Loading checkpoint from {ckpt_path}")
-    checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    
-    # Move model to device
-    model.to(device)
-    model.eval()
-    
-    return model, tokenizer
+
+    if model_type == "gamba":
+        # Resolve checkpoint path
+        if training_task == "dual":
+            ckpt_path = os.path.join(checkpoint_dir, f"dcp_{last_step}")
+        elif training_task == "seq_only":
+            ckpt_path = os.path.join(checkpoint_dir, f"dcp_nocons_{last_step}")
+        else:
+            ckpt_path = os.path.join(checkpoint_dir, f"dcp_noALM{last_step}")
+
+        # Load config
+        with open(config_fpath, "r") as f:
+            config = json.load(f)
+
+        task = TaskType(config["task"].lower().strip())
+
+        logging.info(f"Gamba Model | Task: {task}, Type: {config['model_type']}")
+
+        # Create base model
+        base_model, _ = create_model(
+            task,
+            config["model_type"],
+            config["model_config"],
+            tokenizer.mask_id.item(),
+        )
+
+        # Set up Gamba model wrapper
+        d_model = config.get("d_model", 512)
+        nhead = config.get("n_head", 8)
+        n_layers = config.get("n_layers", 6)
+        dim_feedforward = config.get("dim_feedforward", d_model)
+        padding_id = config.get("padding_id", 0)
+
+        if training_task == "dual":
+            model = JambagambaModel(
+                base_model,
+                d_model=d_model,
+                nhead=nhead,
+                n_layers=n_layers,
+                padding_id=padding_id,
+                dim_feedfoward=dim_feedforward,
+            )
+        elif training_task == "seq_only":
+            model = JambaGambaNoConsModel(
+                base_model,
+                d_model=d_model,
+                nhead=nhead,
+                n_layers=n_layers,
+                padding_id=padding_id,
+                dim_feedfoward=dim_feedforward,
+            )
+        else:
+            model = JambaGambaNOALMModel(
+                base_model,
+                d_model=d_model,
+                nhead=nhead,
+                n_layers=n_layers,
+                padding_id=padding_id,
+                dim_feedfoward=dim_feedforward,
+            )
+
+        # Load checkpoint
+        logging.info(f"Loading Gamba trained on {training_task} from {ckpt_path}")
+        checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+        model.to(device)
+        model.eval()
+        return model, tokenizer
+
+    elif model_type == "caduceus":
+
+        config = CaduceusConfig(
+            d_model=256,
+            n_layer=8,
+            vocab_size=len(DNA_ALPHABET_PLUS)
+        )
+
+        if training_task == "dual":
+            model = CaduceusConservationForMaskedLM(config)
+            ckpt_path = os.path.join(checkpoint_dir, f"dcp_conscaduceus_{last_step}")
+        elif training_task == "seq_only":
+            model = CaduceusForMaskedLM(config)
+            ckpt_path = os.path.join(checkpoint_dir, f"dcp_{last_step}")
+        else:
+            model = CaduceusConservation(config)
+            ckpt_path = get_latest_dcp_checkpoint_path(checkpoint_dir, f"consONLYcaduceus_60000")
+
+        logging.info(f"Loading Caduceus checkpoint from {ckpt_path}")
+        checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+        model.to(device)
+        model.eval()
+        return model, tokenizer
+
+    else:
+        raise ValueError(f"Unsupported model_type: {model_type}")
 
 
 def get_bigwig_values(bw, chrom, start, end):
@@ -424,6 +494,8 @@ def get_phylop_score_ranges(bigwig_file, chromosomes, num_samples=1000, region_l
             else:
                 for interval_start, interval_end, value in intervals:
                     vals[interval_start - start : interval_end - start] = value
+                    # Get to 2 decimal places
+                    vals = np.round(vals, 2)
             
             # Filter valid scores
             valid_scores = vals[~np.isnan(vals)]
@@ -469,7 +541,7 @@ def get_phylop_score_ranges(bigwig_file, chromosomes, num_samples=1000, region_l
         'percentiles': percentiles
     }
 
-def sample_regions_by_phylop(bigwig_file, genome_fasta, score_range, num_regions=100, max_length=2048, region_length=None, feature_length=1000, chromosomes=None):
+def sample_regions_by_phylop(bigwig_file, genome_fasta, score_range, num_regions=100, max_length=2048, region_length=None, feature_length=1000, chromosomes=None, model_type="gamba"):
     """
     Sample regions with phyloP scores in a specified range.
     Evaluates only the last feature_length bases.
@@ -530,6 +602,7 @@ def sample_regions_by_phylop(bigwig_file, genome_fasta, score_range, num_regions
             # Choose a random start position
             start = random.randint(0, chrom_length - max_length)
             end = start + max_length
+
             
             try:
                 # Get the sequence
@@ -538,10 +611,15 @@ def sample_regions_by_phylop(bigwig_file, genome_fasta, score_range, num_regions
                 # Get scores for the region using our custom function
                 scores = get_bigwig_values(bw, chrom, start, end)
                 
-                # Evaluate only the last feature_length portion
-                feature_start_in_window = max(0, len(scores) - feature_length)
-                feature_end_in_window = len(scores)
-                
+                if model_type=="gamba":
+                    # Evaluate only the last feature_length portion
+                    feature_start_in_window = max(0, len(scores) - feature_length)
+                    feature_end_in_window = len(scores)
+                else:
+                    # Caduceus model, so we're only evaluating the middle
+                    feature_start_in_window = max(0, (len(scores) - feature_length) // 2)
+                    feature_end_in_window = feature_start_in_window + feature_length
+                    
                 # Get feature portion scores for selection criteria
                 feature_scores = scores[feature_start_in_window:feature_end_in_window]
                 
@@ -575,7 +653,7 @@ def sample_regions_by_phylop(bigwig_file, genome_fasta, score_range, num_regions
     
     return sampled_regions
 
-def sample_regions_by_feature(bigwig_file, genome_fasta, gtf_parser, feature_type, num_regions=100, max_length=2048, chromosomes=None):
+def sample_regions_by_feature(bigwig_file, genome_fasta, gtf_parser, feature_type, num_regions=100, max_length=2048, chromosomes=None, model_type="gamba"):
     """
     Sample regions based on genomic features with upstream context.
     
@@ -636,40 +714,54 @@ def sample_regions_by_feature(bigwig_file, genome_fasta, gtf_parser, feature_typ
             feature_end = feature['end']
             feature_length = feature_end - feature_start + 1
             
-            # Calculate maximum context we can add
-            max_context_length = min(max_length - feature_length, 1000)
-            
-            # If feature is too long, just take the full max_length
-            if feature_length > max_length:
-                if feature['strand'] == '+':
-                    start = feature_start
-                    end = feature_start + max_length
+            if model_type =="gamba":
+                # Calculate maximum context we can add
+                max_context_length = min(max_length - feature_length, 1000)
+                # If feature is too long, just take the last 1000bp
+                if feature_length > max_length:
+                    if feature['strand'] == '+':
+                        start = feature_end - 1000 + 1
+                        end = feature_end
+                    else:
+                        continue  # or handle '-' strand explicitly if needed
+
+                    feature_start_in_window = max_length - 1000
+                    feature_end_in_window = max_length
+
                 else:
-                    # For - strand, prioritize the 3' end of the feature (which is the 5' end of the gene)
-                    end = feature_end
-                    start = max(1, feature_end - max_length + 1)
+                    # Add context before the feature
+                    if feature['strand'] == '+':
+                        context_start = max(1, feature_start - max_context_length)
+                        start = context_start
+                        end = feature_end
+                    else:
+                        continue
+                    
+                    # Calculate feature positions within the window
+                    feature_start_in_window = max(0, feature_start - start)
+                    feature_end_in_window = max(0, feature_end - start)
+
+            else: 
+                # model_type is caduceus – center the feature with context
+                chrom_length = len(genome[chrom])
                 
-                feature_start_in_window = 0
-                feature_end_in_window = min(feature_length, max_length)
-            else:
-                # Add context before the feature
-                if feature['strand'] == '+':
-                    context_start = max(1, feature_start - max_context_length)
-                    start = context_start
-                    end = feature_end
-                else:
-                    # For - strand, context should be added after the feature in genomic coordinates
-                    # (which is before the feature in gene orientation)
-                    context_end = feature_end + max_context_length
-                    chrom_length = len(genome[chrom])
-                    context_end = min(context_end, chrom_length)
-                    start = feature_start
-                    end = context_end
+                # Clip feature to 1000 bp if too long
+                if feature_length > 1000:
+                    center = (feature_start + feature_end) // 2
+                    feature_length = 1000
+                    feature_start = max(0, center - 500)
+                    feature_end = feature_start + 1000 - 1
+
+                # Try to give full context, but trim if near chromosome edge
+                context_bp = min((max_length - feature_length) // 2, 1000)
                 
-                # Calculate feature positions within the window
+                start = max(0, feature_start - context_bp)
+                end = min(chrom_length, feature_end + context_bp + 1)
+                
+                # Calculate feature position in the window
                 feature_start_in_window = feature_start - start
-                feature_end_in_window = feature_end - start
-            
+                feature_end_in_window = feature_end - start 
+
             try:
                 # Get the sequence and scores
                 sequence = genome[chrom][start:end].seq
@@ -708,119 +800,144 @@ def sample_regions_by_feature(bigwig_file, genome_fasta, gtf_parser, feature_typ
     
     return sampled_regions
 
-def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None):
-    """Run predictions on sampled regions with batching for speed."""
+def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None, model_type="gamba", training_task="dual"):
+    """Run predictions on sampled regions with masking applied only over the feature region."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Create collator
-    collator = gLMCollator(tokenizer=tokenizer)
-    
+
+    from torch.nn import functional as F
+    from gamba.collators import gLMCollator
+
     all_predictions = []
     all_true_scores = []
+    all_seq_predictions = []
+    all_true_seqs = []
     region_info = []
-    
+
     logging.info(f"Running predictions on {len(regions)} regions with batch size {batch_size}...")
-    
-    # Process in batches
+
+    if model_type == "gamba":
+        collator = gLMCollator(tokenizer=tokenizer, test=True)
+    else:
+        collator = gLMMLMCollator(tokenizer=tokenizer, test=True)
+
     for i in tqdm(range(0, len(regions), batch_size), desc="Batch predictions"):
-        batch_regions = regions[i:i+batch_size]
+        batch_regions = regions[i:i + batch_size]
         batch_inputs = []
-        
-        # Prepare batch
+        batch_region_info = []
         for region in batch_regions:
-            # Tokenize sequence
             sequence_tokens = tokenizer.tokenizeMSA(region['sequence'])
             scores = region['scores']
-            
-            # Store for collation
-            batch_inputs.append((sequence_tokens, scores))
-            
-            # Store region info - use get for mean_score with a sensible default
-            region_info.append({
+            fs = region.get('feature_start_in_window', 0)
+            fe = region.get('feature_end_in_window', len(scores))
+
+            batch_inputs.append((sequence_tokens,  scores))
+            # Record metadata
+            batch_region_info.append({
                 'chrom': region['chrom'],
                 'start': region['start'],
                 'end': region['end'],
                 'feature_id': region.get('feature_id', 'unknown'),
-                'mean_score': region.get('mean_score', 0.0)  # Use default of 0.0 if not present
+                'mean_score': region.get('mean_score', 0.0),
+                'feature_start_in_window': fs,
+                'feature_end_in_window': fe
             })
-            
-            # Store true scores
+            region_info.append(batch_region_info[-1])
             all_true_scores.append(scores)
-        
+            all_true_seqs.append(sequence_tokens)
+
         # Skip empty batches
         if not batch_inputs:
             continue
+
+        # === Gamba Forward ===
+        if model_type == "gamba":
+            collated = collator(batch_inputs)
+            with torch.no_grad():
+                outputs = model(collated[0].to(device), collated[1].to(device))
+
+            if "scaling_logits" in outputs:
+                for j in range(outputs["scaling_logits"].size(0)):
+                    means = outputs["scaling_logits"][j, :, 0].cpu().numpy()
+                    #print(f"Sample of means values: {means[:10]}...")  # Print first 10 means for debugging
+                    all_predictions.append(means)
+            else:
+                for j in range(len(batch_inputs)):
+                    all_predictions.append(np.zeros_like(batch_inputs[j][1]))
+
+            # Append seq logits if present
+            if "seq_logits" in outputs:
+                for j in range(outputs["seq_logits"].size(0)):
+                    #print(f"shape of seq_logits: {outputs['seq_logits'].shape}")
+                    logits = outputs["seq_logits"][j].cpu().numpy()
+                    #print(f"logits: {logits}")
+                    all_seq_predictions.append(logits)
+
+            else:
+                all_seq_predictions.extend([np.nan] * len(batch_inputs))
+
+        # === Caduceus Forward ===
+        elif model_type == "caduceus":
+            feature_spans = [(r["feature_start_in_window"], r["feature_end_in_window"]) for r in batch_region_info]
+            batch = collator(batch_inputs, region=feature_spans)
+            with torch.no_grad():
+                sequence_input = batch[0][:, 0, :].long()       # (B, T)
+                scaling = batch[0][:, 1, :].float()             # (B, T)
+                sequence_labels = batch[1][:, 0, :].long()      # (B, T)
+                scale_lbls = batch[1][:, 1, :].float()          # (B, T)
+                model_kwargs = {
+                    "input_ids": sequence_input.to(device),
+                    "labels": sequence_labels.to(device),
+                    }
+                # If model supports conservation prediction, pass conservation labels too
+                if hasattr(model, "conservation_head"):
+                    model_kwargs["conservation_labels"] = scale_lbls.to(device)
             
-        # Collate batch
-        collated = collator(batch_inputs)
-        
-        # Run the model
-        with torch.no_grad():
-            output = model(collated[0].to(device), collated[1].to(device))
-        
-        # Process each item in the batch
-        scaling_logits = output["scaling_logits"]
-        
-        # For each item in the batch
-        for j in range(scaling_logits.size(0)):
-            # Get scaling logits for this sequence
-            seq_logits = scaling_logits[j]
-            
-            # Extract means
-            means = seq_logits[:, 0].cpu().numpy()
-            
-            # Store predictions
-            all_predictions.append(means)
-    
-    # Ensure all arrays have the same length before processing
-    min_length = min(len(arr) for arr in all_true_scores + all_predictions)
-    
-    # Trim arrays to the minimum length
-    all_predictions = [arr[:min_length] for arr in all_predictions]
-    all_true_scores = [arr[:min_length] for arr in all_true_scores]
-    
-    return all_predictions, all_true_scores, region_info
+                outputs = model(**model_kwargs)
+
+            if "cross_entropy_loss" in outputs:
+                for _ in batch_inputs:
+                    all_seq_predictions.append(outputs["cross_entropy_loss"].item())
+            else:
+                all_seq_predictions.extend([np.nan] * len(batch_inputs))
+
+            if "scaling_logits" in outputs:
+                for j in range(outputs["scaling_logits"].size(0)):
+                    means = outputs["scaling_logits"][j, :, 0].cpu().numpy()
+                    #print(f"Sample of means values: {means[:10]}...")  # Print first 10 means for debugging
+                    all_predictions.append(means)
+            else:
+                for j in range(len(batch_inputs)):
+                    all_predictions.append(np.zeros_like(batch_inputs[j][1]))
+
+    return all_predictions, all_true_scores, region_info, all_seq_predictions, all_true_seqs
 
 
-def calculate_correlations(true_scores, predicted_scores, region_info, feature_length=1000):
-    """
-    Calculate correlations between true and predicted scores for each region's feature portion.
-    For phyloP-based regions, evaluates only the last feature_length bases.
-    For feature-based regions, uses the designated feature portion.
-    """
+def calculate_correlations(true_scores, predicted_scores, region_info, ce_losses, feature_length=1000):
     results = []
-    
+
     for i in range(len(true_scores)):
-        # Get the full sequence scores
         true = true_scores[i]
         pred = predicted_scores[i]
-        
-        # Extract the portion to evaluate
-        if 'feature_start_in_window' in region_info[i] and 'feature_end_in_window' in region_info[i]:
-            # Use the actual feature boundaries for feature-based regions
-            feature_start = region_info[i]['feature_start_in_window']
-            feature_end = region_info[i]['feature_end_in_window']
-        else:
-            # For phyloP-based regions, use the last feature_length bases
-            feature_start = max(0, len(true) - feature_length)
-            feature_end = len(true)
-        
-        # Slice to get just the feature/evaluation portion
+
+        feature_start = region_info[i]['feature_start_in_window'] 
+        feature_end = region_info[i]['feature_end_in_window']  
+
+        print(f"Feature start: {feature_start}, Feature end: {feature_end}")
+
         true_feature = true[feature_start:feature_end]
         pred_feature = pred[feature_start:feature_end]
-        
-        # Filter out NaN values
         mask = ~(np.isnan(true_feature) | np.isnan(pred_feature))
         true_filtered = true_feature[mask]
         pred_filtered = pred_feature[mask]
-        
-        # Calculate correlation if we have enough data points
+
+        print(f"Running correlation over {len(true_filtered)} points ")
+
         if len(true_filtered) > 10:
-            correlation = np.corrcoef(true_filtered, pred_filtered)[0, 1]
+            corr = np.corrcoef(true_filtered, pred_filtered)[0, 1]
             mean_true = np.mean(true_filtered)
             mean_pred = np.mean(pred_filtered)
-            
+
             results.append({
                 'chrom': region_info[i]['chrom'],
                 'start': region_info[i]['start'],
@@ -828,12 +945,80 @@ def calculate_correlations(true_scores, predicted_scores, region_info, feature_l
                 'feature_id': region_info[i].get('feature_id', 'unknown'),
                 'mean_true_score': mean_true,
                 'mean_pred_score': mean_pred,
-                'correlation': correlation,
+                'loss': ce_losses[i] if ce_losses else np.nan,
+                'correlation': corr,
                 'num_points': len(true_filtered),
                 'feature_length': feature_end - feature_start
             })
-    
+
     return pd.DataFrame(results)
+
+
+import torch.nn.functional as F
+
+def calculate_ce_losses(sequence_logits_list, region_info, tokenizer, true_sequences=None):
+    ce_losses = []
+
+    for i, logits in enumerate(sequence_logits_list):
+        if isinstance(logits, float) or np.isnan(logits).any():
+            ce_losses.append(np.nan)
+            continue
+
+        logits = torch.tensor(logits)  # shape: (seq_len, vocab_size)
+        preds = logits.argmax(dim=-1)
+
+        fs = region_info[i]['feature_start_in_window']
+        fe = region_info[i]['feature_end_in_window']
+        print(f"Length of feature region: {fe - fs}")
+        print(f"Feature starts at position {fs} and ends at {fe}.")
+
+        # Get true sequence
+        if true_sequences:
+            true_seq = true_sequences[i]
+        else:
+            logging.warning(f"True labels not provided for region {i}, skipping CE loss.")
+            ce_losses.append(np.nan)
+            continue
+
+        true_labels = torch.tensor(true_seq)
+
+        # Trim logits if necessary
+        if len(true_labels) != logits.shape[0]:
+            logging.warning(f"[CE Loss] Logits len={logits.shape[0]}, True len={len(true_labels)}. Trimming logits.")
+            # Remove [START] and [STOP] and trim to match true_labels
+            logits = logits[1:]
+            preds = preds[1:]
+            # if logits is longer than true_labels, trim logits to match
+            if logits.shape[0] > len(true_labels):
+                logits = logits[:len(true_labels)]
+                preds = preds[:len(true_labels)]
+            
+        else:
+            logits = logits[1:-1]
+            preds = preds[1:-1]
+
+        labels_region = true_labels[fs:fe]
+        logits_region = logits[fs:fe]
+
+        print(f"Calculating CE loss for region of length: {len(labels_region)}")
+
+        if len(labels_region) == 0 or logits_region.shape[0] == 0:
+            ce_losses.append(np.nan)
+            continue
+
+        loss = F.cross_entropy(
+            logits_region,
+            labels_region,
+            ignore_index=-100,
+            reduction='mean'
+        )
+
+        ce_losses.append(loss.item())
+
+    return ce_losses
+
+
+#need to get the CE loss & conservaiton  ONLY in the region of interest
 
 def create_feature_comparison_plot(data, output_dir):
     """
@@ -843,6 +1028,171 @@ def create_feature_comparison_plot(data, output_dir):
     
     # Aggregate data by category and data_split
     agg_data = data.groupby(['category', 'data_split'])['correlation'].agg(
+        ['mean', 'std', 'count']
+    ).reset_index()
+    
+    # Pivot for easier plotting
+    pivot_data = agg_data.pivot(index='category', columns='data_split', values=['mean', 'std'])
+    
+    # Sort categories by training performance (if available)
+    if ('mean', 'Training') in pivot_data.columns:
+        pivot_data = pivot_data.sort_values(by=('mean', 'Training'), ascending=False)
+    
+    # Extract the necessary data for plotting
+    categories = pivot_data.index
+    
+    # Set up the plot
+    plt.figure(figsize=(12, 8))
+    
+    # Set up positions for bars
+    x = np.arange(len(categories))
+    width = 0.35
+    
+    # Plot bars for Held Out
+    if ('mean', 'Held Out') in pivot_data.columns:
+        held_out_means = pivot_data[('mean', 'Held Out')].values
+        held_out_stds = pivot_data[('std', 'Held Out')].values if ('std', 'Held Out') in pivot_data.columns else None
+        
+        bars1 = plt.bar(x - width/2, held_out_means, width, 
+                        label='Held Out (chr2, chr22)',
+                        color='skyblue', 
+                        yerr=held_out_stds,
+                        capsize=5,
+                        edgecolor='darkblue',
+                        linewidth=1.5,
+                        alpha=0.8)
+        
+        # Add correlation values above bars
+        for i, v in enumerate(held_out_means):
+            plt.text(i - width/2, v + 0.02, f'{v:.3f}', ha='center', fontsize=9, fontweight='bold')
+    
+    # Plot bars for Training
+    if ('mean', 'Training') in pivot_data.columns:
+        training_means = pivot_data[('mean', 'Training')].values
+        training_stds = pivot_data[('std', 'Training')].values if ('std', 'Training') in pivot_data.columns else None
+        
+        bars2 = plt.bar(x + width/2, training_means, width,
+                        label='Training (chr19)',
+                        color='orange',
+                        yerr=training_stds,
+                        capsize=5,
+                        edgecolor='darkred',
+                        linewidth=1.5,
+                        alpha=0.8)
+        
+        # Add correlation values above bars
+        for i, v in enumerate(training_means):
+            plt.text(i + width/2, v + 0.02, f'{v:.3f}', ha='center', fontsize=9, fontweight='bold')
+    
+    # Add horizontal line at y=0 for reference
+    plt.axhline(y=0, color='gray', linestyle='--', alpha=0.7)
+    
+    # Add statistical significance if available
+    try:
+        held_out_corrs = data[data['data_split'] == 'Held Out']['correlation']
+        training_corrs = data[data['data_split'] == 'Training']['correlation']
+        
+        if len(held_out_corrs) > 0 and len(training_corrs) > 0:
+            t_stat, p_value = stats.ttest_ind(held_out_corrs, training_corrs, equal_var=False)
+            
+            significance_text = f"T-test: t={t_stat:.2f}, p={p_value:.4f}\n"
+            significance_text += f"Mean (Held Out): {held_out_corrs.mean():.3f}\n"
+            significance_text += f"Mean (Training): {training_corrs.mean():.3f}"
+            
+            plt.figtext(0.7, 0.02, significance_text, 
+                       bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'),
+                       fontsize=10)
+    except Exception as e:
+        logging.warning(f"Could not add statistical significance: {e}")
+    
+    # Customize the plot
+    plt.xlabel('Feature Category', fontsize=12, fontweight='bold')
+    plt.ylabel('Mean Correlation (Predicted vs True PhyloP)', fontsize=12, fontweight='bold')
+    plt.title('Correlation Between Predicted and True PhyloP Scores:\nHeld Out vs Training Chromosomes', 
+              fontsize=14, fontweight='bold')
+    plt.xticks(x, categories, rotation=45, ha='right', fontsize=10)
+    plt.yticks(fontsize=10)
+    plt.legend(fontsize=10, loc='upper right')
+    plt.grid(axis='y', alpha=0.3)
+    
+    # Improve layout and save
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'feature_comparison_bar_plot.png'), dpi=300)
+    plt.close()
+    
+    logging.info(f"Bar plot saved to {output_dir}")
+
+
+def create_feature_chromosome_heatmap(data, output_dir):
+    """
+    Create heatmap showing correlations by feature category and chromosome.
+    """
+    logging.info("Creating feature/chromosome heatmap")
+    
+    # Aggregate data by category and chromosome
+    agg_data = data.groupby(['category', 'chrom'])['correlation'].mean().reset_index()
+    
+    # Create pivot table
+    pivot_data = agg_data.pivot(index='category', columns='chrom', values='correlation')
+    
+    # Sort categories (rows) by the average correlation across all chromosomes
+    pivot_data['avg'] = pivot_data.mean(axis=1)
+    pivot_data = pivot_data.sort_values('avg', ascending=False)
+    pivot_data = pivot_data.drop('avg', axis=1)
+    
+    # Create figure
+    plt.figure(figsize=(10, 8))
+    
+    # Define custom colormap (white to blue)
+    colors = [(1, 1, 1), (0, 0.4, 0.8)]  # white to blue
+    cmap = LinearSegmentedColormap.from_list('white_to_blue', colors, N=100)
+    
+    # Create heatmap
+    heatmap = sns.heatmap(
+        pivot_data,
+        annot=True,
+        fmt='.3f',
+        cmap=cmap,
+        linewidths=0.5,
+        cbar_kws={'label': 'Mean Correlation'},
+        annot_kws={"size": 10, "weight": "bold"}
+    )
+    
+    # Add data split information
+    for i, chrom in enumerate(pivot_data.columns):
+        split = "Training" if chrom == 'chr19' else "Held Out"
+        color = "darkred" if chrom == 'chr19' else "navy"
+        plt.text(
+            i + 0.5, 
+            len(pivot_data) + 0.1, 
+            split,
+            horizontalalignment='center',
+            color=color,
+            fontsize=10,
+            fontweight='bold'
+        )
+    
+    # Customize the plot
+    plt.title('Mean Correlation by Feature Category and Chromosome', fontsize=14, fontweight='bold')
+    plt.yticks(rotation=0, fontsize=10)
+    plt.xticks(fontsize=10, rotation=0)
+    
+    # Improve layout and save
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'feature_chromosome_heatmap.png'), dpi=300)
+    plt.close()
+    
+    logging.info(f"Heatmap saved to {output_dir}")
+
+
+def create_feature_loss_plot(data, output_dir):
+    """
+    Create bar plot comparing CE loss by feature category and data split.
+    """
+    logging.info("Creating CE loss comparison bar plot")
+    
+    # Aggregate data by category and data_split
+    agg_data = data.groupby(['category', 'data_split'])['loss'].agg(
         ['mean', 'std', 'count']
     ).reset_index()
     
@@ -923,8 +1273,8 @@ def create_feature_comparison_plot(data, output_dir):
     
     # Customize the plot
     plt.xlabel('Feature Category', fontsize=12, fontweight='bold')
-    plt.ylabel('Mean Correlation (Predicted vs True PhyloP)', fontsize=12, fontweight='bold')
-    plt.title('Correlation Between Predicted and True PhyloP Scores:\nHeld Out vs Training Chromosomes', 
+    plt.ylabel('CE Loss', fontsize=12, fontweight='bold')
+    plt.title('CE Loss :\nHeld Out vs Training Chromosomes', 
               fontsize=14, fontweight='bold')
     plt.xticks(x, categories, rotation=45, ha='right', fontsize=10)
     plt.yticks(fontsize=10)
@@ -933,26 +1283,24 @@ def create_feature_comparison_plot(data, output_dir):
     
     # Improve layout and save
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'feature_comparison_bar_plot.png'), dpi=300)
-    plt.savefig(os.path.join(output_dir, 'feature_comparison_bar_plot.pdf'))
+    plt.savefig(os.path.join(output_dir, 'feature_comparison_ce_loss_plot.png'), dpi=300)
     plt.close()
     
     logging.info(f"Bar plot saved to {output_dir}")
 
-
-def create_feature_chromosome_heatmap(data, output_dir):
+def create_feature_chromosome_ce_loss_heatmap(data, output_dir):
     """
-    Create heatmap showing correlations by feature category and chromosome.
+    Create heatmap showing CE loss by feature category and chromosome.
     """
-    logging.info("Creating feature/chromosome heatmap")
+    logging.info("Creating feature/chromosome heatmap for CE loss")
     
-    # Aggregate data by category and chromosome
-    agg_data = data.groupby(['category', 'chrom'])['correlation'].mean().reset_index()
+    # Aggregate CE loss by category and chromosome
+    agg_data = data.groupby(['category', 'chrom'])['loss'].mean().reset_index()
     
     # Create pivot table
-    pivot_data = agg_data.pivot(index='category', columns='chrom', values='correlation')
+    pivot_data = agg_data.pivot(index='category', columns='chrom', values='loss')
     
-    # Sort categories (rows) by the average correlation across all chromosomes
+    # Sort categories by average CE loss across all chromosomes
     pivot_data['avg'] = pivot_data.mean(axis=1)
     pivot_data = pivot_data.sort_values('avg', ascending=False)
     pivot_data = pivot_data.drop('avg', axis=1)
@@ -960,9 +1308,9 @@ def create_feature_chromosome_heatmap(data, output_dir):
     # Create figure
     plt.figure(figsize=(10, 8))
     
-    # Define custom colormap (white to blue)
-    colors = [(1, 1, 1), (0, 0.4, 0.8)]  # white to blue
-    cmap = LinearSegmentedColormap.from_list('white_to_blue', colors, N=100)
+    # Custom colormap (white to red)
+    colors = [(1, 1, 1), (0.8, 0.1, 0.1)]  # white to red
+    cmap = LinearSegmentedColormap.from_list('white_to_red', colors, N=100)
     
     # Create heatmap
     heatmap = sns.heatmap(
@@ -971,17 +1319,17 @@ def create_feature_chromosome_heatmap(data, output_dir):
         fmt='.3f',
         cmap=cmap,
         linewidths=0.5,
-        cbar_kws={'label': 'Mean Correlation'},
+        cbar_kws={'label': 'Mean Cross-Entropy Loss'},
         annot_kws={"size": 10, "weight": "bold"}
     )
     
-    # Add data split information
+    # Add data split label below each chromosome column
     for i, chrom in enumerate(pivot_data.columns):
         split = "Training" if chrom == 'chr19' else "Held Out"
         color = "darkred" if chrom == 'chr19' else "navy"
         plt.text(
-            i + 0.5, 
-            len(pivot_data) + 0.1, 
+            i + 0.5,
+            len(pivot_data) + 0.1,
             split,
             horizontalalignment='center',
             color=color,
@@ -990,17 +1338,16 @@ def create_feature_chromosome_heatmap(data, output_dir):
         )
     
     # Customize the plot
-    plt.title('Mean Correlation by Feature Category and Chromosome', fontsize=14, fontweight='bold')
+    plt.title('Mean Cross-Entropy Loss by Feature Category and Chromosome', fontsize=14, fontweight='bold')
     plt.yticks(rotation=0, fontsize=10)
     plt.xticks(fontsize=10, rotation=0)
     
-    # Improve layout and save
+    # Save output
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'feature_chromosome_heatmap.png'), dpi=300)
-    plt.savefig(os.path.join(output_dir, 'feature_chromosome_heatmap.pdf'))
+    plt.savefig(os.path.join(output_dir, 'feature_chromosome_ce_loss_heatmap.png'), dpi=300)
     plt.close()
     
-    logging.info(f"Heatmap saved to {output_dir}")
+    logging.info(f"CE loss heatmap saved to {output_dir}")
 
 
 def analyze_agreement(
@@ -1013,10 +1360,12 @@ def analyze_agreement(
     num_regions=100,
     region_length=2048,
     chromosomes=None,
-    last_step=132250,
+    last_step=56000,
     batch_size=8,
     training_chromosomes=None,
-    test_chromosomes=None
+    test_chromosomes=None,
+    training_task = 'dual',
+    model_type= 'gamba'
 ):
     """
     Analyze agreement between predicted and true phyloP scores across different
@@ -1046,7 +1395,7 @@ def analyze_agreement(
     logging.info(f"Using device: {device}")
     
     # Load model
-    model, tokenizer = load_model(checkpoint_dir, config_fpath, last_step=last_step, device=device)
+    model, tokenizer = load_model(checkpoint_dir, config_fpath, last_step=last_step, device=device, training_task = training_task, model_type=model_type)
     
     # Parse GTF files
     gtf_parser = GTFParser(gtf_files)
@@ -1057,7 +1406,7 @@ def analyze_agreement(
     # Define sampling categories
     categories = [
         # Score-based categories
-        {"name": "negative_phylop", "type": "score", "range": score_dist['negative']},
+        #{"name": "negative_phylop", "type": "score", "range": score_dist['negative']},
         {"name": "neutral_phylop", "type": "score", "range": score_dist['neutral']},
         {"name": "positive_phylop", "type": "score", "range": score_dist['positive']},
         
@@ -1095,13 +1444,13 @@ def analyze_agreement(
                 regions = sample_regions_by_phylop(
                     bigwig_file, genome_fasta, category['range'], 
                     num_regions=num_regions, max_length=region_length, 
-                    chromosomes=group_chroms
+                    chromosomes=group_chroms, model_type = model_type
                 )
             else:  # feature-based
                 regions = sample_regions_by_feature(
                     bigwig_file, genome_fasta, gtf_parser, category['feature'],
                     num_regions=num_regions, max_length=region_length,
-                    chromosomes=group_chroms
+                    chromosomes=group_chroms, model_type = model_type
                 )
             
             if not regions:
@@ -1109,12 +1458,17 @@ def analyze_agreement(
                 continue
             
             # Predict scores for sampled regions
-            predicted_scores, true_scores, region_info = predict_scores_batched(
-                model, tokenizer, regions, batch_size=batch_size, device=device
+            predicted_scores, true_scores, region_info, all_seq_predictions, all_true_sequences = predict_scores_batched(
+                model, tokenizer, regions, batch_size=batch_size, device=device, model_type = model_type,
+                training_task=training_task
             )
             
             # Calculate correlations
-            correlation_df = calculate_correlations(true_scores, predicted_scores, region_info)
+            if model_type == 'gamba':
+                ce_losses = calculate_ce_losses(all_seq_predictions, region_info, tokenizer, all_true_sequences)
+            else:
+                ce_losses = all_seq_predictions
+            correlation_df = calculate_correlations(true_scores, predicted_scores, region_info, ce_losses)
             
             # Add category information
             correlation_df['category'] = category['name']
@@ -1140,9 +1494,19 @@ def analyze_agreement(
         lambda x: 'Training' if x in training_chromosomes else 'Held Out'
     )
     
-    # Create the two key visualizations
-    create_feature_comparison_plot(all_results_df, output_dir)
-    create_feature_chromosome_heatmap(all_results_df, output_dir)
+    # Create the visualizations
+    if training_task == "dual":
+        create_feature_comparison_plot(all_results_df, output_dir)
+        create_feature_chromosome_heatmap(all_results_df, output_dir)
+        create_feature_loss_plot(all_results_df, output_dir)
+        create_feature_chromosome_ce_loss_heatmap(all_results_df, output_dir)
+    elif training_task == "cons_only":
+        create_feature_comparison_plot(all_results_df, output_dir)
+        create_feature_chromosome_heatmap(all_results_df, output_dir)
+    elif training_task == "seq_only":
+        create_feature_loss_plot(all_results_df, output_dir)
+        create_feature_chromosome_ce_loss_heatmap(all_results_df, output_dir)
+
     
     # Return the results dataframe for further analysis if needed
     return all_results_df
@@ -1179,7 +1543,7 @@ def main():
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default='/home/mica/gamba/dcps/',
+        default='/home/mica/gamba/',
         help="Directory containing model checkpoints",
     )
     parser.add_argument(
@@ -1191,7 +1555,7 @@ def main():
     parser.add_argument(
         "--num_regions",
         type=int,
-        default=500,
+        default=1000,
         help="Number of regions to sample per category",
     )
     parser.add_argument(
@@ -1224,16 +1588,24 @@ def main():
     parser.add_argument(
         "--last_step",
         type=int,
-        default=183000,
+        default=56000,
         help="Checkpoint step to use",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=16,
+        default=32,
         help="Batch size for model predictions",
     )
-    
+    parser.add_argument(
+        "--model_type", type=str, choices=["gamba", "caduceus"], required=True,
+        help="Which model type to use (gamba or caduceus)"
+    )
+    parser.add_argument(
+        "--training_task", type=str, choices=["dual", "cons_only", "seq_only"], required=True,
+        help="Which task the model was trained on"
+    )
+
     args = parser.parse_args()
     
     # Configure logging to include timestamps
@@ -1246,15 +1618,21 @@ def main():
     logging.info(f"Starting analysis script with chromosomes: {args.chromosomes}")
     logging.info(f"Training chromosomes: {args.training_chromosomes}")
     logging.info(f"Test chromosomes: {args.test_chromosomes}")
+    logging.info(f"Using model type: {args.model_type} on task: {args.training_task}")
+
+    if args.model_type == 'gamba':
+        checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/"
+    else:
+        checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/"
     
     #change outputdir to + dcp checkpoint 
-    output_dir = args.output_dir + f"/{args.last_step}/"
+    output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_step_{args.last_step}/"
     try:
         analyze_agreement(
             args.genome_fasta,
             args.bigwig_file,
             args.gtf_files,
-            args.checkpoint_dir,
+            checkpoint_dir,
             args.config_fpath,
             output_dir,
             num_regions=args.num_regions,
@@ -1263,7 +1641,9 @@ def main():
             training_chromosomes=args.training_chromosomes,
             test_chromosomes=args.test_chromosomes,
             last_step=args.last_step,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            training_task= args.training_task,
+            model_type=args.model_type
         )
         logging.info("Analysis completed successfully")
     except Exception as e:
