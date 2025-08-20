@@ -47,6 +47,12 @@ import numpy as np
 import os
 from sklearn.neighbors import NearestNeighbors
 
+CATEGORY_ORDER = [
+    "vista_enhancer", "UCNE", "repeats", "exons", "introns",
+    "noncoding_regions", "coding_regions", "upstream_TSS",
+    "UTR5", "UTR3", "promoters", "phyloP_negative", "phyloP_neutral", "phyloP_positive",
+]
+
 
 # Configure logging
 logging.basicConfig(
@@ -94,6 +100,97 @@ def extract_region_embeddings(representations, region_info, mode="roi"):
 
     return np.stack(embeddings), labels
 
+def _roi_span(info):
+    fs = int(info["feature_start_in_window"])
+    fe = int(info["feature_end_in_window"])
+    if fe <= fs:
+        return None
+    return fs, fe
+
+def _build_kmer_index(k=6, alphabet="ACGT"):
+    # lexicographic index: 'AAAAAA'..'TTTTTT'
+    from itertools import product
+    kmers = [''.join(p) for p in product(alphabet, repeat=k)]
+    return {kmer: i for i, kmer in enumerate(kmers)}
+
+def _seq_to_kmer_vec(seq, k, kmer_index):
+    # ignore k-mers with non-ACGT chars
+    n = len(kmer_index)
+    vec = np.zeros(n, dtype=np.float32)
+    L = len(seq)
+    if L < k:
+        return vec
+    for i in range(L - k + 1):
+        kmer = seq[i:i+k].upper()
+        if kmer in kmer_index:  # skip if contains N/others
+            vec[kmer_index[kmer]] += 1.0
+    s = vec.sum()
+    if s > 0:
+        vec /= s  # normalize to frequencies
+    # L2 normalize for cosine-ish geometry in euclidean space
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec /= norm
+    return vec
+
+def compute_kmer_embeddings(valid_regions, mode="roi", k=6):
+    kmer_index = _build_kmer_index(k=k)
+    embeddings, labels = [], []
+    for r in valid_regions:
+        seq = r["sequence"]
+        if mode == "roi":
+            span = _roi_span(r)
+            if span is None: 
+                continue
+            fs, fe = span
+            seq = seq[fs:fe]
+        # skip empty/too short
+        if not seq or len(seq) < k:
+            continue
+        vec = _seq_to_kmer_vec(seq, k, kmer_index)
+        embeddings.append(vec)
+        labels.append(r.get("category", "unknown"))
+    if len(embeddings) == 0:
+        return np.empty((0, 4**k), dtype=np.float32), []
+    return np.vstack(embeddings), labels
+
+def _summarize_scores(scores):
+    s = np.asarray(scores, dtype=np.float32)
+    if s.size == 0 or np.isnan(s).all():
+        return None
+    m = np.nanmean(s)
+    st = np.nanstd(s)
+    pos = s[s > 0]
+    neg = s[s < 0]
+    fpos = float(np.sum(s > 0)) / float(np.sum(~np.isnan(s))) if np.sum(~np.isnan(s)) else 0.0
+    fneg = float(np.sum(s < 0)) / float(np.sum(~np.isnan(s))) if np.sum(~np.isnan(s)) else 0.0
+    mpos = float(np.nanmean(pos)) if pos.size else 0.0
+    mneg = float(np.nanmean(neg)) if neg.size else 0.0
+    return np.array([m, st, fpos, fneg, mpos, mneg], dtype=np.float32)
+
+def compute_phylop_embeddings(valid_regions, mode="roi"):
+    embeddings, labels = [], []
+    for r in valid_regions:
+        scores = r.get("scores", None)
+        if scores is None:
+            continue
+        if mode == "roi":
+            span = _roi_span(r)
+            if span is None:
+                continue
+            fs, fe = span
+            ss = scores[fs:fe]
+        else:
+            ss = scores
+        feat = _summarize_scores(ss)
+        if feat is None:
+            continue
+        embeddings.append(feat)
+        labels.append(r.get("category", "unknown"))
+    if len(embeddings) == 0:
+        return np.empty((0, 6), dtype=np.float32), []
+    return np.vstack(embeddings), labels
+
 
 def plot_umap(embeddings, labels, output_path, title="UMAP of Representations"):
     if len(embeddings) != len(labels):
@@ -107,7 +204,12 @@ def plot_umap(embeddings, labels, output_path, title="UMAP of Representations"):
     embedding_2d = umap_model.fit_transform(embeddings)
 
     plt.figure(figsize=(10, 8))
-    sns.scatterplot(x=embedding_2d[:, 0], y=embedding_2d[:, 1], hue=labels, palette="tab10", s=40, alpha=0.8)
+    sns.scatterplot(
+        x=embedding_2d[:, 0], y=embedding_2d[:, 1],
+        hue=pd.Categorical(labels, categories=CATEGORY_ORDER, ordered=True),
+        palette="tab10", s=40, alpha=0.8
+    )
+
     plt.title(title)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
@@ -130,14 +232,21 @@ def leave_one_out_1nn_accuracy(embeddings, labels):
 
 def plot_knn_heatmap(embeddings, labels, output_path, title="1-NN Classification Accuracy"):
     accuracy, conf_mat = leave_one_out_1nn_accuracy(embeddings, labels)
-    label_set = np.unique(labels)
+    label_set = [lab for lab in CATEGORY_ORDER if lab in set(labels)]
 
     # Normalize confusion matrix rows
     acc_matrix = conf_mat.astype(float) / conf_mat.sum(axis=1, keepdims=True)
 
     plt.figure(figsize=(10, 8))
-    sns.heatmap(acc_matrix, xticklabels=label_set, yticklabels=label_set, vmin= 0, vmax = 0.85,
-                cmap="Blues", annot=True, fmt=".2f", cbar_kws={"label": "1-NN Accuracy"})
+    sns.heatmap(
+        acc_matrix,
+        xticklabels=label_set,
+        yticklabels=label_set,
+        vmin=0, vmax=0.85,
+        cmap="Blues", annot=True, fmt=".2f",
+        cbar_kws={"label": "1-NN Accuracy"}
+    )
+
     plt.title(f"{title} (Acc: {accuracy:.2%})")
     plt.xlabel("Predicted")
     plt.ylabel("True")
@@ -151,6 +260,7 @@ def analyze_agreement(
     checkpoint_dir,
     config_fpath,
     output_dir,
+    baseline="none",
     num_regions=100,
     chromosomes=None,
     last_step=44000,
@@ -175,12 +285,14 @@ def analyze_agreement(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info(f"Using device: {device}")
 
-    model, tokenizer = load_model(checkpoint_dir, config_fpath, last_step=last_step, device=device, training_task=training_task, model_type=model_type)
+    model = tokenizer = None
+    if baseline == "none":
+        model, tokenizer = load_model(checkpoint_dir, config_fpath, last_step=last_step, device=device, training_task=training_task, model_type=model_type)
     genome = Fasta(genome_fasta)
 
     bw = pyBigWig.open(bigwig_file)
 
-    categories = ["vista_enhancer", "UCNE", "repeats", "exons", "introns", "noncoding_regions", "coding_regions", "upstream_TSS", "UTR5", "UTR3", "promoters"]
+    categories = ["phyloP_negative", "phyloP_neutral", "phyloP_positive", "vista_enhancer", "UCNE", "repeats", "exons", "introns", "noncoding_regions", "coding_regions", "upstream_TSS", "UTR5", "UTR3", "promoters"]
 
     chromosome_groups = {}
     if training_chromosomes and test_chromosomes:
@@ -217,34 +329,56 @@ def analyze_agreement(
                 if not context or "sequence" not in context:
                     print(f"[WARN] Region {i} has invalid or truncated sequence")
                     continue
+                # keep per-base phyloP for baseline
+                if "scores" in region and isinstance(region["scores"], (list, np.ndarray)):
+                    context["scores"] = np.asarray(region["scores"], dtype=np.float32)
                 valid_regions.append(context)
 
-            if not valid_regions:
-                logging.warning(f"[SKIP] All regions in group {group_name} were invalid.")
-                continue
 
-            sequence_representations, region_info = predict_scores_batched(
-                model, tokenizer, valid_regions,
-                batch_size=batch_size,
-                device=device,
-                model_type=model_type,
-                training_task=training_task
-            )
+            if baseline == "kmer6":
+                # ensure labels exist
+                for r in valid_regions:
+                    r["category"] = category
 
-            for r in region_info:
-                r["category"] = category
-            print(f"[DEBUG] Received {len(sequence_representations)} representations")
-            print(f"[DEBUG] Received {len(region_info)} region metadata entries")
+                full_embeds, full_labels = compute_kmer_embeddings(valid_regions, mode="full", k=6)
+                roi_embeds,  roi_labels  = compute_kmer_embeddings(valid_regions,  mode="roi",  k=6)
 
-            full_embeds, full_labels = extract_region_embeddings(sequence_representations, region_info, mode="full")
-            roi_embeds, roi_labels = extract_region_embeddings(sequence_representations, region_info, mode="roi")
+            elif baseline == "phylop":
+                for r in valid_regions:
+                    r["category"] = category
 
+                full_embeds, full_labels = compute_phylop_embeddings(valid_regions, mode="full")
+                roi_embeds,  roi_labels  = compute_phylop_embeddings(valid_regions,  mode="roi")
+
+            else:
+                # --- trained model path ---
+                sequence_representations, region_info = predict_scores_batched(
+                    model, tokenizer, valid_regions,
+                    batch_size=batch_size,
+                    device=device,
+                    model_type=model_type,
+                    training_task=training_task
+                )
+
+                # region_info exists ONLY here
+                for r in region_info:
+                    r["category"] = category
+
+                full_embeds, full_labels = extract_region_embeddings(
+                    sequence_representations, region_info, mode="full"
+                )
+                roi_embeds,  roi_labels  = extract_region_embeddings(
+                    sequence_representations, region_info, mode="roi"
+                )
+
+            # common accumulation (works for both paths)
             all_group_embeddings[group_name]["roi"].extend(roi_embeds)
             all_group_embeddings[group_name]["full"].extend(full_embeds)
             assert len(full_labels) == len(full_embeds), "Full labels and embeddings mismatch!"
-            assert len(roi_labels) == len(roi_embeds), "ROI labels and embeddings mismatch!"
+            assert len(roi_labels)  == len(roi_embeds),  "ROI labels and embeddings mismatch!"
             all_group_embeddings[group_name]["full_labels"].extend(full_labels)
             all_group_embeddings[group_name]["roi_labels"].extend(roi_labels)
+
 
     for group_name, group_data in all_group_embeddings.items():
         plot_umap(group_data["roi"], group_data["roi_labels"], output_dir / f"global_umap_roi_{group_name}.png", title=f"Global UMAP - ROI ({group_name})")
@@ -299,21 +433,21 @@ def main():
         "--chromosomes",
         type=str,
         nargs="+",
-        default=["chr2", "chr19", "chr22"],
+        default=["chr1", "chr2", "chr3", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr10", "chr11", "chr12", "chr13", "chr14", "chr15", "chr16", "chr17", "chr18", "chr19", "chr20", "chr21", "chrX"],
         help="List of chromosomes to analyze",
     )
     parser.add_argument(
         "--training_chromosomes",
         type=str,
         nargs="+",
-        default=["chr19"],
+        default=["chr1", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr10","chr11", "chr12", "chr13", "chr14", "chr15", "chr17", "chr18", "chr19", "chr20", "chr21", "chrX"],
         help="List of chromosomes used in training",
     )
     parser.add_argument(
         "--test_chromosomes",
         type=str,
         nargs="+",
-        default=["chr2", "chr22"],
+        default=["chr2", "chr22", "chr16", "chr3"],
         help="List of chromosomes held out for testing",
     )
     parser.add_argument(
@@ -329,13 +463,25 @@ def main():
         help="Batch size for model predictions",
     )
     parser.add_argument(
-        "--model_type", type=str, choices=["gamba", "caduceus"], required=True,
-        help="Which model type to use (gamba or caduceus)"
+        "--model_type", type=str, choices=["gamba", "caduceus"],
+        default=None,
+        help="Only required when baseline == 'none'"
     )
+
     parser.add_argument(
-        "--training_task", type=str, choices=["dual", "cons_only", "seq_only"], required=True,
-        help="Which task the model was trained on"
+        "--training_task", type=str, choices=["dual", "cons_only", "seq_only"],
+        default=None,
+        help="Only required when baseline == 'none'"
     )
+
+    parser.add_argument(
+        "--baseline",
+        type=str,
+        choices=["none", "kmer6", "phylop"],
+        default="none",
+        help="Baseline embedding instead of a trained model"
+    )
+
 
     args = parser.parse_args()
     
@@ -345,39 +491,63 @@ def main():
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    
+
+        
     logging.info(f"Starting analysis script with chromosomes: {args.chromosomes}")
     logging.info(f"Training chromosomes: {args.training_chromosomes}")
     logging.info(f"Test chromosomes: {args.test_chromosomes}")
-    logging.info(f"Using model type: {args.model_type} on task: {args.training_task}")
 
-    if args.model_type == 'gamba':
-        checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/CCP/"
-        if args.training_task == "seq_only":
-            checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/"
-            args.last_step = 56000
+    # Validate conditional requirements
+    if args.baseline == "none":
+        if args.model_type is None or args.training_task is None:
+            raise SystemExit("When --baseline=none, you must provide --model_type and --training_task.")
+        logging.info(f"Using MODEL: type={args.model_type}, task={args.training_task}")
     else:
-        checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/"
-        args.last_step = 56000
-    
-    #change outputdir to + dcp checkpoint 
-    output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_step_{args.last_step}/"
+        # clear model-related args; they won't be used
+        logging.info(f"Using BASELINE: {args.baseline}")
+        #set all chromosomes as train, no test
+        args.training_chromosomes = args.chromosomes
+        args.test_chromosomes = None
+        args.model_type = None
+        args.training_task = None
+
+    if args.baseline != "none":
+        # e.g., /.../global_representations/baseline/kmer6/
+        output_dir = os.path.join(args.output_dir, "baseline", args.baseline)
+    else:
+        # keep your existing convention for trained models
+        if args.model_type == 'gamba':
+            checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/CCP/"
+            if args.training_task == "seq_only":
+                checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/"
+                args.last_step = 56000
+        else:
+            checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/"
+            args.last_step = 56000
+
+        output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_step_{args.last_step}/"
+
     try:
-        analyze_agreement(
-            args.genome_fasta,
-            args.bigwig_file,
-            checkpoint_dir,
-            args.config_fpath,
-            output_dir,
+        analyze_kwargs = dict(
+            genome_fasta=args.genome_fasta,
+            bigwig_file=args.bigwig_file,
+            checkpoint_dir=None,
+            config_fpath=args.config_fpath,
+            output_dir=output_dir,
             num_regions=args.num_regions,
             chromosomes=args.chromosomes,
             training_chromosomes=args.training_chromosomes,
             test_chromosomes=args.test_chromosomes,
             last_step=args.last_step,
             batch_size=args.batch_size,
-            training_task= args.training_task,
-            model_type=args.model_type
+            training_task=args.training_task,
+            model_type=args.model_type,
+            baseline=args.baseline
         )
+        if args.baseline == "none":
+            analyze_kwargs["checkpoint_dir"] = checkpoint_dir
+
+        analyze_agreement(**analyze_kwargs)
         logging.info("Analysis completed successfully")
     except Exception as e:
         logging.error(f"Error in analysis: {e}")
