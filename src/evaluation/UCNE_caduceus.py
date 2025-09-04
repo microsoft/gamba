@@ -8,7 +8,10 @@ import sys
 import os
 sys.path.append("../gamba")
 from typing import Optional, Sequence, Tuple, Type
+from sequence_models.constants import START, STOP, MSA_PAD
 import umap
+from my_caduceus.configuration_caduceus import CaduceusConfig
+from my_caduceus.modeling_caduceus import CaduceusConservationForMaskedLM, 
 
 import torch.nn as nn
 from torch.optim import Adam
@@ -21,8 +24,8 @@ from sequence_models.utils import transformer_lr, warmup
 
 import torch.nn.functional as F 
 from evodiff.utils import Tokenizer
-from gamba.collators import gLMCollator
-from gamba.model import create_model, JambagambaModel, JambaGambaNOALMModel
+from gamba.collators import gLMMLMCollator
+from gamba.model import create_model, JambagambaModel
 from gamba.constants import TaskType, DNA_ALPHABET_PLUS
 import pyBigWig
 import json
@@ -53,17 +56,26 @@ def get_representations(model, dataloader, device, original_spans):
     sequence_conservation_profiles = []
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
-            inputs, labels = batch  # inputs shape: [batch, 2, seq_len]
-            inputs = inputs.to(device)
-            labels = labels.to(device)
+            sequence_input = batch[0][:, 0, :].long()       # (B, T)
+            scaling = batch[0][:, 1, :].float()             # (B, T)
+            sequence_labels = batch[1][:, 0, :].long()      # (B, T)
+            scale_lbls = batch[1][:, 1, :].float()          # (B, T)
+
+            model_kwargs = {
+                "input_ids": sequence_input.to(device),
+                "labels": sequence_labels.to(device),
+            }
+             # If model supports conservation prediction, pass conservation labels too
+            if hasattr(model, "conservation_head"):
+                model_kwargs["conservation_labels"] = scale_lbls.to(device)
             
             # Pass both inputs and labels to the model
-            output = model(inputs, labels)
+            output = model(**model_kwargs)
             
             batch_representations = output["representation"].cpu().numpy()
             scaling_logits = output["scaling_logits"].cpu().numpy()
-            sequence_data = inputs[:, 0].cpu().numpy()  # Sequences
-            true_scores = inputs[:, 1].cpu().numpy()    # Conservation scores
+            sequence_data = sequence_input.cpu().numpy()
+            true_scores = scaling.cpu().numpy()
             
             
             # batch_pred_conservation = scaling_logits[..., 0]
@@ -106,7 +118,6 @@ def get_representations(model, dataloader, device, original_spans):
                         print(f"True Conservation (region only): {true_cons_mean:.3f}")
                         print(f"Variance: {var_mean:.3f}")
             
-            del inputs, labels, output
             torch.cuda.empty_cache()
     
     return (np.array(representations), 
@@ -333,8 +344,20 @@ def process_bed_file(bed_df, genome, chrom_sizes, bw, tokenizer):
         pad_length = target_length - original_length
         
         # Calculate padded_start while ensuring we don't go beyond chromosome boundaries
-        padded_start = max(0, start - pad_length)
+        # Center the ROI within the padded sequence (for MLM)
+        half_pad = pad_length // 2
+        padded_start = max(0, start - half_pad)
         actual_start_offset = start - padded_start
+
+        # Ensure padded region doesn't overflow chromosome end
+        if padded_start + target_length > chrom_size:
+            padded_start = chrom_size - target_length
+            actual_start_offset = start - padded_start
+
+        if padded_start < 0:
+            skipped += 1
+            continue
+
         
         # Check if we'll exceed chromosome bounds
         if padded_start + target_length > chrom_size:
@@ -643,19 +666,34 @@ def analyze_neighbourhood_overlap(repr1: np.ndarray,
     
     return stats
 
+def build_complement_map(vocab_size):
+    """
+    Build a complement map tensor of length `vocab_size`, where:
+    A=0, T=1, G=2, C=3 are reversed: A <-> T, G <-> C
+    All other tokens map to themselves
+    """
+    complement_map = torch.arange(vocab_size)
+    complement_map[0] = 1  # A → T
+    complement_map[1] = 0  # T → A
+    complement_map[2] = 3  # G → C
+    complement_map[3] = 2  # C → G
+    return complement_map
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Get representations of sequences")
     parser.add_argument('--genome_fasta', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
     parser.add_argument('--chrom_sizes', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.chrom.sizes', help='Path to the chromosome sizes file')
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/conserved_elements/CCP/', help='Path to the output file')
+    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/caduceus_conserved_elements/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     parser.add_argument('--bed_file1', type=str, default ='/home/mica/gamba/data_processing/data/conserved_elements/filteredunseen_hg38UCNE_coordinates.bed', help='First BED file')
     parser.add_argument('--bed_file2', type=str, default='', help='Second BED file (optional)')
+    #parser.add_argument('--bed_file2', type=str, default='/home/mica/gamba/data_processing/data/UCSC coordinates/unseen_exons_chr2_chr22_chr16_chr3.bed', help='Second BED file (optional)')
     parser.add_argument('--force_recompute', action='store_true', help='Force recomputation even if cached results exist')
     parser.add_argument('--flanking', action='store_true', help='Generate flanking regions instead of random')
-    parser.add_argument('--checkpoint_num', type=int, default=44000, help='Checkpoint number to load')
+    parser.add_argument('--checkpoint_num', type=int, default=56000, help='Checkpoint number to load')
 
     args = parser.parse_args()
     
@@ -664,7 +702,8 @@ def main():
     checkpoint_num = args.checkpoint_num
 
     COMPARISON_TYPE = "exons" if args.bed_file2 else ("flanking" if args.flanking else "random")
-    args.output_dir = args.output_dir +f"dcp_{checkpoint_num}_noALM_results/"
+    args.output_dir = args.output_dir +f"dcp_{checkpoint_num}_results/"
+    #ensure exists:
     os.makedirs(args.output_dir, exist_ok=True)
     if args.bed_file2:
         bed2 = load_bed_file(args.bed_file2)
@@ -677,71 +716,44 @@ def main():
     genome = Fasta(args.genome_fasta)
     bw = pyBigWig.open(args.big_wig)
     ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
-    #ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
-    #ckpt_path = "/home/mica/gamba/dcps/dcp_34000"
-    #ckpt_path = "/home/mica/gamba/dcps/dcp_4000_reweighted_cons"
-    #ckpt_path ="/home/mica/gamba/dcps/dcp_14000_reweighted_cons"
-    #ckpt_path="/home/mica/gamba/dcps/dcp_132250_only_MSE"
-    #ckpt_path="/home/mica/gamba/clean_dcps/CCP/dcp_44000"
-    ckpt_path="/home/mica/gamba/clean_dcps/CCP/dcp_noALM44000"
+    ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_conscaduceus_56000"
 
-    # Load model configuration
-    with open(args.config_fpath, "r") as f:
-        config = json.load(f)
-    config["task"] = config["task"].lower().strip()
-    epochs = config["epochs"]
-    lr = config["lr"]
-    warmup_steps = config["warmup_steps"]
+
     tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
-    task = TaskType(config["task"].lower().strip())
-    
-
-    print(
-        f"Task: {task}, Model: {config['model_type']}, Dataset: {config['dataset']}, Model Config: {config['model_config']}"
+    pad_token_id = tokenizer.tokenizeMSA([MSA_PAD])[0]
+    config = CaduceusConfig(
+        d_model=256,
+        n_layer=8,
+        vocab_size=len(DNA_ALPHABET_PLUS)
     )
-    # create the model
-    model, block = create_model(
-        task, config["model_type"], config["model_config"], tokenizer.mask_id.item(), 
-    )
+    model = CaduceusConservationForMaskedLM(config)
+    model.config.pad_token_id = pad_token_id
 
-    #get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
-    d_model = config.get("d_model", 512) #512/2
-    nhead = config.get("n_head", 8)  
-    n_layers = config.get("n_layers", 6)
-    dim_feedforward = config.get("dim_feedforward", d_model)
-    padding_id = config.get("padding_id", 0)
+    block = None  # Not applicable for huggingface model
 
 
-    #set up the model load from last checkpoint
-    # model = JambagambaModel(
-    #         model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
-    #     )
-    model = JambaGambaNOALMModel(
-            model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
-        )
+    # Load the model checkpoint
+    checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location="cuda:0")
+
+    print("MODEL STATE DICT: \n")
+    for k, v in model.state_dict().items():
+        if "norm" in k:
+            print(f"{k}: {v.shape}")
+
+    print("MODEL CKPT: \n")
+    for k, v in checkpoint["model_state_dict"].items():
+        if "norm" in k:
+            print(f"{k}: {v.shape}")
+
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+
     # Move device to cuda if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
-    
 
-    # Load the model checkpoint
-    checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer = Adam(
-        model.parameters(), lr=lr, weight_decay=config.get("weight_decay", 0.0)
-    )
-    lr_func = warmup(warmup_steps)
-    scheduler = LambdaLR(optimizer, lr_func)
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-    sd = torch.load(
-        os.path.join(ckpt_path, "scheduler.pt"), map_location=torch.device("cpu")
-    )
-    scheduler.load_state_dict(sd["scheduler_state_dict"])
-
-
-    collator = gLMCollator(
+    collator = gLMMLMCollator(
         tokenizer=tokenizer,
         pad_to_multiple_of=None,
         test=True,

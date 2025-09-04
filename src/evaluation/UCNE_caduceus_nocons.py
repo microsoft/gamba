@@ -8,7 +8,10 @@ import sys
 import os
 sys.path.append("../gamba")
 from typing import Optional, Sequence, Tuple, Type
+from sequence_models.constants import START, STOP, MSA_PAD
 import umap
+from my_caduceus.configuration_caduceus import CaduceusConfig
+from my_caduceus.modeling_caduceus import CaduceusForMaskedLM, CaduceusConservation
 
 import torch.nn as nn
 from torch.optim import Adam
@@ -21,8 +24,8 @@ from sequence_models.utils import transformer_lr, warmup
 
 import torch.nn.functional as F 
 from evodiff.utils import Tokenizer
-from gamba.collators import gLMCollator
-from gamba.model import create_model, JambagambaModel, JambaGambaNOALMModel
+from gamba.collators import gLMMLMCollator
+from gamba.model import create_model, JambaGambaNoConsModel
 from gamba.constants import TaskType, DNA_ALPHABET_PLUS
 import pyBigWig
 import json
@@ -47,30 +50,31 @@ def safe_mean(arr, axis=None):
 def get_representations(model, dataloader, device, original_spans):
     model.eval()
     representations = []
-    pred_conservations = []
-    true_conservations = []
-    variances = []
-    sequence_conservation_profiles = []
+    sequence_profiles= []
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
-            inputs, labels = batch  # inputs shape: [batch, 2, seq_len]
-            inputs = inputs.to(device)
-            labels = labels.to(device)
+            sequence_input = batch[0][:, 0, :].long()       # (B, T)
+            scaling = batch[0][:, 1, :].float()             # (B, T)
+            sequence_labels = batch[1][:, 0, :].long()      # (B, T)
+            scale_lbls = batch[1][:, 1, :].float()          # (B, T)
+
+            model_kwargs = {
+                "input_ids": sequence_input.to(device),
+                "labels": sequence_labels.to(device),
+            }
+             # If model supports conservation prediction, pass conservation labels too
+            if hasattr(model, "conservation_head"):
+                model_kwargs["conservation_labels"] = scale_lbls.to(device)
             
             # Pass both inputs and labels to the model
-            output = model(inputs, labels)
+            output = model(**model_kwargs)
             
             batch_representations = output["representation"].cpu().numpy()
-            scaling_logits = output["scaling_logits"].cpu().numpy()
-            sequence_data = inputs[:, 0].cpu().numpy()  # Sequences
-            true_scores = inputs[:, 1].cpu().numpy()    # Conservation scores
+           
+            sequence_data = sequence_input.cpu().numpy()
+            true_scores = scaling.cpu().numpy()
             
             
-            # batch_pred_conservation = scaling_logits[..., 0]
-            # batch_log_var = scaling_logits[..., 1]
-            batch_pred_conservation = scaling_logits
-            batch_log_var = np.ones_like(scaling_logits)
-            batch_variances = np.exp(batch_log_var)
             
             for idx in range(len(batch_representations)):
                 span_idx = batch_idx * dataloader.batch_size + idx
@@ -78,213 +82,26 @@ def get_representations(model, dataloader, device, original_spans):
                     start, end = original_spans[span_idx]
                     
                     if start < end:
-                        pred_cons_slice = batch_pred_conservation[idx, start:end]
-                        true_cons_slice = true_scores[idx, start:end]
-                        var_slice = batch_variances[idx, start:end]
                         repr_slice = batch_representations[idx, start:end]
-                        
-                        pred_cons_mean = np.mean(pred_cons_slice)
-                        true_cons_mean = np.mean(true_cons_slice)
-                        var_mean = np.mean(var_slice)
+                 
                         repr_mean = np.mean(repr_slice, axis=0)
                         
                         representations.append(repr_mean)
-                        pred_conservations.append(pred_cons_mean)
-                        true_conservations.append(true_cons_mean)
-                        variances.append(var_mean)
+                       
+                    
                         
                         full_profile = {
-                            'predicted': batch_pred_conservation[idx],
                             'true': true_scores[idx],
                             'start': start,
                             'end': end
                         }
-                        
-                        print(f"\nSample {idx}:")
-                        print(f"Region length: {end-start}")
-                        print(f"Predicted Conservation (region only): {pred_cons_mean:.3f}")
-                        print(f"True Conservation (region only): {true_cons_mean:.3f}")
-                        print(f"Variance: {var_mean:.3f}")
-            
-            del inputs, labels, output
+                        sequence_profiles.append(full_profile)
+
+        
             torch.cuda.empty_cache()
     
-    return (np.array(representations), 
-            np.array(pred_conservations), 
-            np.array(true_conservations), 
-            np.array(variances), 
-            sequence_conservation_profiles)
+    return (np.array(representations), sequence_profiles)
 
-def plot_conservation_profiles(profiles, output_path, dataset_name):
-    """Create visualization of conservation profiles."""
-    plt.figure(figsize=(20, 10))  # Reduced height since we removed middle plot
-    
-    # Plot 1: Average profiles with confidence intervals
-    plt.subplot(2, 1, 1)
-    seq_length = len(profiles[0]['predicted'])
-    x = np.arange(seq_length)
-    
-    # Process data
-    all_pred = np.array([p['predicted'] for p in profiles])
-    all_true = np.array([p['true'][1:-1] if len(p['true']) > seq_length else p['true'] 
-                        for p in profiles])
-    
-    # Calculate means and confidence intervals
-    pred_mean = np.nanmean(all_pred, axis=0)
-    pred_ci = np.nanstd(all_pred, axis=0) * 1.96 / np.sqrt(len(profiles))
-    true_mean = np.nanmean(all_true, axis=0)
-    true_ci = np.nanstd(all_true, axis=0) * 1.96 / np.sqrt(len(profiles))
-    
-    # Plot means with confidence intervals
-    plt.plot(x, pred_mean, label='Predicted', color='blue', linewidth=2)
-    plt.fill_between(x, pred_mean-pred_ci, pred_mean+pred_ci, color='blue', alpha=0.2)
-    plt.plot(x, true_mean, label='True', color='red', linewidth=2)
-    plt.fill_between(x, true_mean-true_ci, true_mean+true_ci, color='red', alpha=0.2)
-    
-    # Add ROI indication
-    start_mean = int(np.mean([p['start'] for p in profiles]))
-    end_mean = int(np.mean([p['end'] for p in profiles]))
-    plt.axvspan(start_mean, end_mean, color='gray', alpha=0.1, label='Typical ROI')
-    
-    plt.title(f'Average Conservation Profile - {dataset_name}')
-    plt.ylabel('Conservation Score')
-    plt.legend()
-    
-    # Plot 2: Distribution of scores
-    plt.subplot(2, 1, 2)
-    
-    # Collect scores
-    roi_pred = []
-    roi_true = []
-    non_roi_pred = []
-    non_roi_true = []
-    
-    for p in profiles:
-        start, end = p['start'], p['end']
-        mask = np.zeros(seq_length, dtype=bool)
-        mask[start:end] = True
-        
-        true_vals = p['true'][1:-1] if len(p['true']) > seq_length else p['true']
-        
-        roi_pred.extend(p['predicted'][mask])
-        roi_true.extend(true_vals[mask])
-        non_roi_pred.extend(p['predicted'][~mask])
-        non_roi_true.extend(true_vals[~mask])
-    
-    # Plot distributions
-    plt.hist(roi_pred, bins=50, alpha=0.5, color='blue', 
-             label='Predicted (ROI)', density=True)
-    plt.hist(roi_true, bins=50, alpha=0.5, color='red', 
-             label='True (ROI)', density=True)
-    plt.hist(non_roi_pred, bins=50, alpha=0.3, color='lightblue', 
-             label='Predicted (non-ROI)', density=True, linestyle='--')
-    plt.hist(non_roi_true, bins=50, alpha=0.3, color='pink', 
-             label='True (non-ROI)', density=True, linestyle='--')
-    
-    plt.title('Distribution of Conservation Scores')
-    plt.xlabel('Conservation Score')
-    plt.ylabel('Density')
-    plt.legend()
-    
-    # Add summary statistics as text
-    stats_text = (
-        f'ROI Stats:\n'
-        f'  Pred: {np.mean(roi_pred):.3f}±{np.std(roi_pred):.3f}\n'
-        f'  True: {np.mean(roi_true):.3f}±{np.std(roi_true):.3f}\n'
-        f'Non-ROI Stats:\n'
-        f'  Pred: {np.mean(non_roi_pred):.3f}±{np.std(non_roi_pred):.3f}\n'
-        f'  True: {np.mean(non_roi_true):.3f}±{np.std(non_roi_true):.3f}'
-    )
-    plt.text(0.95, 0.95, stats_text, transform=plt.gca().transAxes,
-             verticalalignment='top', horizontalalignment='right',
-             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    
-    plt.tight_layout()
-    plt.savefig(output_path)
-    plt.close()
-
-def plot_individual_examples(profiles, output_path, dataset_name, seed=42):
-    """Create visualization of conservation profiles for 3 random examples."""
-    np.random.seed(seed)
-    
-    # Randomly select 3 examples
-    example_indices = np.random.choice(len(profiles), size=3, replace=False)
-    selected_profiles = [profiles[i] for i in example_indices]
-    
-    plt.figure(figsize=(20, 15))
-    
-    # Plot each example in its own subplot
-    for idx, p in enumerate(selected_profiles):
-        plt.subplot(3, 1, idx + 1)
-        seq_length = len(p['predicted'])
-        x = np.arange(seq_length)
-        
-        # Get true values with proper handling of length
-        true_vals = p['true'][1:-1] if len(p['true']) > seq_length else p['true']
-        
-        # Plot predicted and true values for this example
-        plt.plot(x, p['predicted'], color='blue', linestyle='-', 
-                label='Predicted', alpha=0.7)
-        plt.plot(x, true_vals, color='red', linestyle='-', 
-                label='True', alpha=0.7)
-        
-        # Add ROI indication for this example
-        plt.axvspan(p['start'], p['end'], color='gray', alpha=0.1, 
-                   label='Region of Interest')
-        
-        plt.title(f'{dataset_name} Example {idx+1} (ROI: {p["start"]}-{p["end"]})')
-        plt.ylabel('Conservation Score')
-        plt.xlabel('Position')
-        plt.legend()
-        
-        # Add stats text for this example
-        roi_mask = np.zeros(seq_length, dtype=bool)
-        roi_mask[p['start']:p['end']] = True
-        
-        stats_text = (
-            f'ROI Stats:\n'
-            f'  Pred: {np.mean(p["predicted"][roi_mask]):.3f}±{np.std(p["predicted"][roi_mask]):.3f}\n'
-            f'  True: {np.mean(true_vals[roi_mask]):.3f}±{np.std(true_vals[roi_mask]):.3f}\n'
-            f'Non-ROI Stats:\n'
-            f'  Pred: {np.mean(p["predicted"][~roi_mask]):.3f}±{np.std(p["predicted"][~roi_mask]):.3f}\n'
-            f'  True: {np.mean(true_vals[~roi_mask]):.3f}±{np.std(true_vals[~roi_mask]):.3f}'
-        )
-        plt.text(0.95, 0.95, stats_text, transform=plt.gca().transAxes,
-                verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    
-    plt.tight_layout()
-    plt.savefig(output_path)
-    plt.close()
-    
-def print_detailed_stats(profiles, dataset_name):
-    """Print detailed statistics about conservation scores."""
-    roi_pred = []
-    roi_true = []
-    non_roi_pred = []
-    non_roi_true = []
-    
-    seq_length = len(profiles[0]['predicted'])
-    
-    for p in profiles:
-        start, end = p['start'], p['end']
-        mask = np.zeros(seq_length, dtype=bool)
-        mask[start:end] = True
-        
-        true_vals = p['true'][1:-1] if len(p['true']) > seq_length else p['true']
-        
-        roi_pred.extend(p['predicted'][mask])
-        roi_true.extend(true_vals[mask])
-        non_roi_pred.extend(p['predicted'][~mask])
-        non_roi_true.extend(true_vals[~mask])
-    
-    print(f"\nDetailed Statistics for {dataset_name}:")
-    print("\nROI Regions:")
-    print(f"  Predicted: {np.mean(roi_pred):.3f} ± {np.std(roi_pred):.3f}")
-    print(f"  True:      {np.mean(roi_true):.3f} ± {np.std(roi_true):.3f}")
-    print("\nNon-ROI Regions:")
-    print(f"  Predicted: {np.mean(non_roi_pred):.3f} ± {np.std(non_roi_pred):.3f}")
-    print(f"  True:      {np.mean(non_roi_true):.3f} ± {np.std(non_roi_true):.3f}")
 
 
 def get_latest_dcp_checkpoint_path(ckpt_dir: str, last_step: int = -1) -> Optional[str]:
@@ -333,8 +150,20 @@ def process_bed_file(bed_df, genome, chrom_sizes, bw, tokenizer):
         pad_length = target_length - original_length
         
         # Calculate padded_start while ensuring we don't go beyond chromosome boundaries
-        padded_start = max(0, start - pad_length)
+        # Center the ROI within the padded sequence (for MLM)
+        half_pad = pad_length // 2
+        padded_start = max(0, start - half_pad)
         actual_start_offset = start - padded_start
+
+        # Ensure padded region doesn't overflow chromosome end
+        if padded_start + target_length > chrom_size:
+            padded_start = chrom_size - target_length
+            actual_start_offset = start - padded_start
+
+        if padded_start < 0:
+            skipped += 1
+            continue
+
         
         # Check if we'll exceed chromosome bounds
         if padded_start + target_length > chrom_size:
@@ -371,6 +200,7 @@ def process_bed_file(bed_df, genome, chrom_sizes, bw, tokenizer):
     
     print(f"Processed {len(sequences)} sequences, skipped {skipped} sequences")
     return sequences, scores_list, original_spans
+
 
 
 def generate_random_regions(n_regions, genome_sizes_file, region_size=500):
@@ -418,8 +248,7 @@ def process_dataset(bed_path_or_df, genome, chrom_sizes, bw, tokenizer,
         else:
             profiles = []
             
-        return (data['repr'], data['pred_cons'], data['true_cons'], 
-                data['var'], profiles)
+        return (data['repr'], profiles)
     
     print(f"Processing sequences from {dataset_name}...")
     
@@ -436,26 +265,19 @@ def process_dataset(bed_path_or_df, genome, chrom_sizes, bw, tokenizer,
         
     dataset = SequenceDataset(sequences, cons_scores)
     loader = DataLoader(dataset, batch_size=20, collate_fn=collator)
-    representations, pred_cons, true_cons, variances, profiles = get_representations(
+    representations, profiles = get_representations(
         model, loader, device, spans
     )
     
-    if (np.all(np.isnan(pred_cons)) or np.all(np.isnan(true_cons)) 
-            or np.all(np.isnan(variances))):
-        print(f"Warning: All values are NaN for {dataset_name}")
     
     # Save everything needed to reconstruct profiles
     np.savez_compressed(output_path,
                        repr=representations,
-                       pred_cons=pred_cons,
-                       true_cons=true_cons,
-                       var=variances,
-                       sequences=np.array([p['predicted'] for p in profiles]),
                        scores=np.array([p['true'] for p in profiles]),
                        spans=np.array([(p['start'], p['end']) for p in profiles]))
     
     print(f"Saved {len(representations)} representations to {output_path}")
-    return representations, pred_cons, true_cons, variances, profiles
+    return representations, profiles
 
 def generate_flanking_regions(bed_df, output_dir):
     """Generate flanking regions 500bp upstream of each UCNE region and save to bed file."""
@@ -469,9 +291,7 @@ def generate_flanking_regions(bed_df, output_dir):
         length = end - start
         
         # Generate flanking region 500bp upstream
-        #flanking_start = start - 500  # Shift up by 500bp 
-        #lets try shift by 2kb
-        flanking_start = start - 2000
+        flanking_start = start - 500  # Shift up by 500bp
         flanking_end = flanking_start + length  # Keep same length as original
         
         # Add label and info columns to match bed format
@@ -495,7 +315,7 @@ def ensure_2d(array):
 def visualize_embeddings(repr1, repr2, labels1, labels2, output_path):
     """Create and save UMAP visualization of embeddings."""
     print(f"Shapes - Group 1: {repr1.shape}, Group 2: {repr2.shape}")
-
+    
      # Get output directory from output_path
     output_dir = os.path.dirname(output_path)
     
@@ -643,19 +463,34 @@ def analyze_neighbourhood_overlap(repr1: np.ndarray,
     
     return stats
 
+def build_complement_map(vocab_size):
+    """
+    Build a complement map tensor of length `vocab_size`, where:
+    A=0, T=1, G=2, C=3 are reversed: A <-> T, G <-> C
+    All other tokens map to themselves
+    """
+    complement_map = torch.arange(vocab_size)
+    complement_map[0] = 1  # A → T
+    complement_map[1] = 0  # T → A
+    complement_map[2] = 3  # G → C
+    complement_map[3] = 2  # C → G
+    return complement_map
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Get representations of sequences")
     parser.add_argument('--genome_fasta', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
     parser.add_argument('--chrom_sizes', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.chrom.sizes', help='Path to the chromosome sizes file')
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/conserved_elements/CCP/', help='Path to the output file')
+    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/caduceus_conserved_elements/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     parser.add_argument('--bed_file1', type=str, default ='/home/mica/gamba/data_processing/data/conserved_elements/filteredunseen_hg38UCNE_coordinates.bed', help='First BED file')
     parser.add_argument('--bed_file2', type=str, default='', help='Second BED file (optional)')
+    #parser.add_argument('--bed_file2', type=str, default='/home/mica/gamba/data_processing/data/UCSC coordinates/unseen_exons_chr2_chr22_chr16_chr3.bed', help='Second BED file (optional)')
     parser.add_argument('--force_recompute', action='store_true', help='Force recomputation even if cached results exist')
     parser.add_argument('--flanking', action='store_true', help='Generate flanking regions instead of random')
-    parser.add_argument('--checkpoint_num', type=int, default=44000, help='Checkpoint number to load')
+    parser.add_argument('--checkpoint_num', type=int, default=56000, help='Checkpoint number to load')
 
     args = parser.parse_args()
     
@@ -664,7 +499,9 @@ def main():
     checkpoint_num = args.checkpoint_num
 
     COMPARISON_TYPE = "exons" if args.bed_file2 else ("flanking" if args.flanking else "random")
-    args.output_dir = args.output_dir +f"dcp_{checkpoint_num}_noALM_results/"
+    #args.output_dir = args.output_dir +f"dcp_nocons_{checkpoint_num}_results/"
+    args.output_dir = args.output_dir +f"dcp_cons_{checkpoint_num}_results/"
+    #ensure exists:
     os.makedirs(args.output_dir, exist_ok=True)
     if args.bed_file2:
         bed2 = load_bed_file(args.bed_file2)
@@ -676,72 +513,41 @@ def main():
     
     genome = Fasta(args.genome_fasta)
     bw = pyBigWig.open(args.big_wig)
-    ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
+    #ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
     #ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
-    #ckpt_path = "/home/mica/gamba/dcps/dcp_34000"
-    #ckpt_path = "/home/mica/gamba/dcps/dcp_4000_reweighted_cons"
-    #ckpt_path ="/home/mica/gamba/dcps/dcp_14000_reweighted_cons"
-    #ckpt_path="/home/mica/gamba/dcps/dcp_132250_only_MSE"
-    #ckpt_path="/home/mica/gamba/clean_dcps/CCP/dcp_44000"
-    ckpt_path="/home/mica/gamba/clean_dcps/CCP/dcp_noALM44000"
-
-    # Load model configuration
-    with open(args.config_fpath, "r") as f:
-        config = json.load(f)
-    config["task"] = config["task"].lower().strip()
-    epochs = config["epochs"]
-    lr = config["lr"]
-    warmup_steps = config["warmup_steps"]
+    #ckpt_path= '/home/mica/gamba/dcps/dcp_nocons_50000'
+    #ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_56000"
+    ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_consONLYcaduceus_60000"
+    
+    # Pull current config
     tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
-    task = TaskType(config["task"].lower().strip())
+    pad_token_id = tokenizer.tokenizeMSA([MSA_PAD])[0]
+    config = CaduceusConfig(
+        d_model=256,
+        n_layer=8,
+        vocab_size=len(DNA_ALPHABET_PLUS)
+    )
+    #model = CaduceusForMaskedLM(config)
+    model = CaduceusConservation(config)
+    model.config.pad_token_id = pad_token_id
+
+    block = None  # Not applicable for huggingface model
+
+
     
 
-    print(
-        f"Task: {task}, Model: {config['model_type']}, Dataset: {config['dataset']}, Model Config: {config['model_config']}"
-    )
-    # create the model
-    model, block = create_model(
-        task, config["model_type"], config["model_config"], tokenizer.mask_id.item(), 
-    )
+    # Load the model checkpoint
+    checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location="cuda:0")
 
-    #get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
-    d_model = config.get("d_model", 512) #512/2
-    nhead = config.get("n_head", 8)  
-    n_layers = config.get("n_layers", 6)
-    dim_feedforward = config.get("dim_feedforward", d_model)
-    padding_id = config.get("padding_id", 0)
+    model.load_state_dict(checkpoint["model_state_dict"])
 
 
-    #set up the model load from last checkpoint
-    # model = JambagambaModel(
-    #         model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
-    #     )
-    model = JambaGambaNOALMModel(
-            model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
-        )
     # Move device to cuda if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
-    
 
-    # Load the model checkpoint
-    checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer = Adam(
-        model.parameters(), lr=lr, weight_decay=config.get("weight_decay", 0.0)
-    )
-    lr_func = warmup(warmup_steps)
-    scheduler = LambdaLR(optimizer, lr_func)
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-    sd = torch.load(
-        os.path.join(ckpt_path, "scheduler.pt"), map_location=torch.device("cpu")
-    )
-    scheduler.load_state_dict(sd["scheduler_state_dict"])
-
-
-    collator = gLMCollator(
+    collator = gLMMLMCollator(
         tokenizer=tokenizer,
         pad_to_multiple_of=None,
         test=True,
@@ -770,38 +576,20 @@ def main():
             os.remove(bed2_repr_path)
     
     # Process both datasets
-    repr1, pred_cons1, true_cons1, var1, profiles1 = process_dataset(
+    repr1, profiles = process_dataset(
         bed1, genome, args.chrom_sizes, bw, tokenizer,
         model, device, collator, bed1_repr_path, "UCNE dataset"
     )
     
-    repr2, pred_cons2, true_cons2, var2, profiles2 = process_dataset(
+    repr2, profiles = process_dataset(
         bed2, genome, args.chrom_sizes, bw, tokenizer,
         model, device, collator, bed2_repr_path, f"{COMPARISON_TYPE} dataset"
     )
     
-    # Create conservation profile plots if we have profiles or --force_replot
-    if (profiles1 and profiles2): #or args.force_replot:
-        cons_plot_path1 = f'{args.output_dir}/conservation_profiles_UCNE_{bed1_filename}_{bed2_filename}.png'
-        cons_plot_path2 = f'{args.output_dir}/conservation_profiles_{COMPARISON_TYPE}_{bed1_filename}_{bed2_filename}.png'
-        cons_indivplot_path1 = f'{args.output_dir}/indiv_conservation_profiles_UCNE_{bed1_filename}_{bed2_filename}.png'
-        cons_indivplot_path2 = f'{args.output_dir}/indiv_conservation_profiles_{COMPARISON_TYPE}_{bed1_filename}_{bed2_filename}.png'
-        print("Creating conservation profile plots...")
-        plot_conservation_profiles(profiles1, cons_plot_path1, 'UCNE')
-        plot_conservation_profiles(profiles2, cons_plot_path2, f"{COMPARISON_TYPE}")
-        plot_individual_examples(profiles1, cons_indivplot_path1, "UCNE")
-        plot_individual_examples(profiles2, cons_indivplot_path2,  f"{COMPARISON_TYPE}")
-    else:
-        print("\nSkipping conservation profile plots (no profile data available).")
-        print("Use --force_recompute to regenerate all data or --force_replot to regenerate plots.")
-    
     # Create UMAP visualization
-    umap_plot_path = f'{args.output_dir}/umap_plot_{bed1_filename}_{bed2_filename}.png'
-    visualize_embeddings(repr1, repr2, 'UCNE', f"{COMPARISON_TYPE}", umap_plot_path)
+    umap_plot_path = f'{args.output_dir}/umap_plot_NOCONS_{bed1_filename}_{bed2_filename}.png'
+    visualize_embeddings(repr1, repr2, 'UCNE', f"{COMPARISON_TYPE} NOCons", umap_plot_path)
     
-    # Print statistics
-    print_detailed_stats(profiles1, 'UCNE')
-    print_detailed_stats(profiles2, f"{COMPARISON_TYPE}")
 
 
 if __name__ == "__main__":
