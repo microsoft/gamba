@@ -32,14 +32,345 @@ from my_caduceus.modeling_caduceus import (
 )
 from src.evaluation.utils.helpers import load_bed_file, extract_context
 from src.evaluation.utils.specific_helpers import load_model #predict_scores_batched
+from scipy import stats
+
+def _spread_stats(arr: np.ndarray):
+    arr = np.asarray(arr, dtype=float)
+    m = np.mean(arr)
+    sd = np.std(arr, ddof=1) if arr.size > 1 else 0.0
+    return {
+        "n_categories": int(arr.size),
+        "mean_of_means": float(m),
+        "std_of_means": float(sd),
+        "var_of_means": float(sd**2),
+        "cv_of_means": float(sd / m) if m != 0 else np.nan,
+        "range": float(np.ptp(arr)),
+        "iqr": float(np.percentile(arr, 75) - np.percentile(arr, 25)),
+        "mad_norm": float(stats.median_abs_deviation(arr, scale='normal'))
+    }
+def _finite(series):
+    x = pd.to_numeric(series, errors="coerce")
+    return x[np.isfinite(x)]
+
+def _build_bins(x: pd.Series, n_bins: int = 40, fallback=(1.0, 1.4)):
+    lo = float(np.nanpercentile(x, 1))
+    hi = float(np.nanpercentile(x, 99))
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+        lo, hi = fallback
+    return np.linspace(lo, hi, n_bins + 1)
+
+def _pmf(vals: np.ndarray, bins: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    # uniform bins → counts normalized to 1 is sufficient
+    h, _ = np.histogram(vals, bins=bins)
+    p = h.astype(np.float64) + eps
+    p /= p.sum()
+    return p
+
+def _kl(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
+    p = p / max(p.sum(), eps); q = q / max(q.sum(), eps)
+    return float(np.sum(p * (np.log(p + eps) - np.log(q + eps))))
+
+def _js(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
+    m = 0.5 * (p + q)
+    return 0.5 * _kl(p, m, eps) + 0.5 * _kl(q, m, eps)
+
+def _entropy(p: np.ndarray, eps: float = 1e-12) -> float:
+    p = p / max(p.sum(), eps)
+    return float(-np.sum(p * np.log(p + eps)))
+
+def _generalized_jsd(pmfs: list[np.ndarray], weights: np.ndarray | None = None, eps: float = 1e-12) -> float:
+    k = len(pmfs)
+    if weights is None:
+        weights = np.ones(k, dtype=np.float64) / k
+    m = np.zeros_like(pmfs[0], dtype=np.float64)
+    for w, p in zip(weights, pmfs):
+        m += w * (p / max(p.sum(), eps))
+    return float(_entropy(m, eps) - np.sum([w * _entropy(p, eps) for w, p in zip(weights, pmfs)]))
+
+def category_stats(df, split="Training", value_col="loss"):
+    if split == "Training":
+        d = df[(df["data_split"]=="Training") & df[value_col].notna()].copy()
+    else:
+        d = df[df[value_col].notna()].copy()
+    d = d[d[value_col].notna()]
+    cats = [c for c in CATEGORY_ORDER if c in set(d["category"])]
+    out = []
+    for c in cats:
+        v = pd.to_numeric(d.loc[d["category"]==c, value_col], errors="coerce").dropna().values
+        if v.size==0: continue
+        mean = float(np.mean(v)); std = float(np.std(v, ddof=1)); n = int(v.size)
+        se = std/np.sqrt(n)
+        q1,q2,q3 = np.percentile(v,[25,50,75])
+        p5,p95   = np.percentile(v,[5,95])
+        out.append({
+            "category": c, "n": n, "mean": mean, "std": std, "cv": std/mean if mean!=0 else np.nan,
+            "se": se, "ci95_lo": mean-1.96*se, "ci95_hi": mean+1.96*se,
+            "median": float(q2), "iqr": float(q3-q1), "p5": float(p5), "p95": float(p95)
+        })
+    return pd.DataFrame(out)
+
+def plot_mean_ci_iqr(stats_df, out_dir, title="CE loss: mean, 95% CI, IQR", fname="ce_mean_ci_iqr.png"):
+    os.makedirs(out_dir, exist_ok=True)
+    dfp = stats_df.sort_values("mean")
+    y = np.arange(len(dfp))
+    plt.figure(figsize=(10, max(4, 0.5*len(dfp))))
+    # IQR as thick bars
+    for i, r in enumerate(dfp.itertuples()):
+        plt.plot([r.median - r.iqr/2, r.median + r.iqr/2], [y[i], y[i]], linewidth=6, alpha=0.5)
+    # 95% CI as thin whiskers
+    for i, r in enumerate(dfp.itertuples()):
+        plt.plot([r.ci95_lo, r.ci95_hi], [y[i], y[i]], linewidth=2)
+    # Mean as point
+    plt.scatter(dfp["mean"], y, s=30, zorder=3)
+    plt.yticks(y, dfp["category"])
+    plt.xlabel("CE loss"); plt.ylabel("Category")
+    plt.title(title)
+    plt.tight_layout()
+    f = os.path.join(out_dir, fname)
+    plt.savefig(f, dpi=300); plt.close()
+    logging.info(f"Saved {f}")
+
+def plot_ce_violin(
+    df: pd.DataFrame,
+    out_dir: str,
+    split="Training",
+    value_col="loss",
+    clip_pct=(1,99),
+    ylim=(0.5, 2.0)   # <-- consistent across all plots
+):
+    os.makedirs(out_dir, exist_ok=True)
+    if split == "Training":
+        d = df[(df["data_split"]==split) & df[value_col].notna()].copy()
+    else:
+        d = df[df[value_col].notna()].copy()
+    if d.empty: return
+    # lo = float(np.nanpercentile(df[value_col], clip_pct[0]))
+    # hi = float(np.nanpercentile(df[value_col], clip_pct[1]))
+    # d[value_col] = d[value_col].clip(lo, hi)
+
+    cats = [c for c in CATEGORY_ORDER if c in set(d["category"])]
+    plt.figure(figsize=(12, 6))
+    sns.violinplot(
+        data=d, x="category", y=value_col,
+        order=cats, scale="width", inner="quartile", cut=0
+    )
+    plt.xticks(rotation=45, ha="right", fontsize=9)
+    plt.xlabel("Feature Category"); plt.ylabel("CE loss")
+    plt.title(f"CE loss distributions by category — {split}") # (clipped {clip_pct[0]}–{clip_pct[1]}%)")
+    if ylim:
+        plt.ylim(*ylim)   # consistent y-axis
+    plt.tight_layout()
+    f = os.path.join(out_dir, f"violin_CE_{split.lower()}_fixed_ylim.png")
+    plt.savefig(f, dpi=300); plt.close()
+    logging.info(f"Saved {f}")
 
 
+def compute_category_divergence(
+    df: pd.DataFrame,
+    out_dir: str,
+    value_col: str = "loss",
+    n_bins: int = 40,
+    split = "Training"
+) -> pd.DataFrame:
+    os.makedirs(out_dir, exist_ok=True)
+    if split == "Training":
+        d = df[(df["data_split"] == "Training") & df[value_col].notna()].copy()
+    else:
+        d = df[df[value_col].notna()].copy()
+    cats = [c for c in CATEGORY_ORDER if c in set(d["category"])]
+    if not cats:
+        logging.warning(f"No categories for {split} split.")
+        return pd.DataFrame()
+
+    bins = _build_bins(d[value_col], n_bins=n_bins)
+    # build PMFs per category
+    pmf = {}
+    for cat in cats:
+        vals = _finite(d.loc[d["category"] == cat, value_col].values)
+        if len(vals) == 0: 
+            continue
+        pmf[cat] = _pmf(vals, bins)
+
+    cats = [c for c in cats if c in pmf]
+    if not cats:
+        logging.warning("No non-empty categories to compare.")
+        return pd.DataFrame()
+
+    # pairwise KL and JS
+    n = len(cats)
+    KL_ij = np.zeros((n, n)); KL_ji = np.zeros((n, n)); JS = np.zeros((n, n))
+    for i, ci in enumerate(cats):
+        for j, cj in enumerate(cats):
+            pi, pj = pmf[ci], pmf[cj]
+            KL_ij[i, j] = _kl(pi, pj)
+            KL_ji[i, j] = _kl(pj, pi)
+            JS[i, j] = _js(pi, pj)
+
+    # save matrices
+    kl_df = pd.DataFrame(KL_ij, index=cats, columns=cats)
+    js_df = pd.DataFrame(JS, index=cats, columns=cats)
+    kl_df.to_csv(os.path.join(out_dir, f"KL_{split}_categories.csv"))
+    js_df.to_csv(os.path.join(out_dir, f"JS_{split}_categories.csv"))
+
+    # heatmap for JS
+    plt.figure(figsize=(0.6*len(cats)+3, 0.6*len(cats)+3))
+    ax = sns.heatmap(js_df, annot=False, cmap="viridis", square=True, cbar_kws={"label": "JS divergence"})
+    ax.set_title(f"Pairwise JS divergence of CE-loss distributions — {split}")
+    plt.tight_layout()
+    f = os.path.join(out_dir, f"JS_{split}_categories_heatmap.png")
+    plt.savefig(f, dpi=300); plt.close()
+    logging.info(f"Saved {f}")
+
+    # total spread summary: generalized JSD + pairwise stats
+    pmfs_ordered = [pmf[c] for c in cats]
+    gjsd = _generalized_jsd(pmfs_ordered)
+    summary = {
+        "categories": cats,
+        "generalized_JSD": float(gjsd),
+        "pairwise_JS_mean": float(np.mean(JS[np.triu_indices(n, k=1)])) if n > 1 else 0.0,
+        "pairwise_JS_max": float(np.max(JS[np.triu_indices(n, k=1)])) if n > 1 else 0.0,
+        "pairwise_JS_min": float(np.min(JS[np.triu_indices(n, k=1)])) if n > 1 else 0.0,
+    }
+    with open(os.path.join(out_dir, f"ce_loss_distribution_spread_{split}.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+
+    # long-form table
+    rows = []
+    for i, ci in enumerate(cats):
+        for j, cj in enumerate(cats):
+            rows.append({
+                "cat_i": ci, "cat_j": cj,
+                "KL_i||j": float(KL_ij[i, j]),
+                "KL_j||i": float(KL_ji[i, j]),
+                "JS": float(JS[i, j])
+            })
+    out = pd.DataFrame(rows)
+    out.to_csv(os.path.join(out_dir, f"divergence_{split}_categories_long.csv"), index=False)
+    return out
+
+
+def write_category_spread_report(df: pd.DataFrame, out_dir: str, value_col: str = "loss", fname="ce_category_spread.txt"):
+    # If split exists, keep only Held Out rows. If none, fall back to all.
+    if "data_split" in df.columns:
+        df_sel = df[df["data_split"].eq("Held Out")]
+        if df_sel.empty:
+            logging.warning("No 'Held Out' rows found; using all rows.")
+            df_sel = df.copy()
+        split_label = "Held Out"
+    else:
+        df_sel = df.copy()
+        split_label = "All"
+
+    # per-category means (now single-split)
+    means = (df_sel.groupby(["category"])[value_col].mean()
+             .reset_index().rename(columns={value_col: "mean_loss"}))
+
+    # spread across category means
+    arr = means["mean_loss"].to_numpy()
+    report = _spread_stats(arr)
+
+    # include per-category means for traceability
+    cat_table = means.set_index("category")["mean_loss"].round(6).to_dict()
+
+    out = {
+        "category_means": {k: {split_label: v} for k, v in cat_table.items()},
+        "spread": {split_label: report}
+    }
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, fname)
+    with open(out_path, "w") as f:
+        f.write(json.dumps(out, indent=2))
+    print(f"[INFO] Wrote spread report to {out_path}")
 
 CATEGORY_ORDER = [
     "vista_enhancer", "UCNE", "repeats", "exons", "introns",
     "noncoding_regions", "coding_regions", "upstream_TSS",
     "UTR5", "UTR3", "promoters", #"phyloP_negative", "phyloP_neutral", "phyloP_positive",
 ]
+
+
+def mask_gamba_ce_to_last_k(labels_2ch: torch.Tensor, last_k: int = 1000) -> torch.Tensor:
+    """
+    labels_2ch: (B, 2, T). Channel 0 = seq CE labels; Channel 1 = conservation labels.
+    If T > last_k, keep only last_k tokens for CE; else keep the whole window.
+    """
+    labels = labels_2ch.clone()
+    B, two, T = labels.shape
+    assert two == 2
+    k = min(last_k, T)
+    start = T - k  # = 0 when T <= last_k → whole window kept
+    labels[:, 0, :start] = -100  # ignore CE before start
+    return labels
+
+
+
+def apply_effective_region_mask(
+    labels: torch.Tensor,                      # (B, 2, T): [:,0,:]=seq labels, [:,1,:]=cons labels
+    feature_spans: list[tuple[int, int]],      # per-sample (fs, fe) in *token* indices (already shifted for [START] if needed)
+    is_mlm: bool,                              # True for Caduceus (MLM), False for Gamba (AR)
+    last_k: int = 1000,
+) -> torch.Tensor:
+    """
+    Constrains both sequence CE and conservation losses to the *same* effective region:
+      - If ROI length >= last_k: last `last_k` tokens *within the ROI*
+      - Else: the entire ROI
+    For MLM: CE is further restricted to masked tokens ∩ effective region (labels== -100 outside).
+    For AR:  CE is restricted exactly to the effective region (labels== -100 outside).
+    Conservation labels are always restricted to the effective region.
+
+    NOTE: This function expects spans already adjusted for any special tokens the collator added.
+    """
+    labels = labels.clone()
+    B, two, T = labels.shape
+    assert two == 2, "labels must have 2 channels (seq, cons)"
+
+    for b, (fs, fe) in enumerate(feature_spans):
+        # clamp ROI to [0, T]
+        fs = max(0, min(fs, T))
+        fe = max(0, min(fe, T))
+
+        # compute effective region inside ROI: tail-k of ROI or whole ROI
+        roi_len = max(0, fe - fs)
+        if roi_len == 0:
+            # no region → ignore everything
+            labels[b, 0, :] = -100
+            labels[b, 1, :] = -100
+            continue
+
+        k = min(last_k, roi_len)
+        if not is_mlm:
+            eff_fs = fe - k   # last k inside ROI
+            eff_fe = fe
+        else:
+            eff_fs = fs
+            eff_fe = fe
+
+        # ---- SEQUENCE (channel 0) ----
+        if is_mlm:
+            # keep masked tokens only if they fall inside [eff_fs:eff_fe)
+            keep = torch.zeros(T, dtype=torch.bool, device=labels.device)
+            keep[eff_fs:eff_fe] = True
+            masked = labels[b, 0, :] != -100         # collator set masked tokens to labels!= -100
+            kill = masked & (~keep)
+            labels[b, 0, kill] = -100                # ignore masked tokens outside the effective region
+        else:
+            # AR / Gamba: compute CE only on the effective region
+            labels[b, 0, :eff_fs] = -100
+            labels[b, 0, eff_fe:] = -100
+
+        # ---- CONSERVATION (channel 1) ----
+        labels[b, 1, :eff_fs] = -100
+        labels[b, 1, eff_fe:] = -100
+
+        # (Optional safety) ignore [START]/[STOP] if present at 0 / T-1
+        labels[b, 0, 0]  = -100
+        labels[b, 1, 0]  = -100
+        labels[b, 0, -1] = -100
+        labels[b, 1, -1] = -100
+
+    return labels
+
 
 
 def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None, model_type="gamba", training_task="dual"):
@@ -91,66 +422,71 @@ def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None,
         # Skip empty batches
         if not batch_inputs:
             continue
-
         # === Gamba Forward ===
         if model_type == "gamba":
-            collated = collator(batch_inputs)
+            inputs, labels = collator(batch_inputs)  # (B,2,T)
+            inputs, labels = inputs.to(device), labels.to(device)
+
+            # shift feature spans by +1 for [START]
+            feature_spans = [(int(m["feature_start_in_window"]) + 1,
+                            int(m["feature_end_in_window"])   + 1)
+                            for m in batch_region_info]
+
+            # CE *and* conservation restricted to same effective region (tail-1kb of ROI or whole ROI)
+            labels = apply_effective_region_mask(labels, feature_spans, is_mlm=False, last_k=1000)
+
+            # --- Debug: check how many tokens are active ---
+            ce_used   = (labels[:, 0, :] != -100).sum(dim=1)
+            cons_used = (labels[:, 1, :] != -100).sum(dim=1)
+            print(f"[DEBUG][Gamba] CE used tokens (min/med/max): "
+                f"{int(ce_used.min())}/{int(ce_used.median())}/{int(ce_used.max())} "
+                f"| CONS: {int(cons_used.min())}/{int(cons_used.median())}/{int(cons_used.max())}")
+
             with torch.no_grad():
-                outputs = model(collated[0].to(device), collated[1].to(device))
+                outputs = model(inputs, labels)
 
-            if "scaling_logits" in outputs:
-                for j in range(outputs["scaling_logits"].size(0)):
-                    means = outputs["scaling_logits"][j, :, 0].cpu().numpy()
-                    #print(f"Sample of means values: {means[:10]}...")  # Print first 10 means for debugging
-                    all_predictions.append(means)
-            else:
-                for j in range(len(batch_inputs)):
-                    all_predictions.append(np.zeros_like(batch_inputs[j][1]))
+            all_predictions.extend([outputs.get("mse_loss", float("nan"))] * len(batch_inputs))
+            all_seq_predictions.extend([outputs.get("cross_entropy_loss", float("nan"))] * len(batch_inputs))
 
-            # Append seq logits if present
-            if "seq_logits" in outputs:
-                for j in range(outputs["seq_logits"].size(0)):
-                    #print(f"shape of seq_logits: {outputs['seq_logits'].shape}")
-                    logits = outputs["seq_logits"][j].cpu().numpy()
-                    #print(f"logits: {logits}")
-                    all_seq_predictions.append(logits)
 
-            else:
-                all_seq_predictions.extend([np.nan] * len(batch_inputs))
 
         # === Caduceus Forward ===
         elif model_type == "caduceus":
-            feature_spans = [(r["feature_start_in_window"], r["feature_end_in_window"]) for r in batch_region_info]
-            batch = collator(batch_inputs, region=feature_spans)
-            with torch.no_grad():
-                sequence_input = batch[0][:, 0, :].long()       # (B, T)
-                scaling = batch[0][:, 1, :].float()             # (B, T)
-                sequence_labels = batch[1][:, 0, :].long()      # (B, T)
-                scale_lbls = batch[1][:, 1, :].float()          # (B, T)
-                model_kwargs = {
-                    "input_ids": sequence_input.to(device),
-                    "labels": sequence_labels.to(device),
-                    }
-                # If model supports conservation prediction, pass conservation labels too
-                if hasattr(model, "conservation_head"):
-                    model_kwargs["conservation_labels"] = scale_lbls.to(device)
-            
-                outputs = model(**model_kwargs)
+            raw_spans = [(r["feature_start_in_window"], r["feature_end_in_window"])
+                        for r in batch_region_info]
+            batch = collator(batch_inputs, region=raw_spans)
 
-            if "cross_entropy_loss" in outputs:
-                for _ in batch_inputs:
-                    all_seq_predictions.append(outputs["cross_entropy_loss"].item())
-            else:
-                all_seq_predictions.extend([np.nan] * len(batch_inputs))
+            sequence_input = batch[0][:, 0, :].long().to(device)
+            labels_pack    = batch[1].to(device)  # (B,2,T)
 
-            if "scaling_logits" in outputs:
-                for j in range(outputs["scaling_logits"].size(0)):
-                    means = outputs["scaling_logits"][j, :, 0].cpu().numpy()
-                    #print(f"Sample of means values: {means[:10]}...")  # Print first 10 means for debugging
-                    all_predictions.append(means)
+            # shift spans by +1 for [START] now present in labels
+            feature_spans_shifted = [(fs + 1, fe + 1) for (fs, fe) in raw_spans]
+
+            # CE will be masked tokens ∩ effective region; conservation = effective region
+            labels_pack = apply_effective_region_mask(labels_pack, feature_spans_shifted, is_mlm=True, last_k=1000)
+
+            # --- Debug: check how many tokens are active ---
+            ce_used   = (labels_pack[:, 0, :] != -100).sum(dim=1)
+            cons_used = (labels_pack[:, 1, :] != -100).sum(dim=1)
+            print(f"[DEBUG][Caduceus] CE used tokens (min/med/max): "
+                f"{int(ce_used.min())}/{int(ce_used.median())}/{int(ce_used.max())} "
+                f"| CONS: {int(cons_used.min())}/{int(cons_used.median())}/{int(cons_used.max())}")
+
+            if training_task == "cons_only" or training_task == "dual":
+                with torch.no_grad():
+                    outputs = model(
+                        input_ids=sequence_input,
+                        labels=labels_pack[:, 0, :].long(),
+                        conservation_labels=labels_pack[:, 1, :].float()
+                    )
             else:
-                for j in range(len(batch_inputs)):
-                    all_predictions.append(np.zeros_like(batch_inputs[j][1]))
+                with torch.no_grad():
+                    outputs = model(
+                        input_ids=sequence_input,
+                        labels=labels_pack[:, 0, :].long()
+                    )
+            all_seq_predictions.extend([outputs.get("cross_entropy_loss", float("nan"))] * len(batch_inputs))
+            all_predictions.extend([outputs.get("mse_loss", float("nan"))] * len(batch_inputs))
 
     return all_predictions, all_true_scores, region_info, all_seq_predictions, all_true_seqs
 
@@ -211,152 +547,6 @@ def get_latest_dcp_checkpoint_path(ckpt_dir, last_step=-1):
     else:
         ckpt_path = os.path.join(ckpt_dir, f"dcp_{last_step}")
     return ckpt_path
-
-def calculate_correlations(true_scores, predicted_scores, region_info, ce_losses, feature_length=1000):
-    results = []
-
-    for i in range(len(true_scores)):
-        true = true_scores[i]
-        pred = predicted_scores[i]
-
-        feature_start = region_info[i]['feature_start_in_window'] 
-        feature_end = region_info[i]['feature_end_in_window']  
-
-        #print(f"Feature start: {feature_start}, Feature end: {feature_end}")
-
-        true_feature = np.array(true[feature_start:feature_end])
-        pred_feature = np.array(pred[feature_start:feature_end])
-        mask = ~(np.isnan(true_feature) | np.isnan(pred_feature))
-        true_filtered = true_feature[mask]
-        pred_filtered = pred_feature[mask]
-
-        #print(f"Running correlation over {len(true_filtered)} points ")
-
-        if len(true_filtered) > 10:
-            corr = np.corrcoef(true_filtered, pred_filtered)[0, 1]
-            mean_true = np.mean(true_filtered)
-            mean_pred = np.mean(pred_filtered)
-
-            results.append({
-                'chrom': region_info[i]['chrom'],
-                'start': region_info[i]['start'],
-                'end': region_info[i]['end'],
-                'feature_id': region_info[i].get('feature_id', 'unknown'),
-                'mean_true_score': mean_true,
-                'mean_pred_score': mean_pred,
-                'loss': ce_losses[i] if ce_losses else np.nan,
-                'correlation': corr,
-                'num_points': len(true_filtered),
-                'feature_length': feature_end - feature_start
-            })
-
-    return pd.DataFrame(results)
-
-def calculate_mse(true_scores, predicted_scores, region_info, ce_losses, feature_length=1000):
-    """
-    Compute per-region MSE between predicted mean phyloP and true phyloP over the feature window.
-    Returns a DataFrame with MSE per region (plus metadata and CE loss if available).
-    """
-    results = []
-    for i in range(len(true_scores)):
-        true = true_scores[i]
-        pred = predicted_scores[i]
-
-        feature_start = region_info[i]['feature_start_in_window']
-        feature_end   = region_info[i]['feature_end_in_window']
-
-        true_feature = np.array(true[feature_start:feature_end])
-        pred_feature = np.array(pred[feature_start:feature_end])
-
-        # mask invalids
-        mask = ~(np.isnan(true_feature) | np.isnan(pred_feature))
-        true_filtered = true_feature[mask]
-        pred_filtered = pred_feature[mask]
-
-        if len(true_filtered) > 0:
-            mse_val = float(np.mean((true_filtered - pred_filtered) ** 2))
-            mean_true = float(np.mean(true_filtered))
-            mean_pred = float(np.mean(pred_filtered))
-
-            results.append({
-                'chrom':        region_info[i]['chrom'],
-                'start':        region_info[i]['start'],
-                'end':          region_info[i]['end'],
-                'feature_id':   region_info[i].get('feature_id', 'unknown'),
-                'mean_true_score': mean_true,
-                'mean_pred_score': mean_pred,
-                'loss':         ce_losses[i] if ce_losses else np.nan,
-                'mse':          mse_val,
-                'num_points':   int(len(true_filtered)),
-                'feature_length': int(feature_end - feature_start),
-            })
-
-    return pd.DataFrame(results)
-
-
-import torch.nn.functional as F
-
-def calculate_ce_losses(sequence_logits_list, region_info, tokenizer, true_sequences=None):
-    ce_losses = []
-
-    for i, logits in enumerate(sequence_logits_list):
-        if isinstance(logits, float) or np.isnan(logits).any():
-            ce_losses.append(np.nan)
-            continue
-
-        logits = torch.tensor(logits)  # shape: (seq_len, vocab_size)
-        preds = logits.argmax(dim=-1)
-
-        fs = region_info[i]['feature_start_in_window']
-        fe = region_info[i]['feature_end_in_window']
-        print(f"Length of feature region: {fe - fs}")
-        print(f"Feature starts at position {fs} and ends at {fe}.")
-
-        # Get true sequence
-        if true_sequences:
-            true_seq = true_sequences[i]
-        else:
-            logging.warning(f"True labels not provided for region {i}, skipping CE loss.")
-            ce_losses.append(np.nan)
-            continue
-
-        true_labels = torch.tensor(true_seq)
-
-        # Trim logits if necessary
-        if len(true_labels) != logits.shape[0]:
-            logging.warning(f"[CE Loss] Logits len={logits.shape[0]}, True len={len(true_labels)}. Trimming logits.")
-            # Remove [START] and [STOP] and trim to match true_labels
-            logits = logits[1:]
-            preds = preds[1:]
-            # if logits is longer than true_labels, trim logits to match
-            if logits.shape[0] > len(true_labels):
-                logits = logits[:len(true_labels)]
-                preds = preds[:len(true_labels)]
-            
-        else:
-            logits = logits[1:-1]
-            preds = preds[1:-1]
-
-        labels_region = true_labels[fs:fe]
-        logits_region = logits[fs:fe]
-
-        print(f"Calculating CE loss for region of length: {len(labels_region)}")
-
-        if len(labels_region) == 0 or logits_region.shape[0] == 0:
-            ce_losses.append(np.nan)
-            continue
-
-        loss = F.cross_entropy(
-            logits_region,
-            labels_region,
-            ignore_index=-100,
-            reduction='mean'
-        )
-
-        ce_losses.append(loss.item())
-
-    return ce_losses
-
 
 #need to get the CE loss & conservation  ONLY in the region of interest
 def plot_feature_bars(data, value_col, ylabel, title, out_file, output_dir, ylim=None):
@@ -477,6 +667,36 @@ def plot_feature_heatmap_by_split(
     logging.info(f"Split-averaged heatmap saved to {out_path}")
 
 
+def debug_cons_mse_batch(tag, outputs, cons_labels_roi):
+    """
+    Print stats for conservation targets & predictions used in MSE.
+    cons_labels_roi: (B, T) with -100 outside ROI
+    """
+    with torch.no_grad():
+        mean = outputs["scaling_logits"][..., 0].float()  # (B, T)
+        mask = cons_labels_roi != -100
+
+        # counts
+        used = mask.sum(dim=1)
+        print(f"[{tag}] tokens used per sample (min/median/max):",
+              int(used.min()), int(used.median()), int(used.max()))
+
+        # stats for targets/preds on the used positions
+        tgt = cons_labels_roi.masked_select(mask)
+        pred = mean.masked_select(mask)
+
+        def _q(t):  # quantiles
+            q = torch.quantile(t, torch.tensor([0., 0.25, 0.5, 0.75, 1.], device=t.device))
+            return [float(x) for x in q]
+
+        print(f"[{tag}] target phyloP q=[min, q1, med, q3, max]:", _q(tgt))
+        print(f"[{tag}] pred   phyloP q=[min, q1, med, q3, max]:", _q(pred))
+
+        mse = torch.mean((pred - tgt) ** 2).item()
+        rmse = (torch.mean((pred - tgt) ** 2).sqrt()).item()
+        print(f"[{tag}] MSE={mse:.3f}  RMSE={rmse:.3f}")
+
+
 from pathlib import Path
 import torch
 import glob
@@ -484,6 +704,97 @@ import logging
 from pyfaidx import Fasta
 import pyBigWig
 from tqdm import tqdm
+
+# After you get:
+# mse_losses, true_scores, region_info, ce_losses, all_true_sequences = predict_scores_batched(...)
+
+def build_results_df(
+    mse_losses, ce_losses, true_scores, region_info,
+    category: str, group_name: str,
+    training_chromosomes: list[str] | None,
+    test_chromosomes: list[str] | None,
+    logger: logging.Logger = logging.getLogger(__name__),
+) -> pd.DataFrame:
+    # --- Alignment checks across lists ---
+    n = len(region_info)
+    lens = {
+        "mse_losses": len(mse_losses),
+        "ce_losses": len(ce_losses),
+        "true_scores": len(true_scores),
+        "region_info": len(region_info),
+    }
+    if len(set(lens.values())) != 1:
+        logger.warning(f"[ALIGNMENT] Length mismatch: {lens}. "
+                       f"Proceeding with min length to avoid index errors.")
+        n = min(lens.values())
+        mse_losses = mse_losses[:n]
+        ce_losses = ce_losses[:n]
+        true_scores = true_scores[:n]
+        region_info = region_info[:n]
+
+    # Train/test split helper
+    train_set = set(training_chromosomes or [])
+    test_set  = set(test_chromosomes or [])
+
+    def split_of(chrom: str) -> str:
+        if chrom in train_set: return "Training"
+        if chrom in test_set:  return "Held Out"
+        return "Unknown"
+
+    # --- Per-region rows + ROI validity checks ---
+    rows = []
+    n_bad_span = 0
+    n_out_of_bounds = 0
+    n_nan_losses = 0
+
+    for i in range(n):
+        info = region_info[i]
+        chrom = info["chrom"]
+        fs = int(info.get("feature_start_in_window", 0))
+        fe = int(info.get("feature_end_in_window", 0))
+        T  = int(info.get("window_len", fe))  # fall back to fe if not present
+
+        # ROI span check
+        if fe <= fs:
+            n_bad_span += 1
+            logger.debug(f"[ALIGNMENT] Empty/invalid ROI span at idx {i}: fs={fs}, fe={fe}")
+
+        # Bounds check
+        if not (0 <= fs <= T and 0 <= fe <= T):
+            n_out_of_bounds += 1
+            logger.debug(f"[ALIGNMENT] ROI out of bounds at idx {i}: fs={fs}, fe={fe}, T={T}")
+
+        # Loss sanity
+        ce_i  = float(ce_losses[i]) if ce_losses is not None else float("nan")
+        mse_i = float(mse_losses[i]) if mse_losses is not None else float("nan")
+        if not np.isfinite(ce_i) or not np.isfinite(mse_i):
+            n_nan_losses += 1
+
+        rows.append({
+            "chrom":          chrom,
+            "start":          info["start"],
+            "end":            info["end"],
+            "feature_id":     info.get("feature_id", "unknown"),
+            "loss":           ce_i,     # CE (should already be ROI-only if you masked labels pre-forward)
+            "mse":            mse_i,    # MSE (ROI-only if conservation labels masked pre-forward)
+            "feature_start":  fs,
+            "feature_end":    fe,
+            "feature_length": max(0, fe - fs),
+            "window_len":     T,
+            "data_split":     split_of(chrom),
+        })
+
+    if n_bad_span or n_out_of_bounds or n_nan_losses:
+        logger.info(
+            f"[ALIGNMENT SUMMARY] bad_span={n_bad_span}, out_of_bounds={n_out_of_bounds}, "
+            f"nan_losses={n_nan_losses} out of {n} rows"
+        )
+
+    df = pd.DataFrame(rows)
+    df["category"] = category
+    df["group"] = group_name
+    return df
+
 
 
 
@@ -559,52 +870,46 @@ def analyze_agreement(
                 continue
 
 
-            predicted_scores, true_scores, region_info, all_seq_predictions, all_true_sequences = predict_scores_batched(
+            mse_losses, true_scores, region_info, ce_losses, all_true_sequences = predict_scores_batched(
                 model, tokenizer, valid_regions, batch_size=batch_size,
                 device=device, model_type=model_type, training_task=training_task
             )
+            
+            results_df = build_results_df(
+                mse_losses, ce_losses, true_scores, region_info,
+                category=category, group_name=group_name,
+                training_chromosomes=training_chromosomes,
+                test_chromosomes=test_chromosomes,
+                logger=logging.getLogger(__name__),
+            )
 
-            if model_type == 'gamba':
-                ce_losses = calculate_ce_losses(all_seq_predictions, region_info, tokenizer, all_true_sequences)
-            else:
-                ce_losses = all_seq_predictions  # already loss values for caduceus
-
-            #correlation_df = calculate_correlations(true_scores, predicted_scores, region_info, ce_losses)
-            #correlation_df['category'] = category
-            #correlation_df['group'] = group_name
-            mse_df = calculate_mse(true_scores, predicted_scores, region_info, ce_losses)
-            mse_df['category'] = category
-            mse_df['group'] = group_name
-
-            train_set = set(training_chromosomes or [])
-            test_set  = set(test_chromosomes or [])
-
-            def split_of(chrom):
-                if chrom in train_set:
-                    return 'Training'
-                if chrom in test_set:
-                    return 'Held Out'
-                return 'Unknown'  # should not happen if lists are complete
-
-            #correlation_df['data_split'] = correlation_df['chrom'].apply(split_of)
-            mse_df['data_split'] = mse_df['chrom'].apply(split_of)
+            results_df_path = output_dir / f"{category}_{group_name}_mse_ce_results.csv"
+            results_df.to_csv(results_df_path, index=False)
+            all_results.append(results_df)
 
 
-            # Save region-wise results
-            #corr_out_path = output_dir / f"{category}_{group_name}_results.csv"
-            #correlation_df.to_csv(corr_out_path, index=False)
-            mse_out_path = output_dir / f"{category}_{group_name}_mse_results.csv"
-            mse_df.to_csv(mse_out_path, index=False)
 
-            #all_results.append(correlation_df)
-            all_results.append(mse_df)
-
-    # Merge all region results into one DataFrame
-    full_df = pd.concat(all_results, ignore_index=True)
 
     # Save merged results
     #full_df.to_csv(output_dir / "all_region_results.csv", index=False)
-    full_df.to_csv(output_dir / "all_region_mse_results.csv", index=False)
+    full_df.to_csv(output_dir / "all_region_results.csv", index=False)
+
+    # Merge all region results into one DataFrame
+    full_df = pd.concat(all_results, ignore_index=True)
+    if training_task == "dual" or training_task == "cons_only":
+        write_category_spread_report(full_df, out_dir=output_dir, value_col="mse",  fname="mse_category_spread.txt")
+    if training_task == "seq_only" or training_task == "dual":
+        write_category_spread_report(full_df, out_dir=output_dir, value_col="loss", fname="ce_category_spread.txt")
+            # Training-only category distributions and divergences
+        stats_tr = category_stats(full_df, split="All", value_col="loss")
+        stats_tr.to_csv(os.path.join(output_dir, "ce_category_stats_all.csv"), index=False)
+        plot_mean_ci_iqr(stats_tr, output_dir)
+
+        plot_ce_violin(full_df, output_dir, split="All", value_col="loss", clip_pct=(1,99))
+
+        _ = compute_category_divergence(full_df, output_dir, value_col="loss", n_bins=40, split="Training")
+
+
 
     # Create summary plots
     data=full_df
@@ -616,54 +921,45 @@ def analyze_agreement(
     #               output_dir=output_dir,
     #               ylim=(-0.1, 0.5))
 
-    plot_feature_bars(data, 'loss',
-                    ylabel='CE Loss',
-                    title='Cross-Entropy Loss: Held Out vs Training Chromosomes',
-                    out_file='feature_comparison_ce_loss_plot.png',
-                    output_dir=output_dir,
-                    ylim=(1.0, 1.40))
+    if training_task == "dual" or training_task == "cons_only":
+        plot_feature_bars(
+            data, 'mse',
+            ylabel='Mean MSE (Predicted Mean vs True phyloP)',
+            title='MSE: Held Out vs Training Chromosomes',
+            out_file='feature_comparison_mse_bar_plot.png',
+            output_dir=output_dir,
+            # Optionally set ylim; uncomment if you want a fixed view:
+            ylim=(0.0, 3.5)
+        )
 
+        plot_feature_heatmap_by_split(
+            data, value_col='mse',
+            ylabel='Mean MSE',
+            title='Mean MSE (Held-Out vs Training, averaged)',
+            out_file='feature_split_mse_heatmap.png',
+            output_dir=output_dir,
+            # If you know your expected range, set vmin/vmax; otherwise let it auto-scale:
+            vmin=None, vmax=None,
+            cmap=LinearSegmentedColormap.from_list('white_to_blue', [(1,1,1),(0,0.4,0.8)], N=100)
+        )
+    if training_task == "seq_only" or training_task == "dual": 
+        plot_feature_bars(data, 'loss',
+                        ylabel='CE Loss',
+                        title='Cross-Entropy Loss: Held Out vs Training Chromosomes',
+                        out_file='feature_comparison_ce_loss_plot.png',
+                        output_dir=output_dir,
+                        ylim=(1.0, 1.40))
+
+        plot_feature_heatmap_by_split(
+            data, value_col='loss',
+            ylabel='Mean Cross-Entropy Loss',
+            title='CE Loss (Held-Out vs Training, averaged)',
+            out_file='feature_split_ce_loss_heatmap.png',
+            output_dir=output_dir,
+            vmin=1.0, vmax=1.38,
+            cmap=LinearSegmentedColormap.from_list('white_to_red', [(1,1,1),(0.8,0.1,0.1)], N=100)
+        )
     
-    # plot_feature_heatmap_by_split(
-    #     data, value_col='correlation',
-    #     ylabel='Mean Correlation',
-    #     title='Mean Correlation (Held-Out vs Training, averaged)',
-    #     out_file='feature_split_correlation_heatmap.png',
-    #     output_dir=output_dir,
-    #     vmin=-0.1, vmax=0.5,
-    #     cmap=LinearSegmentedColormap.from_list('white_to_blue', [(1,1,1),(0,0.4,0.8)], N=100)
-    # )
-
-    plot_feature_heatmap_by_split(
-        data, value_col='loss',
-        ylabel='Mean Cross-Entropy Loss',
-        title='CE Loss (Held-Out vs Training, averaged)',
-        out_file='feature_split_ce_loss_heatmap.png',
-        output_dir=output_dir,
-        vmin=1.0, vmax=1.38,
-        cmap=LinearSegmentedColormap.from_list('white_to_red', [(1,1,1),(0.8,0.1,0.1)], N=100)
-    )
-    
-    plot_feature_bars(
-        data, 'mse',
-        ylabel='Mean MSE (Predicted Mean vs True phyloP)',
-        title='MSE: Held Out vs Training Chromosomes',
-        out_file='feature_comparison_mse_bar_plot.png',
-        output_dir=output_dir,
-        # Optionally set ylim; uncomment if you want a fixed view:
-        ylim=(0.0, 3.5)
-    )
-
-    plot_feature_heatmap_by_split(
-        data, value_col='mse',
-        ylabel='Mean MSE',
-        title='Mean MSE (Held-Out vs Training, averaged)',
-        out_file='feature_split_mse_heatmap.png',
-        output_dir=output_dir,
-        # If you know your expected range, set vmin/vmax; otherwise let it auto-scale:
-        vmin=None, vmax=None,
-        cmap=LinearSegmentedColormap.from_list('white_to_blue', [(1,1,1),(0,0.4,0.8)], N=100)
-    )
     bw.close()
 
 def main():
@@ -736,7 +1032,7 @@ def main():
     parser.add_argument(
         "--last_step",
         type=int,
-        default=44000,
+        default= 44000, #0,
         help="Checkpoint step to use",
     )
     parser.add_argument(
@@ -750,7 +1046,7 @@ def main():
         help="Which model type to use (gamba or caduceus)"
     )
     parser.add_argument(
-        "--training_task", type=str, choices=["dual", "cons_only", "seq_only"], required=True,
+        "--training_task", type=str, choices=["dual", "cons_only", "seq_only", "random_init"], required=True,
         help="Which task the model was trained on"
     )
 
@@ -770,15 +1066,20 @@ def main():
 
     if args.model_type == 'gamba':
         checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/CCP/"
+        #checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/focal_loss/"
         if args.training_task == "seq_only":
             checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/"
             args.last_step = 56000
     else:
         checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/"
-        args.last_step = 56000
+        args.last_step = 56000 #0
     
+    if args.last_step ==0:
+        last_step = "random_init"
+    else:
+        last_step = args.last_step
     #change outputdir to + dcp checkpoint 
-    output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_step_{args.last_step}/"
+    output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_step_{last_step}/"
     try:
         analyze_agreement(
             args.genome_fasta,

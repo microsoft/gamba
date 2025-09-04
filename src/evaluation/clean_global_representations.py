@@ -50,7 +50,7 @@ from sklearn.neighbors import NearestNeighbors
 CATEGORY_ORDER = [
     "vista_enhancer", "UCNE", "repeats", "exons", "introns",
     "noncoding_regions", "coding_regions", "upstream_TSS",
-    "UTR5", "UTR3", "promoters", "phyloP_negative", "phyloP_neutral", "phyloP_positive",
+    "UTR5", "UTR3", "promoters", #"phyloP_negative", "phyloP_neutral", "phyloP_positive",
 ]
 
 
@@ -230,29 +230,85 @@ def leave_one_out_1nn_accuracy(embeddings, labels):
     conf_mat = confusion_matrix(labels, preds, labels=np.unique(labels))
     return accuracy, conf_mat
 
-def plot_knn_heatmap(embeddings, labels, output_path, title="1-NN Classification Accuracy"):
-    accuracy, conf_mat = leave_one_out_1nn_accuracy(embeddings, labels)
-    label_set = [lab for lab in CATEGORY_ORDER if lab in set(labels)]
+from sklearn.metrics import confusion_matrix, classification_report, balanced_accuracy_score, f1_score, cohen_kappa_score, matthews_corrcoef
 
-    # Normalize confusion matrix rows
-    acc_matrix = conf_mat.astype(float) / conf_mat.sum(axis=1, keepdims=True)
+def loo_1nn_predictions(embeddings, labels):
+    labels = np.asarray(labels)
+    X = np.asarray(embeddings)
+    nn = NearestNeighbors(n_neighbors=2, metric='euclidean').fit(X)
+    _, indices = nn.kneighbors(X)
+    y_true = labels
+    y_pred = labels[indices[:, 1]]  # exclude self
+    return y_true, y_pred
+
+def eval_metrics(y_true, y_pred, label_order=None):
+    # Choose a consistent order for confusion matrix + reporting
+    if label_order is None:
+        label_order = np.unique(y_true)
+
+    cm = confusion_matrix(y_true, y_pred, labels=label_order)
+    micro_acc = (y_true == y_pred).mean()
+    bal_acc   = balanced_accuracy_score(y_true, y_pred)
+    macro_f1  = f1_score(y_true, y_pred, labels=label_order, average='macro', zero_division=0)
+    weighted_f1 = f1_score(y_true, y_pred, labels=label_order, average='weighted', zero_division=0)
+    kappa = cohen_kappa_score(y_true, y_pred, labels=label_order)
+    mcc   = matthews_corrcoef(y_true, y_pred)
+
+    # Per-class recall (row-normalized cm)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        row_sums = cm.sum(axis=1, keepdims=True)
+        per_class_recall = np.diag(cm) / np.where(row_sums==0, 1, row_sums).squeeze()
+
+    metrics = {
+        "micro_accuracy": float(micro_acc),
+        "balanced_accuracy": float(bal_acc),
+        "macro_f1": float(macro_f1),
+        "weighted_f1": float(weighted_f1),
+        "cohens_kappa": float(kappa),
+        "mcc": float(mcc),
+        "per_class_recall": dict(zip(label_order, per_class_recall.astype(float))),
+        "support": dict(zip(label_order, cm.sum(axis=1).astype(int))),
+    }
+    return cm, metrics, label_order
+
+def plot_knn_heatmap(embeddings, labels, output_path, title="1-NN Classification"):
+    present = [c for c in CATEGORY_ORDER if c in set(labels)]
+    if not present:
+        present = sorted(set(labels))
+
+    y_true, y_pred = loo_1nn_predictions(embeddings, labels)
+    cm, metrics, label_order = eval_metrics(y_true, y_pred, label_order=present)
+
+    # Row-normalized matrix for visualization (per-class recall)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        acc_matrix = cm.astype(float) / np.where(cm.sum(axis=1, keepdims=True)==0, 1, cm.sum(axis=1, keepdims=True))
 
     plt.figure(figsize=(10, 8))
     sns.heatmap(
         acc_matrix,
-        xticklabels=label_set,
-        yticklabels=label_set,
+        xticklabels=label_order,
+        yticklabels=label_order,
         vmin=0, vmax=0.85,
         cmap="Blues", annot=True, fmt=".2f",
-        cbar_kws={"label": "1-NN Accuracy"}
+        cbar_kws={"label": "Per-class recall"}
     )
-
-    plt.title(f"{title} (Acc: {accuracy:.2%})")
+    plt.title(f"{title}\n"
+              f"micro={metrics['micro_accuracy']:.2%} | "
+              f"balanced={metrics['balanced_accuracy']:.2%} | "
+              f"macro‑F1={metrics['macro_f1']:.2%}")
     plt.xlabel("Predicted")
     plt.ylabel("True")
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
+
+    # (Optional) also print a terse summary to logs
+    logging.info(f"[KNN] micro={metrics['micro_accuracy']:.3f}, "
+                 f"balanced={metrics['balanced_accuracy']:.3f}, "
+                 f"macroF1={metrics['macro_f1']:.3f}, "
+                 f"weightedF1={metrics['weighted_f1']:.3f}, "
+                 f"kappa={metrics['cohens_kappa']:.3f}, mcc={metrics['mcc']:.3f}")
+
 
 def analyze_agreement(
     genome_fasta,
@@ -292,7 +348,9 @@ def analyze_agreement(
 
     bw = pyBigWig.open(bigwig_file)
 
-    categories = ["phyloP_negative", "phyloP_neutral", "phyloP_positive", "vista_enhancer", "UCNE", "repeats", "exons", "introns", "noncoding_regions", "coding_regions", "upstream_TSS", "UTR5", "UTR3", "promoters"]
+    categories = [
+        #"phyloP_negative", "phyloP_neutral", "phyloP_positive", 
+        "vista_enhancer", "UCNE", "repeats", "exons", "introns", "noncoding_regions", "coding_regions", "upstream_TSS", "UTR5", "UTR3", "promoters"]
 
     chromosome_groups = {}
     if training_chromosomes and test_chromosomes:
@@ -440,20 +498,22 @@ def main():
         "--training_chromosomes",
         type=str,
         nargs="+",
-        default=["chr1", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr10","chr11", "chr12", "chr13", "chr14", "chr15", "chr17", "chr18", "chr19", "chr20", "chr21", "chrX"],
+        default= None,
+        #default=["chr1", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr10","chr11", "chr12", "chr13", "chr14", "chr15", "chr17", "chr18", "chr19", "chr20", "chr21", "chrX"],
         help="List of chromosomes used in training",
     )
     parser.add_argument(
         "--test_chromosomes",
         type=str,
         nargs="+",
-        default=["chr2", "chr22", "chr16", "chr3"],
+        default= None,
+        #default=["chr2", "chr22", "chr16", "chr3"],
         help="List of chromosomes held out for testing",
     )
     parser.add_argument(
         "--last_step",
         type=int,
-        default=44000,
+        default=44000, #0, #44000
         help="Checkpoint step to use",
     )
     parser.add_argument(
@@ -518,14 +578,19 @@ def main():
         # keep your existing convention for trained models
         if args.model_type == 'gamba':
             checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/CCP/"
+            #checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/focal_loss/"
             if args.training_task == "seq_only":
                 checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/"
-                args.last_step = 56000
+                args.last_step = 56000 #0 #56000
         else:
             checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/"
             args.last_step = 56000
 
-        output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_step_{args.last_step}/"
+        if args.last_step == 0:
+            last_step = "random_init"
+        else:
+            last_step = args.last_step
+        output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_step_{last_step}/"
 
     try:
         analyze_kwargs = dict(
