@@ -109,181 +109,117 @@ def get_sequence_window(genome, chromosome, position, window_size=2048):
 
     return sequence, start, target_pos
 
+
 def process_variants(genome, bw, model, collator, tokenizer, device, batch_size=32):
-    """
-    Process variants from a DataFrame
-    
-    This function:
-    1. Places each mutation at position 2047 (end of sequence)
-    2. Extracts model predictions for both reference and alternate alleles
-    3. Accounts for sequence padding in the collator (+1 for start token)
-    
-    Returns:
-    - ref_logits_data: List of logits at the mutation position for reference sequences
-    - alt_logits_data: List of logits at the mutation position for mutated sequences  
-    - conservation_scores: List of predicted conservation scores at the mutation position
-    - labels: List of variant labels (0=benign, 1=pathogenic)
-    """
+    from Bio.Seq import Seq
+    import torch.nn.functional as F
+
     valid_chromosomes = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
     df = pd.read_parquet("hf://datasets/songlab/clinvar/test.parquet")
-    # Lists to store results
-    ref_logits_data = []
-    alt_logits_data = []
-    conservation_scores = []
-    labels = []
-    non_matching_refs = []
-    true_conservation_scores = []
-    
-    # Process variants in batches
+
+    ref_logits_data, alt_logits_data, conservation_scores = [], [], []
+    labels, true_conservation_scores, non_matching_refs = [], [], []
+
     for start_idx in tqdm(range(0, len(df), batch_size)):
         end_idx = min(start_idx + batch_size, len(df))
         batch_df = df.iloc[start_idx:end_idx]
-        
-        batch_sequences = []
-        batch_scores = []
-        batch_refs = []
-        batch_alts = []
-        batch_labels = []
-        batch_positions = []
-        valid_indices = []
-        
-        # Prepare batch data
+
+        fwd_inputs, rev_inputs = [], []
+        fwd_info, rev_info = [], []
+
         for idx, row in batch_df.iterrows():
-            chromosome = "chr" + str(row['chrom'])
-            if chromosome not in valid_chromosomes:
-                continue
-                
-            # Get 1-indexed genomic position
-            position = int(row['pos'])
-            
-            # Convert to 0-indexed position for sequence access
-            position = position - 1
-            label = row['label']
-            ref = row['ref']
-            alt = row['alt']
-            
-            # Skip non-SNVs
-            if len(ref) != 1 or len(alt) != 1:
-                continue
-                
+            chromosome = f"chr{row['chrom']}"
+            if chromosome not in valid_chromosomes: continue
+
+            position = int(row['pos']) - 1
+            label, ref, alt = row['label'], row['ref'], row['alt']
+            if len(ref) != 1 or len(alt) != 1: continue
+
             try:
-                # Get sequence with mutation centered
-                sequence, start, target_pos = get_sequence_window(genome, chromosome, position)
-                
-                # Check sequence length and reference allele
-                if len(sequence) != 2048:
-                    print(f"Skipping sequence of length {len(sequence)}")
-                    continue
-                    
-                if sequence[target_pos] != ref:
-                    print(f"Reference allele mismatch: {sequence[target_pos]} vs {ref}")
+                seq, start, target_pos = get_sequence_window(genome, chromosome, position)
+                if len(seq) != 2048 or seq[target_pos] != ref:
+                    if len(seq) != 2048: continue
                     non_matching_refs.append((chromosome, position, ref, alt))
                     continue
-                    
-                # Tokenize sequence
-                sequence_tokens = tokenizer.tokenizeMSA(sequence)
-                
-                # Get conservation scores
-                vals = np.zeros(2048, dtype=np.float64)
+
+                tokens_fwd = tokenizer.tokenizeMSA(seq)
+                scores_fwd = np.zeros(2048)
                 intervals = bw.intervals(chromosome, start, start + 2048)
-                
                 if intervals is not None:
-                    for interval_start, interval_end, value in intervals:
-                        offset_start = max(0, interval_start - start)
-                        offset_end = min(2048, interval_end - start)
-                        vals[offset_start:offset_end] = value
-                
-                scores = np.round(vals, 2)
-                
-                # Add to batch
-                batch_sequences.append(sequence_tokens)
-                batch_scores.append(scores)
-                batch_refs.append(ref)
-                batch_alts.append(alt)
-                batch_labels.append(label)
-                batch_positions.append(target_pos)
-                valid_indices.append(len(batch_sequences) - 1)
-                
-            except Exception as e:
+                    for s, e, val in intervals:
+                        scores_fwd[max(0, s - start):min(2048, e - start)] = val
+                scores_fwd = np.round(scores_fwd, 2)
+
+                seq_rev = str(Seq(seq).reverse_complement())
+                tokens_rev = tokenizer.tokenizeMSA(seq_rev)
+                scores_rev = scores_fwd[::-1].copy()
+
+                fwd_inputs.append((tokens_fwd, scores_fwd))
+                rev_inputs.append((tokens_rev, scores_rev))
+                fwd_info.append((tokenizer.tokenizeMSA(ref)[0], tokenizer.tokenizeMSA(alt)[0], target_pos, scores_fwd[target_pos], label))
+                rev_info.append((tokenizer.tokenizeMSA(ref)[0], tokenizer.tokenizeMSA(alt)[0], 2047 - target_pos, scores_rev[2047 - target_pos], label))
+
+            except Exception:
                 continue
-        
-        if not batch_sequences:
-            continue
-            
-        # Prepare model inputs
-        batch_inputs = list(zip(batch_sequences, batch_scores))
-        batch = collator(batch_inputs)
-        sequence_input = batch[0][:, 0, :].long()       # (B, T)
-        scaling = batch[0][:, 1, :].float()             # (B, T)
-        sequence_labels = batch[1][:, 0, :].long()      # (B, T)
-        scale_lbls = batch[1][:, 1, :].float()          # (B, T)
 
-        model_kwargs = {
-            "input_ids": sequence_input.to(device),
-            "labels": sequence_labels.to(device),
-        }
-            # If model supports conservation prediction, pass conservation labels too
-        if hasattr(model, "conservation_head"):
-            model_kwargs["conservation_labels"] = scale_lbls.to(device)
-        
-        # Pass both inputs and labels to the model
-    
-        # Run model
-        with torch.no_grad():
-            output = model(**model_kwargs)
-        
-        # Extract logits at mutation position
-        has_sequence = "logits" in output
-        if has_sequence:
-            seq_logits = output["logits"]
-        else:
-            seq_logits = None
-        
-        # Extract conservation score predictions if available
-        has_conservation = "scaling_logits" in output
-        if has_conservation:
-            conservation_logits = output["scaling_logits"]
-            # conservation_logits is already a tensor of shape [batch, seq_len, 2]
-            # where the last dimension contains [mean, log_variance]
-        
-        # Process each sequence in the batch
-        for i, idx in enumerate(valid_indices):
-            ref_token = batch_sequences[idx][batch_positions[idx]]
-            ref_base = batch_refs[idx]
-            alt_base = batch_alts[idx]
-            
-            # Convert bases to token indices
-            alt_token = tokenizer.tokenizeMSA(alt_base)[0]
-            # Get logits at mutation position (add 1 for the start token padding)
-            orig_position = batch_positions[idx]
-            model_position = orig_position + 1  # Add 1 to account for start token padding
+        if not fwd_inputs: continue
 
-            if has_sequence:
-                position_logits = seq_logits[i, model_position, :]
-                
-                # Get softmax probabilities
-                position_probs = F.softmax(position_logits, dim=-1)
-                
-                # Store logits data for plotting
-                ref_logits_data.append(position_probs[ref_token].item())
-                alt_logits_data.append(position_probs[alt_token].item())
-            
-            # Store conservation scores if available
-            if has_conservation:
-                try:
-                    # The conservation is stored as [batch, seq_len, 2] where 2 is the mean and log variance
-                    # Get the mean at position model_position
-                    conservation_mean = conservation_logits[i, model_position, 0]
-                    conservation_scores.append(conservation_mean.item())
-                    true_score = batch_scores[idx][batch_positions[idx]]
+        def run_model(batch_inputs, positions):
+            collated = collator(batch_inputs, region=[(pos, pos + 1) for pos in positions])
+            sequence_input = collated[0][:, 0, :].long()       # (B, T)
+            scaling = collated[0][:, 1, :].float()             # (B, T)
+            sequence_labels = collated[1][:, 0, :].long()      # (B, T)
+            scale_lbls = collated[1][:, 1, :].float()          # (B, T)
+
+            model_kwargs = {
+                "input_ids": sequence_input.to(device),
+                "labels": sequence_labels.to(device),
+            }
+            with torch.no_grad():
+                output = model(**model_kwargs)
+            return output.get("logits", None), output.get("scaling_logits", None)
+
+        positions_fwd = [info[2] for info in fwd_info]  # target_pos
+        positions_rev = [info[2] for info in rev_info]  # reverse mutation pos
+        logits_fwd, cons_fwd = run_model(fwd_inputs, positions_fwd)
+        logits_rev, cons_rev = run_model(rev_inputs, positions_rev)
+
+        if logits_fwd is None or logits_rev is None:
+            no_seq = True
+
+        for i in range(len(fwd_inputs)):
+            try:
+                ref_tok, alt_tok, pos_fwd, true_score, label = fwd_info[i]
+                pos_rev = rev_info[i][2]
+
+                if not no_seq: 
+                    # Ensure both seq_logits are present for this sample
+                    if logits_fwd[i] is None or logits_rev[i] is None:
+                        continue
+
+                    p_ref_fwd = F.softmax(logits_fwd[i, pos_fwd + 1], dim=-1)[ref_tok].item()
+                    p_alt_fwd = F.softmax(logits_fwd[i, pos_fwd + 1], dim=-1)[alt_tok].item()
+                    p_ref_rev = F.softmax(logits_rev[i, pos_rev + 1], dim=-1)[ref_tok].item()
+                    p_alt_rev = F.softmax(logits_rev[i, pos_rev + 1], dim=-1)[alt_tok].item()
+
+                    log_lik_ref = 0.5 * (np.log(p_ref_fwd) + np.log(p_ref_rev))
+                    log_lik_alt = 0.5 * (np.log(p_alt_fwd) + np.log(p_alt_rev))
+                    ref_logits_data.append(np.exp(log_lik_ref))
+                    alt_logits_data.append(np.exp(log_lik_alt))
+
+                # Conservation check
+                if cons_fwd is not None and cons_rev is not None:
+                    c_fwd = cons_fwd[i, pos_fwd + 1, 0].item()
+                    c_rev = cons_rev[i, pos_rev + 1, 0].item()
+                    conservation_scores.append(0.5 * (c_fwd + c_rev))
                     true_conservation_scores.append(true_score)
 
-                except Exception as e:    
-                    print(f"Error extracting conservation score: {e}")
-                    # Skip this conservation score
-                    pass
-            
-            labels.append(batch_labels[idx])
+                labels.append(label)
+
+            except Exception as e:
+                print(f"Skipping one sample due to error: {e}")
+                continue
+
     print(f"Percentage of non-matching reference alleles: {len(non_matching_refs) / len(df) * 100:.2f}%")
     return ref_logits_data, alt_logits_data, conservation_scores, labels, true_conservation_scores
 

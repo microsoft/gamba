@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from evodiff.utils import Tokenizer
 from gamba.collators import gLMCollator
-from gamba.model import create_model, JambagambaModel, JambaGambaNoConsModel
+from gamba.model import create_model, JambagambaModel, JambaGambaNoConsModel,JambaGambaNOALMModel
 from gamba.constants import TaskType, DNA_ALPHABET_PLUS
 
 def get_latest_checkpoint_path(ckpt_dir, last_step=-1):
@@ -64,7 +64,10 @@ def load_model(config_path, checkpoint_path):
     #     model, d_model=d_model, nhead=nhead, n_layers=n_layers, 
     #     padding_id=0, dim_feedfoward=dim_feedforward
     # )
-    
+    # model = JambaGambaNOALMModel(
+    #     model, d_model=d_model, nhead=nhead, n_layers=n_layers, 
+    #     padding_id=0, dim_feedfoward=dim_feedforward
+    # )
     # Load the model checkpoint
     #checkpoint = torch.load(os.path.join(checkpoint_path, "model_optimizer.pt"), weights_only=True)
     checkpoint = torch.load(
@@ -133,161 +136,105 @@ def get_sequence_window(genome, chromosome, position, window_size=2048):
 
     return sequence, start, target_pos
 
+
 def process_variants(genome, bw, model, collator, tokenizer, device, batch_size=32):
-    """
-    Process variants from a DataFrame
-    
-    This function:
-    1. Places each mutation at position 2047 (end of sequence)
-    2. Extracts model predictions for both reference and alternate alleles
-    3. Accounts for sequence padding in the collator (+1 for start token)
-    
-    Returns:
-    - ref_logits_data: List of logits at the mutation position for reference sequences
-    - alt_logits_data: List of logits at the mutation position for mutated sequences  
-    - conservation_scores: List of predicted conservation scores at the mutation position
-    - labels: List of variant labels (0=benign, 1=pathogenic)
-    """
+    from Bio.Seq import Seq
+    import torch.nn.functional as F
+
     valid_chromosomes = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
     df = pd.read_parquet("hf://datasets/songlab/clinvar/test.parquet")
-    #df = pd.read_parquet("hf://datasets/songlab/omim/test.parquet")
-    # Lists to store results
-    ref_logits_data = []
-    alt_logits_data = []
-    conservation_scores = []
-    labels = []
-    non_matching_refs = []
-    true_conservation_scores = []
-    # Process variants in batches
+
+    ref_logits_data, alt_logits_data, conservation_scores = [], [], []
+    labels, true_conservation_scores, non_matching_refs = [], [], []
+
     for start_idx in tqdm(range(0, len(df), batch_size)):
         end_idx = min(start_idx + batch_size, len(df))
         batch_df = df.iloc[start_idx:end_idx]
-        
-        batch_sequences = []
-        batch_scores = []
-        batch_refs = []
-        batch_alts = []
-        batch_labels = []
-        batch_positions = []
-        valid_indices = []
-        
-        # Prepare batch data
+
+        fwd_inputs, rev_inputs = [], []
+        fwd_info, rev_info = [], []
+
         for idx, row in batch_df.iterrows():
-            chromosome = "chr" + str(row['chrom'])
-            if chromosome not in valid_chromosomes:
-                continue
-                
-            # Get 1-indexed genomic position
-            position = int(row['pos'])
-            
-            # Convert to 0-indexed position for sequence access
-            position = position - 1
-            label = row['label']
-            ref = row['ref']
-            alt = row['alt']
-            
-            # Skip non-SNVs
-            if len(ref) != 1 or len(alt) != 1:
-                continue
-                
+            chromosome = f"chr{row['chrom']}"
+            if chromosome not in valid_chromosomes: continue
+
+            position = int(row['pos']) - 1
+            label, ref, alt = row['label'], row['ref'], row['alt']
+            if len(ref) != 1 or len(alt) != 1: continue
+
             try:
-                # Get sequence with mutation at the end
-                sequence, start, target_pos = get_sequence_window(genome, chromosome, position)
-                
-                # Check sequence length and reference allele
-                if len(sequence) != 2048:
-                    print(f"Skipping sequence of length {len(sequence)}")
-                    continue
-                    
-                if sequence[target_pos] != ref:
-                    print(f"Reference allele mismatch: {sequence[target_pos]} vs {ref}")
+                seq, start, target_pos = get_sequence_window(genome, chromosome, position)
+                if len(seq) != 2048 or seq[target_pos] != ref:
+                    if len(seq) != 2048: continue
                     non_matching_refs.append((chromosome, position, ref, alt))
                     continue
-                    
-                # Tokenize sequence
-                sequence_tokens = tokenizer.tokenizeMSA(sequence)
-                
-                # Get conservation scores
-                vals = np.zeros(2048, dtype=np.float64)
+
+                tokens_fwd = tokenizer.tokenizeMSA(seq)
+                scores_fwd = np.zeros(2048)
                 intervals = bw.intervals(chromosome, start, start + 2048)
-                
                 if intervals is not None:
-                    for interval_start, interval_end, value in intervals:
-                        offset_start = max(0, interval_start - start)
-                        offset_end = min(2048, interval_end - start)
-                        vals[offset_start:offset_end] = value
-                
-                scores = np.round(vals, 2)
-                
-                # Add to batch
-                batch_sequences.append(sequence_tokens)
-                batch_scores.append(scores)
-                batch_refs.append(ref)
-                batch_alts.append(alt)
-                batch_labels.append(label)
-                batch_positions.append(target_pos)
-                valid_indices.append(len(batch_sequences) - 1)
-                
-            except Exception as e:
+                    for s, e, val in intervals:
+                        scores_fwd[max(0, s - start):min(2048, e - start)] = val
+                scores_fwd = np.round(scores_fwd, 2)
+
+                seq_rev = str(Seq(seq).reverse_complement())
+                tokens_rev = tokenizer.tokenizeMSA(seq_rev)
+                scores_rev = scores_fwd[::-1].copy()
+
+                fwd_inputs.append((tokens_fwd, scores_fwd))
+                rev_inputs.append((tokens_rev, scores_rev))
+                fwd_info.append((tokenizer.tokenizeMSA(ref)[0], tokenizer.tokenizeMSA(alt)[0], target_pos, scores_fwd[target_pos], label))
+                rev_info.append((tokenizer.tokenizeMSA(ref)[0], tokenizer.tokenizeMSA(alt)[0], 2047 - target_pos, scores_rev[2047 - target_pos], label))
+
+            except Exception:
                 continue
-        
-        if not batch_sequences:
-            continue
-            
-        # Prepare model inputs
-        batch_inputs = list(zip(batch_sequences, batch_scores))
-        collated = collator(batch_inputs)
-        
-        # Run model
-        with torch.no_grad():
-            output = model(collated[0].to(device), collated[1].to(device))
-        
-        # Extract logits at mutation position
-        seq_logits = output["seq_logits"]
-        
-        # Extract conservation score predictions if available
-        has_conservation = "scaling_logits" in output
-        if has_conservation:
-            conservation_logits = output["scaling_logits"]
-            # conservation_logits is already a tensor of shape [batch, seq_len, 2]
-            # where the last dimension contains [mean, log_variance]
-        
-        # Process each sequence in the batch
-        for i, idx in enumerate(valid_indices):
-            ref_token = batch_sequences[idx][batch_positions[idx]]
-            ref_base = batch_refs[idx]
-            alt_base = batch_alts[idx]
-            
-            # Convert bases to token indices
-            alt_token = tokenizer.tokenizeMSA(alt_base)[0]
-            
-            # Get logits at mutation position (add 1 for the start token padding)
-            orig_position = batch_positions[idx]
-            model_position = orig_position + 1  # Add 1 to account for start token padding
-            position_logits = seq_logits[i, model_position, :]
-            
-            # Get softmax probabilities
-            position_probs = F.softmax(position_logits, dim=-1)
-            
-            # Store logits data for plotting
-            ref_logits_data.append(position_probs[ref_token].item())
-            alt_logits_data.append(position_probs[alt_token].item())
-            
-            # Store conservation scores if available
-            if has_conservation:
-                try:
-                    # The conservation is stored as [batch, seq_len, 2] where 2 is the mean and log variance
-                    # Get the mean at position model_position
-                    conservation_mean = conservation_logits[i, model_position, 0]
-                    conservation_scores.append(conservation_mean.item())
-                    true_score = batch_scores[idx][batch_positions[idx]]
+
+        if not fwd_inputs: continue
+
+        def run_model(batch_inputs):
+            collated = collator(batch_inputs)
+            with torch.no_grad():
+                output = model(collated[0].to(device), collated[1].to(device))
+            return output.get("seq_logits", None), output.get("scaling_logits", None)
+
+        logits_fwd, cons_fwd = run_model(fwd_inputs)
+        logits_rev, cons_rev = run_model(rev_inputs)
+        no_seq = False
+        if logits_fwd is None or logits_rev is None:
+            no_seq = True
+
+        for i in range(len(fwd_inputs)):
+            try:
+                ref_tok, alt_tok, pos_fwd, true_score, label = fwd_info[i]
+                pos_rev = rev_info[i][2]
+                if not no_seq: 
+                    # Ensure both seq_logits are present for this sample
+                    if logits_fwd[i] is None or logits_rev[i] is None:
+                        continue
+
+                    p_ref_fwd = F.softmax(logits_fwd[i, pos_fwd + 1], dim=-1)[ref_tok].item()
+                    p_alt_fwd = F.softmax(logits_fwd[i, pos_fwd + 1], dim=-1)[alt_tok].item()
+                    p_ref_rev = F.softmax(logits_rev[i, pos_rev + 1], dim=-1)[ref_tok].item()
+                    p_alt_rev = F.softmax(logits_rev[i, pos_rev + 1], dim=-1)[alt_tok].item()
+
+                    log_lik_ref = 0.5 * (np.log(p_ref_fwd) + np.log(p_ref_rev))
+                    log_lik_alt = 0.5 * (np.log(p_alt_fwd) + np.log(p_alt_rev))
+                    ref_logits_data.append(np.exp(log_lik_ref))
+                    alt_logits_data.append(np.exp(log_lik_alt))
+                
+                # Conservation check
+                if cons_fwd is not None and cons_rev is not None:
+                    c_fwd = cons_fwd[i, pos_fwd + 1, 0].item()
+                    c_rev = cons_rev[i, pos_rev + 1, 0].item()
+                    conservation_scores.append(0.5 * (c_fwd + c_rev))
                     true_conservation_scores.append(true_score)
-                except Exception as e:    
-                    print(f"Error extracting conservation score: {e}")
-                    # Skip this conservation score
-                    pass
-            
-            labels.append(batch_labels[idx])
+
+                labels.append(label)
+
+            except Exception as e:
+                print(f"Skipping one sample due to error: {e}")
+                continue
+
     print(f"Percentage of non-matching reference alleles: {len(non_matching_refs) / len(df) * 100:.2f}%")
     return ref_logits_data, alt_logits_data, conservation_scores, labels, true_conservation_scores
 
@@ -388,7 +335,7 @@ def main():
     parser.add_argument('--csv_file', type=str, default ="/home/mica/gamba/data_processing/data/hg38_noncoding_mutations/clin_var_GPNMSA.csv", help='Path to the CSV file with noncoding variants')
     parser.add_argument('--genome_fasta', type=str,  default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/VEP/no_cons/', help='Path to the output file')
+    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/VEP/focal_loss/dual_gamba/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str,  default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     parser.add_argument('--batch_size', type=int, default=48, help='Batch size for model evaluation')
     
@@ -411,7 +358,10 @@ def main():
     # Get checkpoint path
     # ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/")
     # checkpoint_path = get_latest_checkpoint_path(ckpt_dir, 78000)
-    checkpoint_path = "/home/mica/gamba/clean_dcps/dcp_56000"
+    #checkpoint_path = "/home/mica/gamba/clean_dcps/dcp_noALM56000"
+    #checkpoint_path = "/home/mica/gamba/clean_dcps/CCP/dcp_44000"
+    checkpoint_path = "/home/mica/gamba/clean_dcps/focal_loss/dcp_22000"
+    #checkpoint_path = "/home/mica/gamba/clean_dcps/CCP/dcp_noALM44000"
     # Load model
     print(f"Loading model from {checkpoint_path}")
     model, collator, tokenizer, device = load_model(args.config_fpath, checkpoint_path)
@@ -431,27 +381,26 @@ def main():
         'true_conservation_scores': true_conservation_scores,
     }
     torch.save(results, os.path.join(args.output_dir, f"{name}_results.pt"))
-    
-    # Plot log-likelihood analysis
-    print("Plotting log-likelihood analysis")
-    ll_auc = plot_results(ref_probs, alt_probs, labels, args.output_dir, name, "loglikelihood")
-    
-    # Plot probability ratio analysis
-    print("Plotting probability ratio analysis")
-    prob_auc = plot_results(ref_probs, alt_probs, labels, args.output_dir, name, "probability")
-    
+    if ref_probs:
+        # Plot log-likelihood analysis
+        print("Plotting log-likelihood analysis")
+        ll_auc = plot_results(ref_probs, alt_probs, labels, args.output_dir, name, "loglikelihood")
+        
+        # Plot probability ratio analysis
+        print("Plotting probability ratio analysis")
+        prob_auc = plot_results(ref_probs, alt_probs, labels, args.output_dir, name, "probability")
+        
     # Plot conservation score analysis if available
     if conservation_scores:
         print("Plotting conservation score analysis")
         cons_auc = plot_conservation_scores(conservation_scores, labels, args.output_dir, name)
         print(f"\nSummary for {name}:")
-        print(f"Log-likelihood AUC: {ll_auc:.4f}")
-        print(f"Probability ratio AUC: {prob_auc:.4f}")
         print(f"Conservation score AUC: {cons_auc:.4f}")
+    elif ref_probs:
+            print(f"Log-likelihood AUC: {ll_auc:.4f}")
+            print(f"Probability ratio AUC: {prob_auc:.4f}")
     else:
-        print(f"\nSummary for {name}:")
-        print(f"Log-likelihood AUC: {ll_auc:.4f}")
-        print(f"Probability ratio AUC: {prob_auc:.4f}")
+        print("Log-likelihood and probability ratios not available")
         print("Conservation scores not available")
 
     if conservation_scores:
