@@ -689,6 +689,7 @@ class CaduceusConservation(CaduceusPreTrainedModel):
             "gaussian_loss": gaussian_loss,
             "mse_loss": mse_loss,
             "scaling": scaling,
+            "representation": hidden_states,
             "scaling_logits": self.conservation_head(hidden_states),
             "hidden_states": outputs.hidden_states,
             "n_processed": n_processed,
