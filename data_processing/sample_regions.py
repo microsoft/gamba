@@ -14,6 +14,97 @@ import random
 from tqdm import tqdm
 import numpy as np
 
+from glob import glob
+
+def list_gtf_files(gtf_dir):
+    files = sorted(glob(os.path.join(gtf_dir, "*.gtf"))) + sorted(glob(os.path.join(gtf_dir, "*.gtf.gz")))
+    if not files:
+        raise FileNotFoundError(f"No GTF files found in {gtf_dir}")
+    return files
+
+def discover_chromosomes(genome_fasta, bigwig_file):
+    # Prefer genome FASTA (pyfaidx) since that’s your source of truth
+    try:
+        fa = Fasta(genome_fasta)
+        chroms = list(fa.keys())
+        if chroms:
+            return chroms
+    except Exception:
+        pass
+    # Fallback to bigWig
+    bw = pyBigWig.open(bigwig_file)
+    chroms = list(bw.chroms().keys())
+    bw.close()
+    if not chroms:
+        raise RuntimeError("Could not discover chromosomes from FASTA or bigWig.")
+    return chroms
+
+
+def load_name_blocklist(txt_path):
+    """
+    Reads UCNE paralogue groups and returns a set of UCNE names to drop.
+    Keeps exactly one UCNE from each group, removes the rest.
+
+    Format of txt_path:
+        One group per line, UCNE IDs separated by whitespace or commas.
+    """
+    if not os.path.exists(txt_path):
+        logging.warning(f"Paralogue list not found: {txt_path}")
+        return set()
+
+    to_drop = set()
+    with open(txt_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            group = [item.strip() for item in line.replace(",", " ").split() if item.strip()]
+            if len(group) > 1:
+                to_drop.update(group[1:])
+    logging.info(f"Loaded paralogue drop list: {len(to_drop)} UCNEs will be removed.")
+    return to_drop
+
+def load_bed_file_filtered(path, category, keep_chroms=None, drop_names=None, canonical=None):
+    df = pd.read_csv(path, sep='\t', header=None, comment='#')
+    if df.shape[1] < 3:
+        raise ValueError(f"BED file {path} must have at least 3 columns.")
+    all_cols = ['chrom', 'start', 'end', 'name', 'score', 'strand',
+                'thickStart', 'thickEnd', 'itemRgb', 'blockCount',
+                'blockSizes', 'blockStarts']
+    df.columns = all_cols[:df.shape[1]]
+
+    if 'name' not in df.columns: df['name'] = category
+    if 'score' not in df.columns: df['score'] = 0.0
+    if 'strand' not in df.columns: df['strand'] = '.'
+
+    n_before = len(df)
+
+    if canonical is not None:
+        df['chrom'] = df['chrom'].map(lambda c: normalize_chrom(str(c), canonical))
+
+    if keep_chroms is not None:
+        keep_set = set(keep_chroms)
+        df = df[df['chrom'].isin(keep_set)]
+
+    if drop_names:
+        if df['name'].nunique() == 1 and next(iter(df['name'].unique())) == category:
+            logging.warning(f"[{category}] BED lacks distinct names; cannot drop paralogues by name.")
+        else:
+            df = df[~df['name'].isin(drop_names)]
+
+    df['start'] = df['start'].astype(int)
+    df['end'] = df['end'].astype(int)
+
+    logging.info(f"[{category}] {path}: kept {len(df)}/{n_before} rows after chrom+paralogue filters")
+
+    return [
+        {'chrom': r['chrom'], 'start': r['start'], 'end': r['end'],
+         'name': r['name'], 'score': float(r['score']), 'strand': r['strand'],
+         'category': category}
+        for _, r in df.iterrows()
+    ]
+
+
 class GTFParser:
     """Parser for GTF annotation files."""
 
@@ -274,45 +365,6 @@ class GTFParser:
             return [r for r in regions if r["chrom"] == chrom]
         return regions
 
-
-
-def get_bigwig_values(bw, chrom, start, end):
-    """
-    Get values from bigWig file using intervals method.
-    
-    Args:
-        bw: pyBigWig object
-        chrom: Chromosome name
-        start: Start position (0-based)
-        end: End position (exclusive)
-        
-    Returns:
-        numpy array of values
-    """
-    # Initialize vals with zeros
-    vals = np.zeros(end - start, dtype=np.float64)
-    
-    try:
-        # Get intervals from the bigwig file
-        intervals = bw.intervals(chrom, start, end)
-        
-        # Check if intervals is None
-        if intervals is None:
-            # Return zeros if no intervals found
-            return vals
-        
-        # Fill in values from intervals
-        for interval_start, interval_end, value in intervals:
-            rel_start = max(0, interval_start - start)
-            rel_end = min(end - start, interval_end - start)
-            vals[rel_start:rel_end] = value
-            
-        return vals
-    except Exception as e:
-        logging.debug(f"Error getting values for {chrom}:{start}-{end}: {e}")
-        return vals
-    
-
 def get_bigwig_values(bw, chrom, start, end):
     """
     Get values from bigWig file using intervals method.
@@ -552,20 +604,27 @@ def load_vista_coordinates(tsv_path):
         })
     return vista_regions
 
-def sample_regions_by_feature(gtf_parser, feature_type, chromosomes):
-    all_features = []
+def sample_regions_by_feature(gtf_parser, feature_type, chromosomes, canonical=None):
+    chrom_set = set(chromosomes)
+    out = []
     for chrom in chromosomes:
         feats = gtf_parser.get_regions_by_type(feature_type, chrom=chrom)
         for f in feats:
-            all_features.append({
-                'chrom': f['chrom'],
+            c = f['chrom']
+            if canonical is not None:
+                c = normalize_chrom(c, canonical)
+            if c not in chrom_set:
+                continue
+            out.append({
+                'chrom': c,
                 'start': f['start'],
                 'end': f['end'],
                 'name': f.get('transcript_id', f.get('gene_id', feature_type)),
                 'score': 0.0,
                 'strand': f.get('strand', '.')
             })
-    return all_features
+    logging.info(f"[{feature_type}] kept {len(out)} rows")
+    return out
 
 def sample_regions_by_phylop(bigwig_file, genome_fasta, score_range, num_regions, max_length, chromosomes):
     genome = Fasta(genome_fasta)
@@ -607,59 +666,189 @@ def sample_regions_by_phylop(bigwig_file, genome_fasta, score_range, num_regions
     bw.close()
     return regions
 
+
+def build_canonical_set(genome_fasta, bigwig_file):
+    # Prefer FASTA keys as canonical
+    try:
+        fa = Fasta(genome_fasta)
+        return set(fa.keys())
+    except Exception:
+        pass
+    bw = pyBigWig.open(bigwig_file)
+    s = set(bw.chroms().keys())
+    bw.close()
+    return s
+
+def normalize_chrom(chrom, canonical):
+    """
+    Map common variants to canonical names:
+      '1' <-> 'chr1', 'X' <-> 'chrX', 'Y' <-> 'chrY', 'MT'/'M' <-> 'chrM'
+    If no match, return original.
+    """
+    if chrom in canonical:
+        return chrom
+
+    # Try adding/removing 'chr'
+    if chrom.startswith("chr"):
+        nochr = chrom[3:]
+        if nochr in canonical:
+            return nochr
+    else:
+        withchr = "chr" + chrom
+        if withchr in canonical:
+            return withchr
+
+    # Mito edge cases
+    mito_aliases = {"M", "MT", "chrM", "chrMT"}
+    if chrom in mito_aliases:
+        for cand in ("chrM", "MT", "M"):
+            if cand in canonical:
+                return cand
+
+    # No mapping found
+    return chrom
+
+def normalize_chrom_list(chroms, canonical):
+    return [normalize_chrom(c, canonical) for c in chroms]
+
+def limit_regions(regions, n, seed=None):
+    if n is None or n <= 0 or len(regions) <= n:
+        return regions
+    rng = random.Random(seed)
+    return rng.sample(regions, n)
+
+
 def main():
     parser = argparse.ArgumentParser("sample regions for downstream analysis")
     parser.add_argument("--bigwig_file", default="/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig")
     parser.add_argument("--genome_fasta", default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa")
-    parser.add_argument("--gtf_files", nargs='+', default=[
-        '/home/mica/gamba/data_processing/data/240-mammalian/chr2.gtf',
-        '/home/mica/gamba/data_processing/data/240-mammalian/chr19.gtf',
-        '/home/mica/gamba/data_processing/data/240-mammalian/chr22.gtf']
-    )
     parser.add_argument("--vista_tsv", default="/home/mica/gamba/data_processing/data/VISTA_enhancers/experiments.tsv")
     parser.add_argument("--utr5_bed", default="/home/mica/gamba/data_processing/data/UCSC coordinates/UCSC_5UTR_exons.bed")
     parser.add_argument("--utr3_bed", default="/home/mica/gamba/data_processing/data/UCSC coordinates/UCSC_3UTR_exons.bed")
     parser.add_argument("--promoters_bed", default="/home/mica/gamba/data_processing/data/promoters/promoters.bed")
     parser.add_argument("--output_dir", default="/home/mica/gamba/data_processing/data/regions")
-    parser.add_argument("--num_regions", type=int, default=1000)
+    parser.add_argument("--num_regions", type=int, default=10000)
     parser.add_argument("--region_length", type=int, default=2048)
-    parser.add_argument("--chromosomes", nargs='+', default=["chr2", "chr19", "chr22"])
+    parser.add_argument("--gtf_dir", default="/home/mica/gamba/data_processing/data/gtfs/")
+    parser.add_argument("--chromosomes", nargs='+', default=["auto"])
+    parser.add_argument("--repeats_bed", default="/home/mica/gamba/data_processing/data/240-mammalian/repeats_hg38.bed")
+    parser.add_argument("--ucne_bed", default="/home/mica/gamba/data_processing/data/conserved_elements/hg38_UCNE_coordinates.bed")
+    parser.add_argument("--ucne_paralogues", default="/home/mica/gamba/data_processing/data/conserved_elements/ucne_paralogues.txt")
+    parser.add_argument("--limit_per_category", type=int, default=10000,  # keep only N items per category
+                    help="If set, randomly keep at most N regions per category (after building).")
+    parser.add_argument("--phylop_num_samples", type=int, default=10000,
+                        help="Number of random samples to estimate phyloP percentiles (use a small number for tests).")
+    parser.add_argument("--seed", type=int, default=42)
+
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
-    # bw = pyBigWig.open(args.bigwig_file)
-    # chrom = "chr2"
-    # region_length = 2048
-    # chrom_length = bw.chroms()[chrom]
 
-    # for _ in range(10):
-    #     start = random.randint(0, chrom_length - region_length)
-    #     end = start + region_length
-    #     vals = np.array(bw.values(chrom, start, end), dtype=np.float64)
-        
-    #     print(f"Sampled {chrom}:{start}-{end}")
-    #     print("First 10 values:", vals[:10])
-    #     print("Num NaNs:", np.isnan(vals).sum())
-    #     print("Num valid:", (~np.isnan(vals)).sum())
-    #     print()
-    score_dist = get_phylop_score_ranges(args.bigwig_file, args.chromosomes, num_samples=10000)
-    gtf_parser = GTFParser(args.gtf_files)
+    logging.basicConfig(level=logging.INFO)
+
+    canonical = build_canonical_set(args.genome_fasta, args.bigwig_file)
+
+    # Discover chromosomes (auto) or normalize provided list
+    if len(args.chromosomes) == 1 and args.chromosomes[0] == "auto":
+        chromosomes = sorted(canonical)
+    else:
+        chromosomes = normalize_chrom_list(args.chromosomes, canonical)
+
+    logging.info(f"Canonical chromosomes in use (sample): {chromosomes[:6]} … total={len(chromosomes)}")
+
+    # 2) Expand GTFs from directory but only keep files for requested chromosomes
+    gtf_files_all = list_gtf_files(args.gtf_dir)
+    chrom_set = set(chromosomes)
+    gtf_files = []
+
+    for f in gtf_files_all:
+        fname = os.path.basename(f)
+        # Match chr name exactly (with or without .gtf/.gtf.gz extension)
+        chrom_name = fname.split(".")[0]  # e.g., "chr22" from "chr22.gtf"
+        if chrom_name in chrom_set:
+            gtf_files.append(f)
+
+    logging.info(f"Using {len(gtf_files)} GTF files for requested chromosomes: {chromosomes}")
+
+
+    score_dist = get_phylop_score_ranges(args.bigwig_file, chromosomes, num_samples=args.phylop_num_samples)
+    gtf_parser = GTFParser(gtf_files)
+    # Build paralogue blocklist for UCNE filtering
+    ucne_blocklist = load_name_blocklist(args.ucne_paralogues)
+
+    vista = load_vista_coordinates(args.vista_tsv)
+    if canonical is not None:
+        for r in vista:
+            r['chrom'] = normalize_chrom(r['chrom'], canonical)
+    vista = [r for r in vista if r['chrom'] in set(chromosomes)]
+    logging.info(f"[vista_enhancer] kept {len(vista)} rows after chrom filter")
+
     categories = {
-        "promoters": load_bed_file(args.promoters_bed, "promoters"),
-        "vista_enhancer": load_vista_coordinates(args.vista_tsv),
-        "UTR5": load_bed_file(args.utr5_bed, "UTR5"),
-        "UTR3": load_bed_file(args.utr3_bed, "UTR3"),
-        "coding_regions": sample_regions_by_feature(gtf_parser, "coding_regions", args.chromosomes),
-        "noncoding_regions": sample_regions_by_feature(gtf_parser, "noncoding_regions", args.chromosomes),
-        "exons": sample_regions_by_feature(gtf_parser, "exons", args.chromosomes),
-        "introns": sample_regions_by_feature(gtf_parser, "introns", args.chromosomes),
-        "upstream_TSS": sample_regions_by_feature(gtf_parser, "upstream_TSS", args.chromosomes),
-        "start_codon": sample_regions_by_feature(gtf_parser, "start_codon", args.chromosomes),
-        "stop_codon": sample_regions_by_feature(gtf_parser, "stop_codon", args.chromosomes),
-        "phyloP_positive": sample_regions_by_phylop(args.bigwig_file, args.genome_fasta, score_dist["positive"], args.num_regions, args.region_length, args.chromosomes),
-        "phyloP_neutral": sample_regions_by_phylop(args.bigwig_file, args.genome_fasta, score_dist["neutral"], args.num_regions, args.region_length, args.chromosomes),
-        "phyloP_negative": sample_regions_by_phylop(args.bigwig_file, args.genome_fasta, score_dist["negative"], args.num_regions, args.region_length, args.chromosomes),
+        # Existing categories
+        "promoters": load_bed_file_filtered(
+            args.promoters_bed, "promoters", keep_chroms=chromosomes, canonical=canonical
+        ),
+        "vista_enhancer": vista,
+        "UTR5": load_bed_file_filtered(
+            args.utr5_bed, "UTR5", keep_chroms=chromosomes, canonical=canonical
+        ),
+        "UTR3": load_bed_file_filtered(
+            args.utr3_bed, "UTR3", keep_chroms=chromosomes, canonical=canonical
+        ),
+        "coding_regions": sample_regions_by_feature(
+            gtf_parser, "coding_regions", chromosomes,  canonical=canonical
+        ),
+        "noncoding_regions": sample_regions_by_feature(
+            gtf_parser, "noncoding_regions", chromosomes, canonical=canonical
+        ),
+        "exons": sample_regions_by_feature(
+            gtf_parser, "exons", chromosomes, canonical=canonical
+        ),
+        "introns": sample_regions_by_feature(
+            gtf_parser, "introns", chromosomes, canonical=canonical
+        ),
+        "upstream_TSS": sample_regions_by_feature(
+            gtf_parser, "upstream_TSS", chromosomes, canonical=canonical
+        ),
+        "start_codon": sample_regions_by_feature(
+            gtf_parser, "start_codon", chromosomes, canonical=canonical
+        ),
+        "stop_codon": sample_regions_by_feature(
+            gtf_parser, "stop_codon", chromosomes, canonical=canonical
+        ),
+
+        # NEW: Low complexity repeats
+        "repeats": load_bed_file_filtered(
+            args.repeats_bed, "repeats", keep_chroms=chromosomes, canonical=canonical
+        ),
+
+        # NEW: UCNEs (remove paralogues)
+        "UCNE": load_bed_file_filtered(
+            args.ucne_bed, "UCNE", keep_chroms=chromosomes, drop_names=ucne_blocklist, canonical=canonical
+        ),
+
+        # PhyloP categories
+        "phyloP_positive": sample_regions_by_phylop(
+            args.bigwig_file, args.genome_fasta,
+            score_dist["positive"], args.num_regions, args.region_length, chromosomes
+        ),
+        "phyloP_neutral": sample_regions_by_phylop(
+            args.bigwig_file, args.genome_fasta,
+            score_dist["neutral"], args.num_regions, args.region_length, chromosomes
+        ),
+        "phyloP_negative": sample_regions_by_phylop(
+            args.bigwig_file, args.genome_fasta,
+            score_dist["negative"], args.num_regions, args.region_length, chromosomes
+        ),
     }
+
+    if args.limit_per_category is not None:
+        for k in list(categories.keys()):
+            categories[k] = limit_regions(categories[k], args.limit_per_category, args.seed)
+
+
+    for k,v in categories.items():
+        logging.info(f"[SUMMARY] {k}: {len(v)} regions")
+
 
     bw = pyBigWig.open(args.bigwig_file)
     for name, regions in categories.items():
