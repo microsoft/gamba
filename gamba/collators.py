@@ -260,7 +260,11 @@ class gLMMLMCollator:
         self.pad_to_mult = pad_to_multiple_of
         self.test = test
 
-    def __call__(self, data: Sequence[Tuple[np.ndarray, np.ndarray]]):
+    def __call__(
+        self,
+        data: Sequence[Tuple[np.ndarray, np.ndarray]],
+        region: Optional[Sequence[Tuple[int, int]]] = None
+    ):
         sequence = [torch.tensor(s, dtype=torch.long) for s, _ in data]
         scaling = [torch.tensor(s, dtype=torch.float32) for _, s in data]
 
@@ -284,15 +288,36 @@ class gLMMLMCollator:
         scaling, scale_lbs = self.pad_arrays(scaling, dtype=torch.float32)
 
         if self.test:
-            # No masking in test mode
+            input_ids = sequence.clone()
             labels = sequence.clone()
-            labels[labels == self.tokenizer.pad_id] = -100
+
+            if region is not None:
+                for i, (fs, fe) in enumerate(region):
+                    seq_len = input_ids.size(1)
+                    start = fs + 1  # account for [START] token
+                    end = fe + 1
+
+                    # Ensure bounds are valid
+                    if end > seq_len:
+                        raise ValueError(f"Feature region ({start}, {end}) out of bounds for input length {seq_len}")
+
+                    region_len = end - start
+                    region_mask = torch.zeros(seq_len, dtype=torch.bool, device=input_ids.device)
+                    region_mask[start:end] = torch.bernoulli(torch.full((region_len,), 0.15, device=input_ids.device)).bool()
+
+                    input_ids[i][region_mask] = self.tokenizer.mask_id
+                    labels[i][~region_mask] = -100
+
+            else:
+                labels[labels == self.tokenizer.pad_id] = -100
+
             return (
-                torch.stack([sequence, scaling], dim=1),
+                torch.stack([input_ids, scaling], dim=1),
                 torch.stack([labels, scale_lbs], dim=1),
             )
 
-        # MLM masking
+
+        # MLM masking (train mode)
         input_ids, labels_seq, masked_scaling, labels_scaling = self.mask_inputs(sequence, scaling)
         return (
             torch.stack([input_ids, masked_scaling], dim=1),
