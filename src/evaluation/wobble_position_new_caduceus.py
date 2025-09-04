@@ -16,6 +16,11 @@ import sys
 import os
 sys.path.append("../gamba")
 from typing import Optional, Sequence, Tuple, Type
+from sequence_models.constants import START, STOP, MSA_PAD
+import umap
+from my_caduceus.configuration_caduceus import CaduceusConfig
+from my_caduceus.modeling_caduceus import CaduceusConservationForMaskedLM
+
 import umap
 import seaborn as sns
 import torch.distributed as dist
@@ -32,8 +37,8 @@ from sequence_models.utils import transformer_lr, warmup
 
 import torch.nn.functional as F 
 from evodiff.utils import Tokenizer
-from gamba.collators import gLMCollator
-from gamba.model import create_model, JambagambaModel, JambaGambaNoConsModel
+from gamba.collators import gLMMLMCollator
+from gamba.model import create_model, JambagambaModel
 from gamba.constants import TaskType, DNA_ALPHABET_PLUS
 import pyBigWig
 import json
@@ -85,7 +90,7 @@ from gamba.model import (
     ARDiffusionModel,
     OrderAgnosticDiffusionModel,
     JambagambaModel,
-    JambaGambaNoConsModel,
+    JambaGambaModelWithDegeneracies,
     OTHER_METRICS_KEY,
 )
 from gamba.model import create_model
@@ -497,6 +502,9 @@ def step(
 import os
 import pickle
 
+import os
+import pickle
+
 def collapse_degeneracy(deg):
     """Collapse raw degeneracy value to class label."""
     if deg in {0, 0.0}:
@@ -511,7 +519,8 @@ def collapse_degeneracy(deg):
         return None  # Skip anything else
 
 
-def compute_per_token_perplexities(model, dataloader, degeneracies_list, device="cuda", output_file=None, max_examples=1000):
+
+def compute_per_token_perplexities(model, dataloader, degeneracies_list, tokenizer, device="cuda", max_examples=1000):
     from collections import defaultdict
     import torch.nn.functional as F
 
@@ -520,61 +529,62 @@ def compute_per_token_perplexities(model, dataloader, degeneracies_list, device=
 
     all_perplexities = []
     all_degeneracies = []
-    per_deg_perplexities = defaultdict(list) 
+    per_deg_perplexities = defaultdict(list)
 
     with torch.no_grad():
         for batch_idx, (out, lbls) in enumerate(tqdm(dataloader, desc="Per-token perplexity")):
             if batch_idx >= max_examples:
                 break
 
-            cons_scores = out[:, 1, :][0].to(device)  # (seq_len,)
-            sequence = out[:, 0, :][0].to(device)     # (seq_len,)
+            # Extract and typecast
+            cons_scores = out[:, 1, :][0].to(device)
+            sequence = out[:, 0, :][0].to(device).long()  # ⚠️ Ensure LongTensor
+
             degeneracies = degeneracies_list[batch_idx]
-            
-            # Clean degeneracies: ensure all are ints, replace non-numeric with -500
             degeneracies = [int(d) if isinstance(d, (int, float, np.integer)) else -500 for d in degeneracies]
-            reverse = False
-            degeneracies = process_degeneracies_for_eval(degeneracies, reverse)
+            degeneracies = process_degeneracies_for_eval(degeneracies, reverse=False)  # add padding
 
             seq_len = sequence.size(0)
-            #start with at least 100 tokens for context
-            for pos in range(100, min(seq_len, len(degeneracies)) - 1):
+            if seq_len < 1200:
+                continue  # skip short sequences
 
-                deg = degeneracies[pos].item()
-                if deg in {-100, -500}:
-                    continue  # skip padding/invalid
+            # ---- Centered 1948-token masking ----
+            start = (seq_len - 1948) // 2
+            end = start + 1948
 
-                input_tokens = sequence[:pos].unsqueeze(0)      # (1, pos)
-                input_scores = cons_scores[:pos].unsqueeze(0)   # (1, pos)
+            input_ids = sequence.clone().long()  # (seq_len,)
+            labels = torch.full_like(input_ids, -100)  # (seq_len,)
 
-                tgt_tokens = sequence[:pos].unsqueeze(0)
-                tgt_scores = cons_scores[:pos].unsqueeze(0)
+            true_tokens = input_ids[start:end].clone()
+            input_ids[start:end] = tokenizer.mask_id
+            labels[start:end] = true_tokens
 
-                src = torch.stack([input_tokens, input_scores], dim=1)  # (1, 2, pos)
-                tgt = torch.stack([tgt_tokens, tgt_scores], dim=1)      # (1, 2, pos)
+            input_ids = input_ids.unsqueeze(0).to(device)  # (1, seq_len)
+            labels = labels.unsqueeze(0).to(device)
 
-                try:
-                    outputs = model(src, tgt)
-                    logits = outputs["seq_logits"]  # (1, pos, vocab_size)
-                    log_probs = F.log_softmax(logits[0, -1], dim=-1)
-                    next_token = int(tgt[0, 0, -1].item())
-                    nll = -log_probs[next_token]
-                    perplexity = torch.exp(nll).item()
-                    #print(f"degeneracies[pos]: {degeneracies[pos]}  type: {type(degeneracies[pos])}")
+            try:
+                outputs = model(input_ids=input_ids, labels=labels)
+                logits = outputs["logits"][0]  # (seq_len, vocab_size)
+                log_probs = F.log_softmax(logits[start:end], dim=-1)  # (1000, vocab_size)
 
-                    deg = degeneracies[pos].item()
-                    collapsed_deg = collapse_degeneracy(int(deg))
+                nlls = -log_probs.gather(1, true_tokens.unsqueeze(1).to(device)).squeeze(1)  # (1000,)
+                perplexities = torch.exp(nlls).cpu().tolist()
+
+                window_degs = degeneracies[start:end].tolist()
+
+                for perp, deg in zip(perplexities, window_degs):
+                    if deg in {-100, -500}:
+                        continue
+                    collapsed_deg = collapse_degeneracy(deg)
                     if collapsed_deg is None:
                         continue
-
-                    all_perplexities.append(perplexity)
+                    all_perplexities.append(perp)
                     all_degeneracies.append(collapsed_deg)
-                    per_deg_perplexities[collapsed_deg].append(perplexity)
+                    per_deg_perplexities[collapsed_deg].append(perp)
 
-
-                except Exception as e:
-                    print(f"Error at batch {batch_idx}, pos {pos}: {e}")
-                    continue
+            except Exception as e:
+                print(f"Error at batch {batch_idx}: {e}")
+                continue
 
     if not per_deg_perplexities:
         print("⚠️ No valid perplexities were collected.")
@@ -606,6 +616,7 @@ def summarize_perplexities_by_degeneracy(perps, degs):
         sem = np.std(values, ddof=1) / np.sqrt(len(values)) if len(values) > 1 else float('nan')
         sem_str = f"± {sem:.3f}" if not np.isnan(sem) else "± N/A"
         print(f"  Degeneracy {deg}-fold: {mean:.3f} {sem_str} (N = {len(values)})")
+
 
 
 def main():
@@ -670,7 +681,7 @@ def main():
         # load from file
         bed_output_file = os.path.join(args.output_file, 'continuous_stretches.bed')
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     #check_continuous_stretches_bed_file(bed_output_file)
     check_continuous_stretches_bed_file(bed_output_file)
     #load the bed_output_file
@@ -685,68 +696,47 @@ def main():
     # Get checkpoint path with step=5400
     # ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
     # ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, 18000)
-    ckpt_path = "/home/mica/gamba/clean_dcps/dcp_nocons_56000"
-
-    # Load model configuration
-    with open(args.config_fpath, "r") as f:
-        config = json.load(f)
-    config["task"] = config["task"].lower().strip()
+    ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_conscaduceus_56000"
+    # Pull current config
     tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
-    task = TaskType(config["task"].lower().strip())
-
-    print(
-        f"Task: {task}, Model: {config['model_type']}, Dataset: {config['dataset']}, Model Config: {config['model_config']}"
+    pad_token_id = tokenizer.tokenizeMSA([MSA_PAD])[0]
+    config = CaduceusConfig(
+        d_model=256,
+        n_layer=8,
+        vocab_size=len(DNA_ALPHABET_PLUS)
     )
-    # Create the model
-    model, block = create_model(
-        task, config["model_type"], config["model_config"], tokenizer.mask_id.item(), 
-    )
+    model = CaduceusConservationForMaskedLM(config)
+    model.config.pad_token_id = pad_token_id
 
-    # Get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
-    d_model = config.get("d_model", 512) #576/2
-    nhead = config.get("n_head", 8)  
-    n_layers = config.get("n_layers", 6)
-    dim_feedforward = config.get("dim_feedforward", d_model)
-    padding_id = config.get("padding_id", 0)
+    block = None  # Not applicable for huggingface model
 
-    # Set up the model load from last checkpoint
-    model = JambaGambaNoConsModel(
-            model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
-        )
+
+    
 
     # Load the model checkpoint
-    checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer = Adam(
-        model.parameters(), lr=config["lr"], weight_decay=config.get("weight_decay", 0.0)
-    )
-    lr_func = warmup(config["warmup_steps"])
-    scheduler = LambdaLR(optimizer, lr_func)
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location="cuda:0")
 
-    sd = torch.load(
-        os.path.join(ckpt_path, "scheduler.pt"), map_location=torch.device("cpu")
-    )
-    scheduler.load_state_dict(sd["scheduler_state_dict"])
+    model.load_state_dict(checkpoint["model_state_dict"])
+
 
     # Move device to cuda if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
 
-
-    collator = gLMCollator(
+    collator = gLMMLMCollator(
         tokenizer=tokenizer,
         pad_to_multiple_of=None,
         test=True,
     )
-    #exon sequences
 
 
     # Prepare sequences and degeneracies
     exon_sequences, exon_scores, exon_degeneracies = process_bed_file(exon_bed_df, genome, bw, tokenizer)
 
-   # exon_dataset = SequenceDataset(exon_sequences, exon_scores)  # Note: degeneracies not included
-    #exon_dataloader = DataLoader(exon_dataset, batch_size=1, collate_fn=collator)
+    # exon_dataset = SequenceDataset(exon_sequences, exon_scores)  # Note: degeneracies not included
+    # exon_dataloader = DataLoader(exon_dataset, batch_size=1, collate_fn=collator)
+    # print("number of examples in exon dataset:", len(exon_dataset))
 
     exon_dataset = SequenceDataset(exon_sequences, exon_scores)
 
@@ -765,9 +755,8 @@ def main():
 
 
     # Zip degeneracies outside the dataloader
-    perps, degs = compute_per_token_perplexities(model, exon_dataloader, sampled_degeneracies, device="cuda", max_examples=1000)
+    perps, degs = compute_per_token_perplexities(model, exon_dataloader, sampled_degeneracies, tokenizer, device="cuda", max_examples=1000)
     summarize_perplexities_by_degeneracy(perps, degs)
-
 
 
 if __name__ == "__main__":

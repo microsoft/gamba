@@ -497,101 +497,118 @@ def step(
 import os
 import pickle
 
-def compute_per_token_perplexities(model, dataloader, degeneracies_list, device="cuda", output_file=None):
+import os
+import pickle
+
+def collapse_degeneracy(deg):
+    """Collapse raw degeneracy value to class label."""
+    if deg in {0, 0.0}:
+        return 0
+    elif deg in {2, 2.0}:
+        return 2
+    elif deg in {3, 3.0}:
+        return 3
+    elif deg in {4, 4.0}:
+        return 4
+    else:
+        return None  # Skip anything else
+
+
+def compute_per_token_perplexities(model, dataloader, degeneracies_list, device="cuda", output_file=None, max_examples=1000):
+    from collections import defaultdict
+    import torch.nn.functional as F
+
     model.eval()
     model.to(device)
 
     all_perplexities = []
     all_degeneracies = []
-    from collections import defaultdict
     per_deg_perplexities = defaultdict(list) 
 
     with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Per-token perplexity")):
-            out, lbls = batch
-            #print(f"type of out: {type(out)}, should be torch tensor")
-            #print(f"shape of out: {(out.shape)}, should be batch, 2, seq_len")
-            #print(f"type of lbls: {type(lbls)}, should be torch tensor")
-            #print(f"shape of lbls: {(lbls.shape)}, should be batch, 2, seq_len")
-            #out is batch, 2, seq_len where the first item of second dimension is sequence and second is scaling
-            cons_scores = out[:, 1, :]
-            #print(f"shape of cons_scores: {cons_scores.shape}, should be (batch, seq_len)")
-            sequence = out[:, 0, :]
-            #print(f"shape of sequence: {sequence.shape}, should be (batch, seq_len)")
-            #lbls is the same format as out, so seq_lbls is the first item of dim 2, second is scaling_lbls
-            seq_lbls = lbls[:, 0, :]
-            #print(f"shape of seq_lbls: {seq_lbls.shape}, should be (batch, seq_len)")
-            scaling_lbls = lbls[:, 1, :]
-            #print(f"shape of scaling_lbls: {scaling_lbls.shape}, should be (batch, seq_len)")
-            sequence = sequence[0].to(device)        # (seq_len,)
-            #print(f"shape of sequence: {sequence.shape}, should be: (seq_len,)")
-            cons_scores = cons_scores[0].to(device)  # (seq_len,)
-            #print(f"shape of cons_scores: {cons_scores.shape}, should be: (seq_len,)")
+        for batch_idx, (out, lbls) in enumerate(tqdm(dataloader, desc="Per-token perplexity")):
+            if batch_idx >= max_examples:
+                break
+
+            cons_scores = out[:, 1, :][0].to(device)  # (seq_len,)
+            sequence = out[:, 0, :][0].to(device)     # (seq_len,)
             degeneracies = degeneracies_list[batch_idx]
-            #print(f"shape of degeneracies: {len(degeneracies)}, should be: (seq_len,)")
+            
+            # Clean degeneracies: ensure all are ints, replace non-numeric with -500
+            degeneracies = [int(d) if isinstance(d, (int, float, np.integer)) else -500 for d in degeneracies]
+            reverse = False
+            degeneracies = process_degeneracies_for_eval(degeneracies, reverse)
 
             seq_len = sequence.size(0)
-            print(f"Sequence length: {seq_len}, Batch index: {batch_idx}")
-            print(f"Degeneracies: {degeneracies}")
-            for pos in range(1, seq_len -1 ):
-                print("pos:", pos)
-                input_tokens = sequence[:pos].unsqueeze(0)      # (1, pos)
-                print(f"shape of input_tokens: {input_tokens.shape}, should be (1, pos)")
-                input_scores = cons_scores[:pos].unsqueeze(0)   # (1, pos)
-                print(f"shape of input_scores: {input_scores.shape}, should be (1, pos)")
-                next_token = sequence[:pos].unsqueeze(0)            # (1, 1)
-                print(f"shape of next_token: {next_token.shape}, should be (1, pos)")
-                next_score = cons_scores[:pos].unsqueeze(0)         # (1, 1)
-                print(f"shape of next_score: {next_score.shape}, should be (1, pos)")
+            #start with at least 100 tokens for context
+            for pos in range(100, min(seq_len, len(degeneracies)) - 1):
 
-                # Stack as (batch, 2, seq_len) → model expects this
+                deg = degeneracies[pos].item()
+                if deg in {-100, -500}:
+                    continue  # skip padding/invalid
+
+                input_tokens = sequence[:pos].unsqueeze(0)      # (1, pos)
+                input_scores = cons_scores[:pos].unsqueeze(0)   # (1, pos)
+
+                tgt_tokens = sequence[:pos].unsqueeze(0)
+                tgt_scores = cons_scores[:pos].unsqueeze(0)
+
                 src = torch.stack([input_tokens, input_scores], dim=1)  # (1, 2, pos)
-                print(f"shape of src: {src.shape}, should be (1, 2, pos)")
-                tgt = torch.stack([next_token, next_score], dim=1)      # (1, 2, pos)
-                print(f"shape of tgt: {tgt.shape}, should be (1, 2, pos)")
-                #print degeneracies unless at the end of the sequence
-                # if pos < seq_len - 2:
-                #     print(f"Degeneracy at pos {pos}: {degeneracies[pos]}")
+                tgt = torch.stack([tgt_tokens, tgt_scores], dim=1)      # (1, 2, pos)
+
                 try:
                     outputs = model(src, tgt)
                     logits = outputs["seq_logits"]  # (1, pos, vocab_size)
-                    print(f"seq_logits shape: {outputs['seq_logits'].shape}")
                     log_probs = F.log_softmax(logits[0, -1], dim=-1)
-                    #need to get the next token from tgt, which is the last pos of the first dimension, tgt shape is (1, 2, pos) i need to ignore batch, then get the first item of dim 2 at pos
-                    next_token = tgt[0, 0, -1]
-                    print("next_token dtype:", tgt[0, 0, -1].dtype, "value:", tgt[0, 0, -1])
-                    next_token = int(next_token.item())  # Convert to int for indexing
-                    print(f"next_token: {next_token}, log_probs shape: {log_probs.shape}")
+                    next_token = int(tgt[0, 0, -1].item())
                     nll = -log_probs[next_token]
                     perplexity = torch.exp(nll).item()
-                    print(f"✅ Success at batch {batch_idx}, pos {pos} — perplexity: {perplexity:.3f}")
+                    #print(f"degeneracies[pos]: {degeneracies[pos]}  type: {type(degeneracies[pos])}")
 
+                    deg = degeneracies[pos].item()
+                    collapsed_deg = collapse_degeneracy(int(deg))
+                    if collapsed_deg is None:
+                        continue
 
                     all_perplexities.append(perplexity)
-                    all_degeneracies.append(degeneracies[pos])
-                    per_deg_perplexities[degeneracies[pos]].append(perplexity) 
+                    all_degeneracies.append(collapsed_deg)
+                    per_deg_perplexities[collapsed_deg].append(perplexity)
+
+
                 except Exception as e:
                     print(f"Error at batch {batch_idx}, pos {pos}: {e}")
                     continue
 
-            #break
-    # Convert to numpy arrays for easier handling
-    # === Mean ± SEM per degeneracy level ===
     if not per_deg_perplexities:
-        print("⚠️ No valid perplexities were collected. Check for model output issues.")
-
-    print("\n📊 Mean ± SEM Perplexity by Degeneracy:")
-    #don't include -100 as a key
-    per_deg_perplexities = {k: v for k, v in per_deg_perplexities.items() if k != -100}
-    for deg in sorted(per_deg_perplexities.keys()):
-        values = per_deg_perplexities[deg]
-        mean = np.mean(values)
-        sem = np.std(values, ddof=1) / np.sqrt(len(values))
-        print(f"  Degeneracy {deg}-fold: {mean:.3f} ± {sem:.3f}  (N = {len(values)})")
+        print("⚠️ No valid perplexities were collected.")
 
     return all_perplexities, all_degeneracies
 
 
+def process_degeneracies_for_eval(degeneracies: list, reverse: bool, pad_token: int = -100) -> torch.Tensor:
+    degeneracies = torch.tensor(degeneracies, dtype=torch.long)
+    if reverse:
+        degeneracies = degeneracies.flip(dims=[0])
+    degeneracies = F.pad(degeneracies, (1, 1), value=pad_token)
+    return degeneracies
+
+from collections import defaultdict
+import numpy as np
+
+def summarize_perplexities_by_degeneracy(perps, degs):
+    per_deg = defaultdict(list)
+    for p, d in zip(perps, degs):
+        per_deg[d].append(p)
+
+    print("\n📊 Final average perplexities by degeneracy:")
+    for deg in sorted(per_deg.keys()):
+        values = per_deg[deg]
+        if len(values) == 0:
+            continue
+        mean = np.mean(values)
+        sem = np.std(values, ddof=1) / np.sqrt(len(values)) if len(values) > 1 else float('nan')
+        sem_str = f"± {sem:.3f}" if not np.isnan(sem) else "± N/A"
+        print(f"  Degeneracy {deg}-fold: {mean:.3f} {sem_str} (N = {len(values)})")
 
 def main():
     parser = argparse.ArgumentParser(description="Token-wise perplexity vs degeneracy")
@@ -731,19 +748,29 @@ def main():
     # Prepare sequences and degeneracies
     exon_sequences, exon_scores, exon_degeneracies = process_bed_file(exon_bed_df, genome, bw, tokenizer)
 
-    exon_dataset = SequenceDataset(exon_sequences, exon_scores)  # Note: degeneracies not included
-    exon_dataloader = DataLoader(exon_dataset, batch_size=1, collate_fn=collator)
+    # exon_dataset = SequenceDataset(exon_sequences, exon_scores)  # Note: degeneracies not included
+    # exon_dataloader = DataLoader(exon_dataset, batch_size=1, collate_fn=collator)
+    # print("number of examples in exon dataset:", len(exon_dataset))
+
+    exon_dataset = SequenceDataset(exon_sequences, exon_scores)
+
+    # Randomly sample 1000 indices
+    num_samples = min(1000, len(exon_dataset))
+    sampled_indices = random.sample(range(len(exon_dataset)), num_samples)
+
+    # Create a Subset
+    sampled_dataset = Subset(exon_dataset, sampled_indices)
+    sampled_degeneracies = [exon_degeneracies[i] for i in sampled_indices]
+
+
+    # Dataloader for the sampled subset
+    exon_dataloader = DataLoader(sampled_dataset, batch_size=1, collate_fn=collator)
     print("number of examples in exon dataset:", len(exon_dataset))
 
-    # Zip degeneracies outside the dataloader
-    perps, degs = compute_per_token_perplexities(model, exon_dataloader, exon_degeneracies, device="cuda")
 
-    # Print per-degeneracy perplexity stats
-    for deg in sorted(set(degs)):
-        mask = [d == deg for d in degs]
-        scores = [p for p, m in zip(perps, mask) if m]
-        avg_score = sum(scores) / len(scores)
-        print(f"Average perplexity for {deg}-fold sites: {avg_score:.3f} (Number of sites: {len(scores)})")
+    # Zip degeneracies outside the dataloader
+    perps, degs = compute_per_token_perplexities(model, exon_dataloader, sampled_degeneracies, device="cuda", max_examples=1000)
+    summarize_perplexities_by_degeneracy(perps, degs)
 
 
 if __name__ == "__main__":
