@@ -888,14 +888,13 @@ def analyze_agreement(
             all_results.append(results_df)
 
 
-
+    # Merge all region results into one DataFrame
+    full_df = pd.concat(all_results, ignore_index=True)
 
     # Save merged results
     #full_df.to_csv(output_dir / "all_region_results.csv", index=False)
     full_df.to_csv(output_dir / "all_region_results.csv", index=False)
 
-    # Merge all region results into one DataFrame
-    full_df = pd.concat(all_results, ignore_index=True)
     if training_task == "dual" or training_task == "cons_only":
         write_category_spread_report(full_df, out_dir=output_dir, value_col="mse",  fname="mse_category_spread.txt")
     if training_task == "seq_only" or training_task == "dual":
