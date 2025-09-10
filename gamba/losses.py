@@ -93,6 +93,91 @@ class MaskedCrossEntropyLoss(nn.Module):
         )
 
 
+
+import math
+import torch
+import torch.nn as nn
+
+class FocalGaussianNLLLoss(nn.Module):
+    """
+    Focal-style Gaussian NLL with variance constraints.
+
+    Base per-element loss (PyTorch form, up to a constant when full=False):
+        0.5 * (log(var) + (y - mu)^2 / var) [+ 0.5*log(2*pi) if full=True]
+
+    Focal modulation with z^2 = (y - mu)^2 / var:
+        pt = exp(-0.5 * z^2)
+        weight = (1 - pt) ** gamma
+
+    Args:
+        gamma:  controls down-weighting of easy points. gamma >= 0.
+        alpha:  optional scalar multiplier.
+        full:   add 0.5*log(2*pi) term (matches nn.GaussianNLLLoss(full=True)).
+        var_bounds: (min_var, max_var) to constrain predicted variance.
+        reduction: 'mean' | 'sum' | 'none'.
+        detach_weight: stop-grad through the focal weight if True.
+
+    Inputs:
+        pred: (B, T, 2) where pred[..., 0]=mu, pred[..., 1]=log_var
+        tgt:  (B, T); elements == -100 are ignored (masked out)
+    """
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        alpha: float | None = None,
+        full: bool = False,
+        var_bounds=(1e-4, 1.0),
+        reduction: str = "mean",
+        detach_weight: bool = False,
+    ):
+        super().__init__()
+        assert gamma >= 0
+        self.gamma = float(gamma)
+        self.alpha = alpha
+        self.full = bool(full)
+        self.var_min, self.var_max = var_bounds
+        assert reduction in ("none", "mean", "sum")
+        self.reduction = reduction
+        self.detach_weight = bool(detach_weight)
+
+    def forward(self, pred: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
+        # mask: ignore positions where tgt == -100
+        mask = (tgt != -100)
+
+        mu = pred[..., 0][mask]
+        log_var = pred[..., 1][mask]
+        y = tgt[mask]
+
+        # map log_var into [var_min, var_max] using sigmoid
+        # this prevents variance blow-up or collapse
+        var = self.var_min + (self.var_max - self.var_min) * torch.sigmoid(log_var)
+
+        # z^2 = (y - mu)^2 / var
+        z2 = (y - mu).pow(2) / var
+
+        # base Gaussian NLL (matches PyTorch form, up to constant)
+        base = 0.5 * (torch.log(var) + z2)
+        if self.full:
+            base = base + 0.5 * math.log(2.0 * math.pi)
+
+        # focal weight
+        pt = torch.exp(-0.5 * z2)          # in (0, 1]
+        w = (1.0 - pt).pow(self.gamma)
+        if self.detach_weight:
+            w = w.detach()
+        if self.alpha is not None:
+            w = w * self.alpha
+
+        loss = w * base
+
+        if self.reduction == "mean":
+            return loss.mean() if loss.numel() > 0 else loss.sum()
+        elif self.reduction == "sum":
+            return loss.sum()
+        else:
+            return loss
+
+
 class GaussianNLLLoss(nn.Module):
     def __init__(self, full: bool = False, eps: float = 1e-6, reduction: str = 'mean'):
         super().__init__()

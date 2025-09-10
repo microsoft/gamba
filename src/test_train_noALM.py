@@ -63,12 +63,22 @@ print(f"causal_conv1d version: {causal_conv1d.__version__}")
 print(f"mamba_ssm version: {mamba_ssm.__version__}")
 
 # default values for RANK, LOCAL_RANK, and WORLD_SIZE if not set
-ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp") + "/"
+ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/media/data/mica") + "/"
 RANK = int(os.environ.get("RANK", "0"))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "0"))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "1"))
 DEVICE = torch.device(f"cuda:{LOCAL_RANK}" if torch.cuda.is_available() else "cpu")
 
+
+def warmup_with_inverse_sqrt_decay(warmup_steps):
+    def lr_lambda(step):
+        if step < warmup_steps:
+            # linear warmup
+            return float(step) / float(max(1.0, warmup_steps))
+        else:
+            # inverse square root decay after warmup
+            return (warmup_steps**0.5) / (step**0.5)
+    return lr_lambda
 
 def is_amlt() -> bool:
     return os.environ.get("AMLT_OUTPUT_DIR", None) is not None
@@ -220,7 +230,7 @@ def get_dataloader(
             dl_test = DataLoader(
                 dataset=ds_test,
                 shuffle=True,
-                batch_size=48,
+                batch_size=128,
                 num_workers=4,
                 collate_fn=collator,
             )
@@ -268,7 +278,7 @@ def get_dataloader(
             dl_train = DataLoader(
                 dataset=ds_train,
                 shuffle=True,
-                batch_size=32,
+                batch_size=128,
                 num_workers=4,
                 collate_fn=collator,
             )
@@ -285,7 +295,7 @@ def get_dataloader(
         dl_val = DataLoader(
             dataset=ds_val,
             shuffle=True,
-            batch_size=32,
+            batch_size=128,
             num_workers=16,
             collate_fn=collator,
         )
@@ -318,7 +328,7 @@ def get_dataloader(
 
         dl_train = DataLoader(
             dataset=ds_train,
-            batch_size=48,
+            batch_size=128,
             #batch_sampler=train_sampler,
             num_workers=8,
             collate_fn=collator,
@@ -326,7 +336,7 @@ def get_dataloader(
         )
         dl_val = DataLoader(
             dataset=ds_val,
-            batch_size=48,
+            batch_size=128,
             num_workers=8,
             collate_fn=collator,
             pin_memory=True,
@@ -453,11 +463,12 @@ def save_checkpoint(
     epoch: int,
     tokens: int,
     sequences: int,
-    max_checkpoints: int = 5  # keep only the last 5 checkpoints
+    save_every: int = 1000
 ) -> None:
-    # save the new checkpoint
+    if step % save_every != 0:
+        return
+
     out_path = os.path.join(out_dir, f"dcp_noALM{step}")
-    # ensure that the outpath directory exists
     os.makedirs(out_path, exist_ok=True)
     print(f"Saving checkpoint to {out_path}", flush=True)
 
@@ -468,11 +479,9 @@ def save_checkpoint(
     }
 
     if WORLD_SIZE > 1:
-        # distributed saving
         fs_storage_writer = torch.distributed.checkpoint.FileSystemWriter(out_path)
         _ = dcp.save(sd, storage_writer=fs_storage_writer)
     else:
-        # non-distributed saving
         torch.save(sd, os.path.join(out_path, "model_optimizer.pt"))
 
     if RANK == 0:
@@ -486,16 +495,6 @@ def save_checkpoint(
         }
         torch.save(sd, os.path.join(out_path, "scheduler.pt"))
 
-    # managing old checkpoints
-    checkpoint_pattern = os.path.join(out_dir, "dcp_noALM*")
-    checkpoints = sorted(glob.glob(checkpoint_pattern), key=os.path.getmtime)  # Sort by modification time
-    
-    if len(checkpoints) > max_checkpoints:
-        # remove the oldest checkpoints if there are more than max_checkpoints
-        checkpoints_to_delete = checkpoints[:-max_checkpoints]
-        for checkpoint in checkpoints_to_delete:
-            print(f"Deleting old checkpoint {checkpoint}", flush=True)
-            os.system(f"rm -rf {checkpoint}")  # remove checkpoint directory
 
 def epoch(
     model: nn.Module,
@@ -552,6 +551,9 @@ def epoch(
                 dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
 
         total_steps += 1
+        if total_steps >= 56000:
+            print(f"Reached max step limit of 56000 at epoch {current_epoch}, exiting...")
+            return total_steps, total_tokens, total_seq, True  # signal to stop training
         total_tokens += int(reduce_tensor[0].item())
         total_seq += int(reduce_tensor[1].item())
 
@@ -587,7 +589,7 @@ def epoch(
                 model, val_loader, args, current_epoch, total_steps, csv_fpath=csv_fpath
             )
 
-    return total_steps, total_tokens, total_seq
+    return total_steps, total_tokens, total_seq, False
 
 
 def get_latest_dcp_checkpoint_path(ckpt_dir: str, last_step: int = -1) -> Optional[str]:
@@ -781,7 +783,7 @@ def train(args: argparse.Namespace) -> None:
         model.parameters(), lr=lr, weight_decay=config.get("weight_decay", 0.0)
     )
     #lr_func = transformer_lr(warmup_steps)
-    lr_func = warmup(warmup_steps)
+    lr_func = warmup_with_inverse_sqrt_decay(warmup_steps)
     scheduler = LambdaLR(optimizer, lr_func)
 
     # load the state
@@ -815,7 +817,7 @@ def train(args: argparse.Namespace) -> None:
                 dl_train.batch_sampler.sampler.set_epoch(e + 1)
 
         print("going into epoch")
-        total_steps, total_tokens, total_seqs = epoch(
+        total_steps, total_tokens, total_seqs, reached_max = epoch(
             model,
             dl_train,
             dl_valid,
@@ -828,6 +830,9 @@ def train(args: argparse.Namespace) -> None:
             current_sequences=total_seqs,
             out_fpath=out_fpath,
         )
+        if reached_max:
+            print("Max step count reached, stopping training.")
+            break
 
         save_checkpoint(
             args.out_fpath,
@@ -859,7 +864,7 @@ def main():
         "out_fpath",
         type=str,
         nargs="?",
-        default=os.getenv("AMLT_OUTPUT_DIR", "/tmp") + "/",
+        default=os.getenv("AMLT_OUTPUT_DIR", "/media/data/mica") + "/",
     )
     parser.add_argument("data_root", type=str, nargs="?", default=None)
     parser.add_argument(

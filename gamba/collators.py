@@ -326,12 +326,34 @@ class gLMMLMCollator:
 
         labels_seq[~mask] = -100  # standard MLM label ignore
         labels_scaling[~mask] = -100.0  # for conservation loss ignore
-        print("label_seq min:", labels_seq.min(), "label_seq max:", labels_seq.max())
+        #print("label_seq min:", labels_seq.min(), "label_seq max:", labels_seq.max())
         assert labels_seq.min() >= -100
         assert labels_seq.max() < vocab_size
 
 
         return input_ids, labels_seq, scaling, labels_scaling
+
+        # indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8, device=input_ids.device)).bool() & mask
+        # input_ids[indices_replaced] = self.tokenizer.mask_id
+
+        # indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5, device=input_ids.device)).bool() & mask & ~indices_replaced
+        # vocab_size = 11
+        # random_words = torch.randint(vocab_size, input_ids.shape, dtype=torch.long, device=input_ids.device)
+        # input_ids[indices_random] = random_words[indices_random]
+
+        # # Generate a shifted mask for conservation tokens
+        # conservation_mask = torch.zeros_like(mask, dtype=torch.bool)
+        # conservation_mask[1:] = mask[:-1]  # Shift mask backward by one position
+        # conservation_mask[0] = False  # Ensure the first position is not included
+
+        # # Update labels_scaling for conservation prediction
+        # labels_scaling[~conservation_mask] = -100.0  # Ignore positions not in the conservation mask
+
+        # labels_seq[~mask] = -100  # Standard MLM label ignore
+        # assert labels_seq.min() >= -100
+        # assert labels_seq.max() < vocab_size
+
+        # return input_ids, labels_seq, scaling, labels_scaling
 
 
     def pad_arrays(self, sequence, dtype):
