@@ -453,40 +453,74 @@ def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None,
         # === Caduceus Forward ===
         elif model_type == "caduceus":
             raw_spans = [(r["feature_start_in_window"], r["feature_end_in_window"])
-                        for r in batch_region_info]
-            batch = collator(batch_inputs, region=raw_spans)
+                         for r in batch_region_info]
 
-            sequence_input = batch[0][:, 0, :].long().to(device)
-            labels_pack    = batch[1].to(device)  # (B,2,T)
+            R = 7  # repeats; 15 * 7 = 105% masking inside ROI on average
+            ce_accum = torch.zeros(len(batch_inputs), dtype=torch.float32, device=device)
+            mse_accum = torch.zeros(len(batch_inputs), dtype=torch.float32, device=device)
+            n_used = 0
 
-            # shift spans by +1 for [START] now present in labels
-            feature_spans_shifted = [(fs + 1, fe + 1) for (fs, fe) in raw_spans]
+            for _ in range(R):
+                # 15% masking inside the ROI
+                try:
+                    batch = collator(batch_inputs, region=raw_spans)
+                except TypeError:
+                    batch = collator(batch_inputs, region=raw_spans)
 
-            # CE will be masked tokens ∩ effective region; conservation = effective region
-            labels_pack = apply_effective_region_mask(labels_pack, feature_spans_shifted, is_mlm=True, last_k=1000)
+                sequence_input = batch[0][:, 0, :].long().to(device)
+                labels_pack    = batch[1].to(device)  # (B,2,T)
 
-            # --- Debug: check how many tokens are active ---
-            ce_used   = (labels_pack[:, 0, :] != -100).sum(dim=1)
-            cons_used = (labels_pack[:, 1, :] != -100).sum(dim=1)
-            print(f"[DEBUG][Caduceus] CE used tokens (min/med/max): "
-                f"{int(ce_used.min())}/{int(ce_used.median())}/{int(ce_used.max())} "
-                f"| CONS: {int(cons_used.min())}/{int(cons_used.median())}/{int(cons_used.max())}")
+                # shift spans by +1 for [START]
+                feature_spans_shifted = [(fs + 1, fe + 1) for (fs, fe) in raw_spans]
 
-            if training_task == "cons_only" or training_task == "dual":
+                # CE = masked tokens ∩ effective region; CONS = effective region
+                labels_pack = apply_effective_region_mask(
+                    labels_pack, feature_spans_shifted, is_mlm=True, last_k=1000
+                )
+
                 with torch.no_grad():
-                    outputs = model(
-                        input_ids=sequence_input,
-                        labels=labels_pack[:, 0, :].long(),
-                        conservation_labels=labels_pack[:, 1, :].float()
-                    )
+                    if training_task in ("cons_only", "dual"):
+                        outputs = model(
+                            input_ids=sequence_input,
+                            labels=labels_pack[:, 0, :].long(),
+                            conservation_labels=labels_pack[:, 1, :].float()
+                        )
+                    else:
+                        outputs = model(
+                            input_ids=sequence_input,
+                            labels=labels_pack[:, 0, :].long()
+                        )
+
+                # expect per-batch losses; accumulate and average later
+                ce_loss = outputs.get("cross_entropy_loss", float("nan"))
+                if torch.is_tensor(ce_loss):
+                    ce_loss = ce_loss.detach().to(device)
+                mse_loss = outputs.get("mse_loss", float("nan"))
+                if torch.is_tensor(mse_loss):
+                    mse_loss = mse_loss.detach().to(device)
+
+                # broadcast the scalar batch loss to per-example estimates to keep your downstream shape logic
+                if torch.is_tensor(ce_loss):
+                    ce_accum += ce_loss.repeat(len(batch_inputs))
+                elif np.isfinite(ce_loss):
+                    ce_accum += torch.tensor(ce_loss, dtype=torch.float32, device=device).repeat(len(batch_inputs))
+                if torch.is_tensor(mse_loss):
+                    mse_accum += mse_loss.repeat(len(batch_inputs))
+                elif np.isfinite(mse_loss):
+                    mse_accum += torch.tensor(mse_loss, dtype=torch.float32, device=device).repeat(len(batch_inputs))
+
+                n_used += 1
+
+            # finalize: mean over repeats
+            if n_used == 0:
+                all_seq_predictions.extend([float("nan")] * len(batch_inputs))
+                all_predictions.extend([float("nan")] * len(batch_inputs))
             else:
-                with torch.no_grad():
-                    outputs = model(
-                        input_ids=sequence_input,
-                        labels=labels_pack[:, 0, :].long()
-                    )
-            all_seq_predictions.extend([outputs.get("cross_entropy_loss", float("nan"))] * len(batch_inputs))
-            all_predictions.extend([outputs.get("mse_loss", float("nan"))] * len(batch_inputs))
+                ce_mean = (ce_accum / n_used).detach().cpu().tolist()
+                mse_mean = (mse_accum / n_used).detach().cpu().tolist()
+                all_seq_predictions.extend(ce_mean)
+                all_predictions.extend(mse_mean)
+
 
     return all_predictions, all_true_scores, region_info, all_seq_predictions, all_true_seqs
 
