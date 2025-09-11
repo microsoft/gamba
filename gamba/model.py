@@ -14,6 +14,7 @@ from gamba.constants import MSA_ALPHABET_PLUS, TaskType
 from gamba.losses import (
     OAMaskedCrossEntropyLoss,
     GaussianNLLLoss,
+    FocalGaussianNLLLoss,
     WeightedGaussianNLLLoss,
     InverseGammaNLLLoss,
     PoissonNLLLoss,
@@ -194,7 +195,8 @@ class JambagambaModel(nn.Module):
         self.seq_embedding = nn.Embedding(jambalm.vocab_size, d_model)
         
         # real number loss
-        self.cons_loss_func = GaussianNLLLoss()
+        #self.cons_loss_func = GaussianNLLLoss()
+        self.cons_loss_func = FocalGaussianNLLLoss()
         #self.cons_loss_func = WeightedGaussianNLLLoss(weights_path=weights_path)
         self.mse_loss_func = nn.MSELoss()
 
@@ -243,13 +245,15 @@ class JambagambaModel(nn.Module):
             seq_tgt[:, 1:].flatten(),
             reduction="mean",
         )
+        #scaling_logits = scaling_logits[:, :-1, :]
+        #conservation_tgt = conservation_tgt[:, 1:]
         # apply GaussianNLLLoss from losses.py on the scaling_logits
         gaussian_loss = self.cons_loss_func(
-            scaling_logits[:, :-1, :], conservation_tgt[:, 1:]
+            scaling_logits, conservation_tgt
         )
         #extract mean and variance from scaling logits
-        pred = scaling_logits[:, :-1, :]
-        tgt = conservation_tgt[:, 1:]
+        pred = scaling_logits
+        tgt = conservation_tgt
         # mask is where tgt is not equal to -100
         mask = tgt != -100
 
@@ -432,13 +436,15 @@ class JambaGambaNOALMModel(nn.Module):
         # put the outputs through their respective linear layers
         scaling_logits = self.scaling_head(output)
         
+        #scaling_logits = scaling_logits[:, :-1, :]
+        #conservation_tgt = conservation_tgt[:, 1:]
         # apply GaussianNLLLoss from losses.py on the scaling_logits
         gaussian_loss = self.cons_loss_func(
-            scaling_logits[:, :-1, :], conservation_tgt[:, 1:]
+            scaling_logits, conservation_tgt
         )
         #extract mean and variance from scaling logits
-        pred = scaling_logits[:, :-1, :]
-        tgt = conservation_tgt[:, 1:]
+        pred = scaling_logits
+        tgt = conservation_tgt
         # mask is where tgt is not equal to -100
         mask = tgt != -100
 
