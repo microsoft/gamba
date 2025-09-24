@@ -531,6 +531,9 @@ def visualize_embeddings(repr1, repr2, labels1, labels2, output_path):
     plt.legend()
     plt.title('UMAP of Sequence Embeddings')
     plt.savefig(output_path)
+    #replace .png in output path with .svg
+    svg_output_path = output_path.replace('.png', '.svg')
+    plt.savefig(svg_output_path, format='svg') 
     plt.close()
 
 
@@ -664,7 +667,8 @@ def main():
     checkpoint_num = args.checkpoint_num
 
     COMPARISON_TYPE = "exons" if args.bed_file2 else ("flanking" if args.flanking else "random")
-    args.output_dir = args.output_dir +f"dcp_{checkpoint_num}_noALM_results/"
+    #args.output_dir = args.output_dir +f"dcp_{checkpoint_num}_noALM_results/"
+    args.output_dir = args.output_dir +f"dcp_{checkpoint_num}_results/"
     os.makedirs(args.output_dir, exist_ok=True)
     if args.bed_file2:
         bed2 = load_bed_file(args.bed_file2)
@@ -676,14 +680,14 @@ def main():
     
     genome = Fasta(args.genome_fasta)
     bw = pyBigWig.open(args.big_wig)
-    ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
+    #ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
     #ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
     #ckpt_path = "/home/mica/gamba/dcps/dcp_34000"
     #ckpt_path = "/home/mica/gamba/dcps/dcp_4000_reweighted_cons"
     #ckpt_path ="/home/mica/gamba/dcps/dcp_14000_reweighted_cons"
     #ckpt_path="/home/mica/gamba/dcps/dcp_132250_only_MSE"
-    #ckpt_path="/home/mica/gamba/clean_dcps/CCP/dcp_44000"
-    ckpt_path="/home/mica/gamba/clean_dcps/CCP/dcp_noALM44000"
+    ckpt_path="/home/mica/gamba/clean_dcps/CCP/dcp_44000"
+    #ckpt_path="/home/mica/gamba/clean_dcps/CCP/dcp_noALM44000"
 
     # Load model configuration
     with open(args.config_fpath, "r") as f:
@@ -713,12 +717,12 @@ def main():
 
 
     #set up the model load from last checkpoint
-    # model = JambagambaModel(
-    #         model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
-    #     )
-    model = JambaGambaNOALMModel(
+    model = JambagambaModel(
             model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
         )
+    # model = JambaGambaNOALMModel(
+    #         model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
+    #     )
     # Move device to cuda if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)

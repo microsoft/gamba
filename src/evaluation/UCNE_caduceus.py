@@ -11,7 +11,7 @@ from typing import Optional, Sequence, Tuple, Type
 from sequence_models.constants import START, STOP, MSA_PAD
 import umap
 from my_caduceus.configuration_caduceus import CaduceusConfig
-from my_caduceus.modeling_caduceus import CaduceusConservationForMaskedLM, 
+from my_caduceus.modeling_caduceus import CaduceusConservationForMaskedLM 
 
 import torch.nn as nn
 from torch.optim import Adam
@@ -549,11 +549,13 @@ def visualize_embeddings(repr1, repr2, labels1, labels2, output_path):
     for label in set(labels):
         mask = np.array(labels) == label
         plt.scatter(embeddings[mask, 0], embeddings[mask, 1], 
-                   color=colors[label], label=label, s=5, alpha=0.2)
+                   color=colors[label], label=label, s=5, alpha=0.45)
     
     plt.legend()
     plt.title('UMAP of Sequence Embeddings')
     plt.savefig(output_path)
+    svg_output_path = output_path.replace('.png', '.svg')
+    plt.savefig(svg_output_path, format='svg') 
     plt.close()
 
 
@@ -693,7 +695,7 @@ def main():
     #parser.add_argument('--bed_file2', type=str, default='/home/mica/gamba/data_processing/data/UCSC coordinates/unseen_exons_chr2_chr22_chr16_chr3.bed', help='Second BED file (optional)')
     parser.add_argument('--force_recompute', action='store_true', help='Force recomputation even if cached results exist')
     parser.add_argument('--flanking', action='store_true', help='Generate flanking regions instead of random')
-    parser.add_argument('--checkpoint_num', type=int, default=56000, help='Checkpoint number to load')
+    parser.add_argument('--checkpoint_num', type=int, default=44000, help='Checkpoint number to load')
 
     args = parser.parse_args()
     
@@ -716,7 +718,7 @@ def main():
     genome = Fasta(args.genome_fasta)
     bw = pyBigWig.open(args.big_wig)
     ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
-    ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_conscaduceus_56000"
+    ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_conscaduceus_44000"
 
 
     tokenizer = Tokenizer(DNA_ALPHABET_PLUS)

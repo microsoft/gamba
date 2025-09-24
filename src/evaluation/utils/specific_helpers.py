@@ -170,10 +170,10 @@ def load_model(
             ckpt_path = os.path.join(checkpoint_dir, f"dcp_conscaduceus_{last_step}")
         elif training_task == "seq_only":
             model = CaduceusForMaskedLM(config)
-            ckpt_path = os.path.join(checkpoint_dir, f"dcp_{last_step}")
+            ckpt_path = os.path.join(checkpoint_dir, f"dcp_caduceus_{last_step}")
         elif training_task == "cons_only":
             model = CaduceusConservation(config)
-            ckpt_path = get_latest_dcp_checkpoint_path(checkpoint_dir, f"consONLYcaduceus_60000")
+            ckpt_path = get_latest_dcp_checkpoint_path(checkpoint_dir, f"consONLYcaduceus_{last_step}")
 
         if last_step == 0:
             logging.info("Loading Caduceus with random initialization")

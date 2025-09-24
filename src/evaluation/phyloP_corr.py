@@ -371,6 +371,10 @@ def apply_effective_region_mask(
 
     return labels
 
+def _masked_mean_per_row(x: torch.Tensor, mask: torch.Tensor, dim: int = -1):
+    num = (x * mask).sum(dim=dim)
+    den = mask.sum(dim=dim).clamp_min(1)
+    return num / den
 
 
 def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None, model_type="gamba", training_task="dual"):
@@ -422,46 +426,69 @@ def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None,
         # Skip empty batches
         if not batch_inputs:
             continue
-        # === Gamba Forward ===
-        if model_type == "gamba":
+        # === Gamba Forward (per-example losses) ===
+        elif model_type == "gamba":
             inputs, labels = collator(batch_inputs)  # (B,2,T)
             inputs, labels = inputs.to(device), labels.to(device)
 
-            # shift feature spans by +1 for [START]
+            # shift ROI spans by +1 for [START]
             feature_spans = [(int(m["feature_start_in_window"]) + 1,
                             int(m["feature_end_in_window"])   + 1)
                             for m in batch_region_info]
 
-            # CE *and* conservation restricted to same effective region (tail-1kb of ROI or whole ROI)
-            labels = apply_effective_region_mask(labels, feature_spans, is_mlm=False, last_k=1000)
-
-            # --- Debug: check how many tokens are active ---
-            ce_used   = (labels[:, 0, :] != -100).sum(dim=1)
-            cons_used = (labels[:, 1, :] != -100).sum(dim=1)
-            print(f"[DEBUG][Gamba] CE used tokens (min/med/max): "
-                f"{int(ce_used.min())}/{int(ce_used.median())}/{int(ce_used.max())} "
-                f"| CONS: {int(cons_used.min())}/{int(cons_used.median())}/{int(cons_used.max())}")
+            # restrict CE and CONS to the effective region
+            labels = apply_effective_region_mask(labels, feature_spans,
+                                                is_mlm=False, last_k=1000)
 
             with torch.no_grad():
-                outputs = model(inputs, labels)
+                out = model(inputs, labels)  # still returns logits we need
 
-            all_predictions.extend([outputs.get("mse_loss", float("nan"))] * len(batch_inputs))
-            all_seq_predictions.extend([outputs.get("cross_entropy_loss", float("nan"))] * len(batch_inputs))
+            # logits
+            seq_logits = out["seq_logits"]            # (B,T,V)
+            cons_pred  = out.get("scaling_logits", None)  # (B,T,2) if present
+
+            # ----- CE per-example (AR shift) -----
+            ce_labels = labels[:, 0, :].long()        # (B,T), -100 outside ROI
+            # shift for AR: logits[:, :-1] -> labels[:, 1:]
+            logit_shift = seq_logits[:, :-1, :]       # (B,T-1,V)
+            label_shift = ce_labels[:, 1:]            # (B,T-1)
+            mask_shift  = label_shift.ne(-100).float()
+
+            ce_tok = F.cross_entropy(
+                logit_shift.reshape(-1, logit_shift.size(-1)),
+                label_shift.reshape(-1),
+                reduction="none"
+            ).view(label_shift.size())                 # (B,T-1)
+
+            ce_per_ex = _masked_mean_per_row(ce_tok, mask_shift, dim=1)  # (B,)
+
+            # ----- MSE per-example (if conservation head exists) -----
+            if cons_pred is not None:
+                cons_mean = cons_pred[..., 0].float()          # (B,T)
+                cons_tgt  = labels[:, 1, :].float()            # (B,T)
+                cons_mask = cons_tgt.ne(-100).float()          # (B,T)
+                mse_tok   = (cons_mean - cons_tgt).pow(2)      # (B,T)
+                mse_per_ex = _masked_mean_per_row(mse_tok, cons_mask, dim=1)  # (B,)
+            else:
+                mse_per_ex = torch.full_like(ce_per_ex, float("nan"))
+
+            # collect
+            all_seq_predictions.extend(ce_per_ex.detach().cpu().tolist())
+            all_predictions.extend(mse_per_ex.detach().cpu().tolist())
 
 
-
-        # === Caduceus Forward ===
+        # === Caduceus Forward (per-example losses with repeats) ===
         elif model_type == "caduceus":
             raw_spans = [(r["feature_start_in_window"], r["feature_end_in_window"])
-                         for r in batch_region_info]
+                        for r in batch_region_info]
 
-            R = 7  # repeats; 15 * 7 = 105% masking inside ROI on average
-            ce_accum = torch.zeros(len(batch_inputs), dtype=torch.float32, device=device)
-            mse_accum = torch.zeros(len(batch_inputs), dtype=torch.float32, device=device)
-            n_used = 0
+            R = 7  # 15% * 7 ≈ covers ROI once on average
+            B = len(batch_inputs)
+            ce_accum  = torch.zeros(B, dtype=torch.float32, device=device)
+            mse_accum = torch.zeros(B, dtype=torch.float32, device=device)
+            used = 0
 
             for _ in range(R):
-                # 15% masking inside the ROI
                 try:
                     batch = collator(batch_inputs, region=raw_spans)
                 except TypeError:
@@ -472,54 +499,49 @@ def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None,
 
                 # shift spans by +1 for [START]
                 feature_spans_shifted = [(fs + 1, fe + 1) for (fs, fe) in raw_spans]
-
-                # CE = masked tokens ∩ effective region; CONS = effective region
+                # CE = masked tokens ∩ ROI; CONS = ROI
                 labels_pack = apply_effective_region_mask(
                     labels_pack, feature_spans_shifted, is_mlm=True, last_k=1000
                 )
 
                 with torch.no_grad():
-                    if training_task in ("cons_only", "dual"):
-                        outputs = model(
-                            input_ids=sequence_input,
-                            labels=labels_pack[:, 0, :].long(),
-                            conservation_labels=labels_pack[:, 1, :].float()
-                        )
-                    else:
-                        outputs = model(
-                            input_ids=sequence_input,
-                            labels=labels_pack[:, 0, :].long()
-                        )
+                    # run to get logits; labels not needed here
+                    outputs = model(input_ids=sequence_input, return_dict=True)
 
-                # expect per-batch losses; accumulate and average later
-                ce_loss = outputs.get("cross_entropy_loss", float("nan"))
-                if torch.is_tensor(ce_loss):
-                    ce_loss = ce_loss.detach().to(device)
-                mse_loss = outputs.get("mse_loss", float("nan"))
-                if torch.is_tensor(mse_loss):
-                    mse_loss = mse_loss.detach().to(device)
+                logits = outputs["logits"].float()          # (B,T,V)
+                ce_labels = labels_pack[:, 0, :].long()     # (B,T), -100 outside ROI
+                cons_tgt  = labels_pack[:, 1, :].float()    # (B,T), -100 outside ROI
 
-                # broadcast the scalar batch loss to per-example estimates to keep your downstream shape logic
-                if torch.is_tensor(ce_loss):
-                    ce_accum += ce_loss.repeat(len(batch_inputs))
-                elif np.isfinite(ce_loss):
-                    ce_accum += torch.tensor(ce_loss, dtype=torch.float32, device=device).repeat(len(batch_inputs))
-                if torch.is_tensor(mse_loss):
-                    mse_accum += mse_loss.repeat(len(batch_inputs))
-                elif np.isfinite(mse_loss):
-                    mse_accum += torch.tensor(mse_loss, dtype=torch.float32, device=device).repeat(len(batch_inputs))
+                # ----- CE per-example (MLM, no shift) -----
+                ce_tok = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    ce_labels.reshape(-1),
+                    reduction="none"
+                ).view(ce_labels.size())                    # (B,T)
 
-                n_used += 1
+                ce_mask = ce_labels.ne(-100).float()        # (B,T)
+                ce_per_ex = _masked_mean_per_row(ce_tok, ce_mask, dim=1)  # (B,)
+                ce_accum += ce_per_ex
 
-            # finalize: mean over repeats
-            if n_used == 0:
-                all_seq_predictions.extend([float("nan")] * len(batch_inputs))
-                all_predictions.extend([float("nan")] * len(batch_inputs))
-            else:
-                ce_mean = (ce_accum / n_used).detach().cpu().tolist()
-                mse_mean = (mse_accum / n_used).detach().cpu().tolist()
-                all_seq_predictions.extend(ce_mean)
-                all_predictions.extend(mse_mean)
+                # ----- MSE per-example if conservation head exposed -----
+                if "scaling_logits" in outputs:
+                    cons_mean = outputs["scaling_logits"][..., 0].float()  # (B,T)
+                    cons_mask = cons_tgt.ne(-100).float()
+                    mse_tok   = (cons_mean - cons_tgt).pow(2)
+                    mse_per_ex = _masked_mean_per_row(mse_tok, cons_mask, dim=1)  # (B,)
+                    mse_accum += mse_per_ex
+                else:
+                    # accumulate NaNs to keep vector length
+                    mse_accum += torch.full_like(ce_per_ex, float("nan"))
+
+                used += 1
+
+            # finalize
+            ce_mean  = (ce_accum / max(used, 1)).detach().cpu().tolist()
+            mse_mean = (mse_accum / max(used, 1)).detach().cpu().tolist()
+            all_seq_predictions.extend(ce_mean)
+            all_predictions.extend(mse_mean)
+
 
 
     return all_predictions, all_true_scores, region_info, all_seq_predictions, all_true_seqs
@@ -829,9 +851,6 @@ def build_results_df(
     df["group"] = group_name
     return df
 
-
-
-
 def analyze_agreement(
     genome_fasta,
     bigwig_file,
@@ -925,6 +944,7 @@ def analyze_agreement(
     # Merge all region results into one DataFrame
     full_df = pd.concat(all_results, ignore_index=True)
 
+
     # Save merged results
     #full_df.to_csv(output_dir / "all_region_results.csv", index=False)
     full_df.to_csv(output_dir / "all_region_results.csv", index=False)
@@ -937,6 +957,9 @@ def analyze_agreement(
         stats_tr = category_stats(full_df, split="All", value_col="loss")
         stats_tr.to_csv(os.path.join(output_dir, "ce_category_stats_all.csv"), index=False)
         plot_mean_ci_iqr(stats_tr, output_dir)
+        parq = os.path.join(output_dir, "all_results.parquet")
+        full_df.to_parquet(parq, index=False, compression="snappy")  # needs pyarrow
+
 
         plot_ce_violin(full_df, output_dir, split="All", value_col="loss", clip_pct=(1,99))
 
@@ -1100,12 +1123,12 @@ def main():
     if args.model_type == 'gamba':
         checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/CCP/"
         #checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/focal_loss/"
-        if args.training_task == "seq_only":
-            checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/"
-            args.last_step = 56000
+        # if args.training_task == "seq_only":
+        #     checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/"
+        #     args.last_step = 56000
     else:
         checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/"
-        args.last_step = 56000 #0
+        #args.last_step = 56000 #0
     
     if args.last_step ==0:
         last_step = "random_init"

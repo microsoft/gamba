@@ -142,7 +142,8 @@ def process_variants(genome, bw, model, collator, tokenizer, device, batch_size=
     import torch.nn.functional as F
 
     valid_chromosomes = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
-    df = pd.read_parquet("hf://datasets/songlab/clinvar/test.parquet")
+    #df = pd.read_parquet("hf://datasets/songlab/clinvar/test.parquet")
+    df = pd.read_parquet("hf://datasets/songlab/omim/test.parquet")
 
     ref_logits_data, alt_logits_data, conservation_scores = [], [], []
     labels, true_conservation_scores, non_matching_refs = [], [], []
@@ -335,7 +336,7 @@ def main():
     parser.add_argument('--csv_file', type=str, default ="/home/mica/gamba/data_processing/data/hg38_noncoding_mutations/clin_var_GPNMSA.csv", help='Path to the CSV file with noncoding variants')
     parser.add_argument('--genome_fasta', type=str,  default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/VEP/focal_loss/dual_gamba/', help='Path to the output file')
+    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/VEP/OMIM/dual_gamba/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str,  default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     parser.add_argument('--batch_size', type=int, default=48, help='Batch size for model evaluation')
     

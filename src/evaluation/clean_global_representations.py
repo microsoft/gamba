@@ -18,6 +18,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from scipy import stats
 sys.path.append("../gamba")
 sys.path.append("/home/mica/gamba/")
+import pathlib
 from torch.nn import MSELoss, CrossEntropyLoss
 from sequence_models.constants import MSA_PAD, START, STOP
 from evodiff.utils import Tokenizer
@@ -76,6 +77,7 @@ def extract_region_embeddings(representations, region_info, mode="roi"):
     """
     embeddings = []
     labels = []
+    metas = []
 
     for rep, info in zip(representations, region_info):
         if isinstance(rep, float) or np.isnan(rep).any():
@@ -86,6 +88,8 @@ def extract_region_embeddings(representations, region_info, mode="roi"):
             fe = info["feature_end_in_window"]
             rep_slice = rep[fs:fe]
         elif mode == "full":
+            fs = 0
+            fe = rep.shape[0]
             rep_slice = rep
         else:
             raise ValueError(f"Unsupported mode: {mode}")
@@ -93,12 +97,20 @@ def extract_region_embeddings(representations, region_info, mode="roi"):
         if rep_slice.shape[0] == 0:
             continue
 
-        pooled = rep_slice.mean(axis=0)  # shape: (hidden_dim,)
-        embeddings.append(pooled)
+        pooled = rep_slice.mean(axis=0)
+        embeddings.append(pooled.astype(np.float32))
         labels.append(info.get("category", "unknown"))
+        metas.append({
+            "chrom": info.get("chrom"),
+            "start": int(info.get("start", -1)),
+            "end":   int(info.get("end", -1)),
+            "feature_start_in_window": fs,
+            "feature_end_in_window": fe,
+            "category": info.get("category", "unknown"),
+        })
     print(f"[extract_region_embeddings] mode={mode}, returning {len(embeddings)} embeds and {len(labels)} labels")
 
-    return np.stack(embeddings), labels
+    return np.stack(embeddings), labels, metas
 
 def _roi_span(info):
     fs = int(info["feature_start_in_window"])
@@ -134,25 +146,62 @@ def _seq_to_kmer_vec(seq, k, kmer_index):
     return vec
 
 def compute_kmer_embeddings(valid_regions, mode="roi", k=6):
-    kmer_index = _build_kmer_index(k=k)
-    embeddings, labels = [], []
+    from itertools import product
+    kmers = [''.join(p) for p in product("ACGT", repeat=k)]
+    kmer_index = {kmer: i for i, kmer in enumerate(kmers)}
+    embeddings, labels, metas = [], [], []
     for r in valid_regions:
-        seq = r["sequence"]
+        seq = r["sequence"]; fs = fe = None
         if mode == "roi":
             span = _roi_span(r)
-            if span is None: 
-                continue
+            if span is None: continue
             fs, fe = span
             seq = seq[fs:fe]
-        # skip empty/too short
-        if not seq or len(seq) < k:
-            continue
+        if not seq or len(seq) < k: continue
         vec = _seq_to_kmer_vec(seq, k, kmer_index)
-        embeddings.append(vec)
+        embeddings.append(vec.astype(np.float32))
         labels.append(r.get("category", "unknown"))
+        metas.append({
+            "chrom": r.get("chrom"),
+            "start": int(r.get("start", -1)),
+            "end":   int(r.get("end", -1)),
+            "feature_start_in_window": int(fs) if fs is not None else 0,
+            "feature_end_in_window":   int(fe) if fe is not None else len(seq),
+            "category": r.get("category", "unknown"),
+        })
     if len(embeddings) == 0:
-        return np.empty((0, 4**k), dtype=np.float32), []
-    return np.vstack(embeddings), labels
+        return np.empty((0, 4**k), dtype=np.float32), [], []
+    return np.vstack(embeddings), labels, metas
+
+
+def compute_phylop_embeddings(valid_regions, mode="roi"):
+    embeddings, labels, metas = [], [], []
+    for r in valid_regions:
+        scores = r.get("scores", None)
+        if scores is None: continue
+        fs = fe = None
+        if mode == "roi":
+            span = _roi_span(r)
+            if span is None: continue
+            fs, fe = span
+            ss = scores[fs:fe]
+        else:
+            ss = scores
+        feat = _summarize_scores(ss)
+        if feat is None: continue
+        embeddings.append(feat.astype(np.float32))
+        labels.append(r.get("category", "unknown"))
+        metas.append({
+            "chrom": r.get("chrom"),
+            "start": int(r.get("start", -1)),
+            "end":   int(r.get("end", -1)),
+            "feature_start_in_window": int(fs) if fs is not None else 0,
+            "feature_end_in_window":   int(fe) if fe is not None else len(ss),
+            "category": r.get("category", "unknown"),
+        })
+    if len(embeddings) == 0:
+        return np.empty((0, 6), dtype=np.float32), [], []
+    return np.vstack(embeddings), labels, metas
 
 def _summarize_scores(scores):
     s = np.asarray(scores, dtype=np.float32)
@@ -168,28 +217,6 @@ def _summarize_scores(scores):
     mneg = float(np.nanmean(neg)) if neg.size else 0.0
     return np.array([m, st, fpos, fneg, mpos, mneg], dtype=np.float32)
 
-def compute_phylop_embeddings(valid_regions, mode="roi"):
-    embeddings, labels = [], []
-    for r in valid_regions:
-        scores = r.get("scores", None)
-        if scores is None:
-            continue
-        if mode == "roi":
-            span = _roi_span(r)
-            if span is None:
-                continue
-            fs, fe = span
-            ss = scores[fs:fe]
-        else:
-            ss = scores
-        feat = _summarize_scores(ss)
-        if feat is None:
-            continue
-        embeddings.append(feat)
-        labels.append(r.get("category", "unknown"))
-    if len(embeddings) == 0:
-        return np.empty((0, 6), dtype=np.float32), []
-    return np.vstack(embeddings), labels
 
 
 def plot_umap(embeddings, labels, output_path, title="UMAP of Representations"):
@@ -242,30 +269,30 @@ def loo_1nn_predictions(embeddings, labels):
     return y_true, y_pred
 
 def eval_metrics(y_true, y_pred, label_order=None):
-    # Choose a consistent order for confusion matrix + reporting
     if label_order is None:
         label_order = np.unique(y_true)
 
     cm = confusion_matrix(y_true, y_pred, labels=label_order)
-    micro_acc = (y_true == y_pred).mean()
-    bal_acc   = balanced_accuracy_score(y_true, y_pred)
-    macro_f1  = f1_score(y_true, y_pred, labels=label_order, average='macro', zero_division=0)
-    weighted_f1 = f1_score(y_true, y_pred, labels=label_order, average='weighted', zero_division=0)
-    kappa = cohen_kappa_score(y_true, y_pred, labels=label_order)
-    mcc   = matthews_corrcoef(y_true, y_pred)
 
-    # Per-class recall (row-normalized cm)
-    with np.errstate(invalid='ignore', divide='ignore'):
-        row_sums = cm.sum(axis=1, keepdims=True)
-        per_class_recall = np.diag(cm) / np.where(row_sums==0, 1, row_sums).squeeze()
+    # per-class recall (row-normalized cm)
+    row_sums = cm.sum(axis=1, keepdims=True)
+    per_class_recall = np.diag(cm) / np.where(row_sums == 0, 1, row_sums).squeeze()
+
+    # balanced accuracy and SEM across classes
+    valid = ~np.isnan(per_class_recall)
+    ba   = float(np.mean(per_class_recall[valid]))
+    sem  = float(np.std(per_class_recall[valid], ddof=1) / np.sqrt(np.sum(valid)))
+    ci95 = float(1.96 * sem)
 
     metrics = {
-        "micro_accuracy": float(micro_acc),
-        "balanced_accuracy": float(bal_acc),
-        "macro_f1": float(macro_f1),
-        "weighted_f1": float(weighted_f1),
-        "cohens_kappa": float(kappa),
-        "mcc": float(mcc),
+        "micro_accuracy": float((y_true == y_pred).mean()),
+        "balanced_accuracy": ba,                  # 0–1
+        "balanced_accuracy_sem": sem,             # 0–1
+        "balanced_accuracy_ci95": ci95,           # 0–1
+        "macro_f1": float(f1_score(y_true, y_pred, labels=label_order, average='macro', zero_division=0)),
+        "weighted_f1": float(f1_score(y_true, y_pred, labels=label_order, average='weighted', zero_division=0)),
+        "cohens_kappa": float(cohen_kappa_score(y_true, y_pred, labels=label_order)),
+        "mcc": float(matthews_corrcoef(y_true, y_pred)),
         "per_class_recall": dict(zip(label_order, per_class_recall.astype(float))),
         "support": dict(zip(label_order, cm.sum(axis=1).astype(int))),
     }
@@ -308,7 +335,43 @@ def plot_knn_heatmap(embeddings, labels, output_path, title="1-NN Classification
                  f"macroF1={metrics['macro_f1']:.3f}, "
                  f"weightedF1={metrics['weighted_f1']:.3f}, "
                  f"kappa={metrics['cohens_kappa']:.3f}, mcc={metrics['mcc']:.3f}")
+    return metrics, label_order, acc_matrix  
 
+def _save_summary(csv_path, row_dict):
+    csv_path = pathlib.Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame([row_dict])
+    header = not csv_path.exists()
+    df.to_csv(csv_path, mode="a", header=header, index=False)
+
+
+def save_reps(output_dir, model_id, group_name, scope, X, labels, metas, extra=None):
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    X = np.asarray(X, dtype=np.float32)
+    labels = np.asarray(labels)
+
+    # 3a) embeddings + labels as NPZ (compressed)
+    np.savez_compressed(out / f"reps_{model_id}_{group_name}_{scope}.npz",
+                        embeddings=X, labels=labels)
+
+    # 3b) metadata as Parquet for convenience
+    mdf = pd.DataFrame(metas)
+    mdf.insert(0, "label", labels)
+    mdf.insert(0, "scope", scope)
+    mdf.insert(0, "group", group_name)
+    if extra:  # model metadata
+        for k, v in extra.items(): mdf[k] = v
+    mdf.to_parquet(out / f"reps_{model_id}_{group_name}_{scope}_meta.parquet", index=False)
+
+
+def _save_per_class_json(json_path, label_order, acc_matrix):
+    data = {
+        "label_order": list(map(str, label_order)),
+        "per_class_recall": {str(lbl): float(acc_matrix[i,i]) for i, lbl in enumerate(label_order)}
+    }
+    with open(json_path, "w") as f:
+        json.dump(data, f, indent=2)
 
 def analyze_agreement(
     genome_fasta,
@@ -362,9 +425,11 @@ def analyze_agreement(
         chromosome_groups = {"all": chromosomes}
 
     all_group_embeddings = {
-        group_name: {"roi": [], "full": [], "full_labels": [], "roi_labels": []}
+        group_name: {"roi": [], "full": [], "roi_labels": [], "full_labels": [],
+                    "roi_meta": [], "full_meta": []}
         for group_name in chromosome_groups
     }
+
 
     for group_name, group_chroms in chromosome_groups.items():
         logging.info(f"Analyzing {group_name} chromosomes: {group_chroms}")
@@ -383,7 +448,10 @@ def analyze_agreement(
 
             valid_regions = []
             for i, region in enumerate(group_regions):
-                context = extract_context(bigwig_file, region, genome, model_type)
+                if model_type in ["kmer6", "phylop"]:
+                    context = extract_context(bigwig_file, region, genome, model_type="baseline")
+                else:
+                    context = extract_context(bigwig_file, region, genome, model_type)
                 if not context or "sequence" not in context:
                     print(f"[WARN] Region {i} has invalid or truncated sequence")
                     continue
@@ -398,15 +466,15 @@ def analyze_agreement(
                 for r in valid_regions:
                     r["category"] = category
 
-                full_embeds, full_labels = compute_kmer_embeddings(valid_regions, mode="full", k=6)
-                roi_embeds,  roi_labels  = compute_kmer_embeddings(valid_regions,  mode="roi",  k=6)
+                full_embeds, full_labels, full_metas = compute_kmer_embeddings(valid_regions, mode="full", k=6)
+                roi_embeds,  roi_labels, roi_metas  = compute_kmer_embeddings(valid_regions,  mode="roi",  k=6)
 
             elif baseline == "phylop":
                 for r in valid_regions:
                     r["category"] = category
 
-                full_embeds, full_labels = compute_phylop_embeddings(valid_regions, mode="full")
-                roi_embeds,  roi_labels  = compute_phylop_embeddings(valid_regions,  mode="roi")
+                full_embeds, full_labels, full_metas = compute_phylop_embeddings(valid_regions, mode="full")
+                roi_embeds,  roi_labels, roi_metas  = compute_phylop_embeddings(valid_regions,  mode="roi")
 
             else:
                 # --- trained model path ---
@@ -422,16 +490,18 @@ def analyze_agreement(
                 for r in region_info:
                     r["category"] = category
 
-                full_embeds, full_labels = extract_region_embeddings(
+                full_embeds, full_labels, full_metas = extract_region_embeddings(
                     sequence_representations, region_info, mode="full"
                 )
-                roi_embeds,  roi_labels  = extract_region_embeddings(
+                roi_embeds,  roi_labels, roi_metas  = extract_region_embeddings(
                     sequence_representations, region_info, mode="roi"
                 )
 
             # common accumulation (works for both paths)
             all_group_embeddings[group_name]["roi"].extend(roi_embeds)
             all_group_embeddings[group_name]["full"].extend(full_embeds)
+            all_group_embeddings[group_name]["roi_meta"].extend(roi_metas)
+            all_group_embeddings[group_name]["full_meta"].extend(full_metas)
             assert len(full_labels) == len(full_embeds), "Full labels and embeddings mismatch!"
             assert len(roi_labels)  == len(roi_embeds),  "ROI labels and embeddings mismatch!"
             all_group_embeddings[group_name]["full_labels"].extend(full_labels)
@@ -440,9 +510,37 @@ def analyze_agreement(
 
     for group_name, group_data in all_group_embeddings.items():
         plot_umap(group_data["roi"], group_data["roi_labels"], output_dir / f"global_umap_roi_{group_name}.png", title=f"Global UMAP - ROI ({group_name})")
-        plot_knn_heatmap(group_data["roi"], group_data["roi_labels"], output_dir / f"global_knn_roi_{group_name}.png", title=f"1-NN Accuracy - ROI ({group_name})")
+        roi_metrics, roi_labels, roi_mat  = plot_knn_heatmap(group_data["roi"], group_data["roi_labels"], output_dir / f"global_knn_roi_{group_name}.png", title=f"1-NN Accuracy - ROI ({group_name})")
         plot_umap(group_data["full"], group_data["full_labels"], output_dir / f"global_umap_full_{group_name}.png", title=f"Global UMAP - Full ({group_name})")
-        plot_knn_heatmap(group_data["full"], group_data["full_labels"], output_dir / f"global_knn_full_{group_name}.png", title=f"1-NN Accuracy - Full ({group_name})")
+        full_metrics, full_labels, full_mat  = plot_knn_heatmap(group_data["full"], group_data["full_labels"], output_dir / f"global_knn_full_{group_name}.png", title=f"1-NN Accuracy - Full ({group_name})")
+    # save JSON per-class recalls (optional but handy)
+    _save_per_class_json(output_dir / f"per_class_roi_{group_name}.json",  roi_labels,  roi_mat)
+    _save_per_class_json(output_dir / f"per_class_full_{group_name}.json", full_labels, full_mat)
+
+    model_id = (model_type if baseline=="none" else baseline)  # e.g., gamba, caduceus, kmer6, phylop
+    extra = {
+        "model_id": model_id,
+        "training_task": training_task,
+        "baseline": baseline,
+        "last_step": last_step,
+    }
+
+    ag = all_group_embeddings[group_name]
+    save_reps(output_dir, model_id, group_name, "roi",  ag["roi"],  ag["roi_labels"],  ag["roi_meta"],  extra)
+    save_reps(output_dir, model_id, group_name, "full", ag["full"], ag["full_labels"], ag["full_meta"], extra)
+
+    # save one CSV row per scope
+    summary_csv = os.path.join(output_dir, "representation_knn_summary.csv")
+    for scope, m in [("roi", roi_metrics), ("full", full_metrics)]:
+        _save_summary(summary_csv, {
+            "Group": group_name,                # all / train / test
+            "Scope": scope,                     # roi / full
+            "Model": model_type,                # class or baseline
+            "BalancedAccuracyPct": 100.0 * m["balanced_accuracy"],
+            "BalancedAccuracySEM_Pct": 100.0 * m["balanced_accuracy_sem"],
+            "MicroAccuracyPct": 100.0 * m["micro_accuracy"],
+            "MacroF1Pct": 100.0 * m["macro_f1"],
+        })
 
     bw.close()
     
@@ -574,17 +672,18 @@ def main():
     if args.baseline != "none":
         # e.g., /.../global_representations/baseline/kmer6/
         output_dir = os.path.join(args.output_dir, "baseline", args.baseline)
+        args.model_type = args.baseline
     else:
         # keep your existing convention for trained models
         if args.model_type == 'gamba':
             checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/CCP/"
             #checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/focal_loss/"
-            if args.training_task == "seq_only":
-                checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/"
-                args.last_step = 56000 #0 #56000
+            # if args.training_task == "seq_only":
+            #     checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/CCP/"
+            #     args.last_step = 56000 #0 #56000
         else:
             checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/"
-            args.last_step = 56000
+            #args.last_step = 56000
 
         if args.last_step == 0:
             last_step = "random_init"

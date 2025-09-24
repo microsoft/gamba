@@ -18,6 +18,13 @@ from gamba.model import create_model, JambagambaModel, JambaGambaNoConsModel, Ja
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
 from sequence_models.utils import warmup
+from my_caduceus.configuration_caduceus import CaduceusConfig
+from my_caduceus.modeling_caduceus import (
+    CaduceusConservationForMaskedLM,
+    CaduceusForMaskedLM,
+    CaduceusConservation
+)
+
 
 def get_latest_dcp_checkpoint_path(ckpt_dir: str, last_step: int = -1) -> str:
     """Get the path to the latest checkpoint."""
@@ -312,7 +319,7 @@ def main():
     
     parser.add_argument(
         "--checkpoint_path", type=str,
-        default="/home/mica/gamba/clean_dcps/CCP/dcp_44000",
+        default="/home/mica/gamba/clean_dcps/dcp_56000",
         help="Directory containing model checkpoints"
     )
     parser.add_argument(

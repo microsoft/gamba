@@ -326,6 +326,9 @@ def visualize_embeddings(repr1, repr2, labels1, labels2, output_path):
     plt.legend()
     plt.title('UMAP of Sequence Embeddings')
     plt.savefig(output_path)
+    #replace .png in output path with .svg
+    svg_output_path = output_path.replace('.png', '.svg')
+    plt.savefig(svg_output_path, format='svg') 
     plt.close()
 
 
@@ -444,13 +447,14 @@ def main():
     parser.add_argument('--genome_fasta', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
     parser.add_argument('--chrom_sizes', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.chrom.sizes', help='Path to the chromosome sizes file')
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/conserved_elements/', help='Path to the output file')
+    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/conserved_elements/CCP/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     parser.add_argument('--bed_file1', type=str, default ='/home/mica/gamba/data_processing/data/conserved_elements/filteredunseen_hg38UCNE_coordinates.bed', help='First BED file')
-    parser.add_argument('--bed_file2', type=str, default='/home/mica/gamba/data_processing/data/UCSC coordinates/unseen_exons_chr2_chr22_chr16_chr3.bed', help='Second BED file (optional)')
+    parser.add_argument('--bed_file2', type=str, default='', help='Second BED file (optional)')
+    #parser.add_argument('--bed_file2', type=str, default='/home/mica/gamba/data_processing/data/UCSC coordinates/unseen_exons_chr2_chr22_chr16_chr3.bed', help='Second BED file (optional)')
     parser.add_argument('--force_recompute', action='store_true', help='Force recomputation even if cached results exist')
     parser.add_argument('--flanking', action='store_true', help='Generate flanking regions instead of random')
-    parser.add_argument('--checkpoint_num', type=int, default=56000, help='Checkpoint number to load')
+    parser.add_argument('--checkpoint_num', type=int, default=44000, help='Checkpoint number to load')
 
     args = parser.parse_args()
     
@@ -473,7 +477,7 @@ def main():
     #ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
     #ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
     #ckpt_path= '/home/mica/gamba/dcps/dcp_nocons_50000'
-    ckpt_path="/home/mica/gamba/clean_dcps/dcp_nocons_56000"
+    ckpt_path="/home/mica/gamba/clean_dcps/CCP/dcp_nocons_44000"
     # Load model configuration
     with open(args.config_fpath, "r") as f:
         config = json.load(f)

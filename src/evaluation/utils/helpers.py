@@ -177,7 +177,7 @@ from Bio.Seq import Seq  # make sure this import exists!
 #         logging.warning(f"[ERROR] Failed to extract {chrom}:{window_start}-{window_end} - {e}")
 #         return None
 
-def extract_context(bigwig_file, region, genome, model_type=None, context_window=2048):
+def extract_context(bigwig_file, region, genome, model_type=None, context_window=None):
     """
     Returns dict(region + sequence, scores, feature_start_in_window, feature_end_in_window)
     or None if the region cannot be extracted.
@@ -203,20 +203,32 @@ def extract_context(bigwig_file, region, genome, model_type=None, context_window
 
     # --- policy selection (baseline-friendly) ---
     # None => baseline => symmetric 2048
-    if model_type in ("gamba", "hyenaDNA"):
-        policy = "asym_2048"
+    if model_type in ("gamba"):
+        policy = "asym"
         max_len = 2048
-    elif model_type in ("caduceus", "nt-ms", "nt-human", None, "baseline"):
-        policy = "sym_2048"
+    elif model_type in ("caduceus", "baseline"):
+        policy = "sym"
         max_len = 2048
+    elif model_type in ("hyenaDNA"):
+        policy = "asym"
+        max_len = 160000
+    elif model_type in ("caduceus-theirs"):
+        policy = "sym"
+        max_len = 131000
     elif model_type == "phyloGPN":
-        policy = "sym_481"
+        policy = "sym"
         max_len = 481
+    elif model_type in ("nt-ms", "nt-human"):
+        policy = "sym"
+        max_len = 6000
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
+    if context_window is not None and model_type != "phyloGPN":
+        max_len = context_window
+
     # --- compute window per policy ---
-    if policy == "asym_2048":
+    if policy == "asym":
         # Asymmetric: feature flush to window edge by strand
         if feature_len > max_len:
             keep = min(1000, max_len)
@@ -242,7 +254,7 @@ def extract_context(bigwig_file, region, genome, model_type=None, context_window
                 fe = feature_end - feature_start
 
     else:
-        # Symmetric policies (2048 or 481)
+        # Symmetric policies (2048 or 481 or 1000): center feature in window
         if feature_len >= max_len:
             center = (feature_start + feature_end) // 2
             window_start = max(0, center - max_len // 2)

@@ -346,12 +346,15 @@ def visualize_embeddings(repr1, repr2, labels1, labels2, output_path):
     for label in set(labels):
         mask = np.array(labels) == label
         plt.scatter(embeddings[mask, 0], embeddings[mask, 1], 
-                   color=colors[label], label=label, s=5, alpha=0.2)
+                   color=colors[label], label=label, s=5, alpha=0.45)
     
     plt.legend()
     plt.title('UMAP of Sequence Embeddings')
     plt.savefig(output_path)
+    svg_output_path = output_path.replace('.png', '.svg')
+    plt.savefig(svg_output_path, format='svg') 
     plt.close()
+
 
 
 def reconstruct_profiles_from_saved(output_path, sequences, scores, spans):
@@ -490,7 +493,7 @@ def main():
     #parser.add_argument('--bed_file2', type=str, default='/home/mica/gamba/data_processing/data/UCSC coordinates/unseen_exons_chr2_chr22_chr16_chr3.bed', help='Second BED file (optional)')
     parser.add_argument('--force_recompute', action='store_true', help='Force recomputation even if cached results exist')
     parser.add_argument('--flanking', action='store_true', help='Generate flanking regions instead of random')
-    parser.add_argument('--checkpoint_num', type=int, default=56000, help='Checkpoint number to load')
+    parser.add_argument('--checkpoint_num', type=int, default=44000, help='Checkpoint number to load')
 
     args = parser.parse_args()
     
@@ -499,8 +502,8 @@ def main():
     checkpoint_num = args.checkpoint_num
 
     COMPARISON_TYPE = "exons" if args.bed_file2 else ("flanking" if args.flanking else "random")
-    #args.output_dir = args.output_dir +f"dcp_nocons_{checkpoint_num}_results/"
-    args.output_dir = args.output_dir +f"dcp_cons_{checkpoint_num}_results/"
+    args.output_dir = args.output_dir +f"dcp_nocons_{checkpoint_num}_results/"
+    #args.output_dir = args.output_dir +f"dcp_cons_{checkpoint_num}_results/"
     #ensure exists:
     os.makedirs(args.output_dir, exist_ok=True)
     if args.bed_file2:
@@ -517,7 +520,8 @@ def main():
     #ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
     #ckpt_path= '/home/mica/gamba/dcps/dcp_nocons_50000'
     #ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_56000"
-    ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_consONLYcaduceus_60000"
+    #ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_consONLYcaduceus_44000"
+    ckpt_path="/home/mica/gamba/clean_caduceus_dcps/dcp_caduceus_44000"
     
     # Pull current config
     tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
@@ -527,8 +531,8 @@ def main():
         n_layer=8,
         vocab_size=len(DNA_ALPHABET_PLUS)
     )
-    #model = CaduceusForMaskedLM(config)
-    model = CaduceusConservation(config)
+    model = CaduceusForMaskedLM(config)
+    #model = CaduceusConservation(config)
     model.config.pad_token_id = pad_token_id
 
     block = None  # Not applicable for huggingface model

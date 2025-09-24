@@ -639,7 +639,7 @@ def main():
     parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/VISTA_enhancers/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str, default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     parser.add_argument('--enhancer_file', type=str, default ='/home/mica/gamba/data_processing/data/VISTA_enhancers/experiments.tsv', help='BED file for UCNEs')
-    parser.add_argument('--checkpoint_num', type=int, default=78000, help='Checkpoint number to load')
+    parser.add_argument('--checkpoint_num', type=int, default=44000, help='Checkpoint number to load')
     parser.add_argument('--grouping', type=str, choices=['anatomical', 'jaccard'], 
                        default='anatomical', help='Tissue grouping strategy')
     parser.add_argument('--min_group_size', type=int, default=10,
@@ -654,7 +654,8 @@ def main():
         os.makedirs(args.output_dir)
 
     ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/tmp/") 
-    ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
+    #ckpt_path = get_latest_dcp_checkpoint_path(ckpt_dir, checkpoint_num)
+    ckpt_path = "/home/mica/gamba/clean_dcps/CCP/dcp_44000"
 
     bw = pyBigWig.open(args.big_wig)
 
@@ -680,7 +681,7 @@ def main():
     )
 
     #get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
-    d_model = config.get("d_model", 576) #576/2
+    d_model = config.get("d_model", 512) #576/2
     nhead = config.get("n_head", 8)  
     n_layers = config.get("n_layers", 6)
     dim_feedforward = config.get("dim_feedforward", d_model)
@@ -691,10 +692,10 @@ def main():
     model = JambagambaModel(
             model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
         )
-    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load the model checkpoint
-    checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"))
+    checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"), map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     optimizer = Adam(
         model.parameters(), lr=lr, weight_decay=config.get("weight_decay", 0.0)
@@ -704,7 +705,7 @@ def main():
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     sd = torch.load(
-        os.path.join(ckpt_path, "scheduler.pt"), map_location=torch.device("cpu")
+        os.path.join(ckpt_path, "scheduler.pt"), map_location=device
     )
     scheduler.load_state_dict(sd["scheduler_state_dict"])
 

@@ -64,7 +64,7 @@ print(f"causal_conv1d version: {causal_conv1d.__version__}")
 print(f"mamba_ssm version: {mamba_ssm.__version__}")
 
 # default values for RANK, LOCAL_RANK, and WORLD_SIZE if not set
-ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/media/data/mica") + "/"
+ckpt_dir = os.getenv("AMLT_OUTPUT_DIR", "/media/data1/") + "/"
 RANK = int(os.environ.get("RANK", "0"))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "0"))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "1"))
@@ -940,7 +940,7 @@ def main():
         "out_fpath",
         type=str,
         nargs="?",
-        default=os.getenv("AMLT_OUTPUT_DIR", "/media/data/mica") + "/",
+        default=os.getenv("AMLT_OUTPUT_DIR", "/media/data1/") + "/",
     )
     parser.add_argument("data_root", type=str, nargs="?", default=None)
     parser.add_argument(
