@@ -460,7 +460,7 @@ def analyze_agreement(
                     context["scores"] = np.asarray(region["scores"], dtype=np.float32)
                 valid_regions.append(context)
 
-
+            baseline = None
             if baseline == "kmer6":
                 # ensure labels exist
                 for r in valid_regions:
@@ -596,16 +596,16 @@ def main():
         "--training_chromosomes",
         type=str,
         nargs="+",
-        default= None,
-        #default=["chr1", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr10","chr11", "chr12", "chr13", "chr14", "chr15", "chr17", "chr18", "chr19", "chr20", "chr21", "chrX"],
+        #default= None,
+        default=["chr1", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr10","chr11", "chr12", "chr13", "chr14", "chr15", "chr17", "chr18", "chr19", "chr20", "chr21", "chrX"],
         help="List of chromosomes used in training",
     )
     parser.add_argument(
         "--test_chromosomes",
         type=str,
         nargs="+",
-        default= None,
-        #default=["chr2", "chr22", "chr16", "chr3"],
+        #default= None,
+        default=["chr2", "chr22", "chr16", "chr3"],
         help="List of chromosomes held out for testing",
     )
     parser.add_argument(
@@ -682,14 +682,14 @@ def main():
             #     checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/CCP/"
             #     args.last_step = 56000 #0 #56000
         else:
-            checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/"
+            checkpoint_dir = args.checkpoint_dir #+ f"/clean_caduceus_dcps/"
             #args.last_step = 56000
 
         if args.last_step == 0:
             last_step = "random_init"
         else:
             last_step = args.last_step
-        output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_step_{last_step}/"
+        output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_ALLPOSstep_{last_step}/"
 
     try:
         analyze_kwargs = dict(
