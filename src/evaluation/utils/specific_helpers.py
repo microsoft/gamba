@@ -175,7 +175,7 @@ def load_model(
             model = CaduceusConservation(config)
             ckpt_path = get_latest_dcp_checkpoint_path(checkpoint_dir, f"consONLYcaduceus_{last_step}")
 
-        if last_step == 0:
+        if last_step==0:
             logging.info("Loading Caduceus with random initialization")
             model.apply(vishniakov_init) 
         else:

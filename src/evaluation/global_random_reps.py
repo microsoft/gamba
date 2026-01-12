@@ -449,60 +449,58 @@ def _pair_key(r: dict) -> str:
     # hard fallback if the id key name is different
     return f"{chrom}:{r.get('start')}-{r.get('end')}"
 
-
-
-def load_paired_regions(category, group_chroms, genome, bw, num_regions=None):
+def load_paired_random_regions(category, group_chroms, genome, bw, num_regions=None):
     """
-    load roi and upstream regions for a category and a set of chromosomes, and
+    load roi and random regions for a category and a set of chromosomes, and
     pair them by the pair id in the last BED column.
 
     expects:
-      roi bed:  REGION_ROOT/{category}/{chrom}.bed
-      up bed:   REGION_ROOT/{category}_upstream/{chrom}.bed
+      roi bed:   REGION_ROOT/{category}/{chrom}.bed
+      random bed: REGION_ROOT/{category}_random/{chrom}.bed
 
     returns:
-      list of (roi_region_dict, upstream_region_dict)
+      list of (roi_region_dict, random_region_dict)
     """
     pairs = []
 
     for chrom in group_chroms:
         roi_bed = os.path.join(REGION_ROOT, category, f"{chrom}.bed")
-        up_bed = os.path.join(REGION_ROOT, f"{category}_upstream", f"{chrom}.bed")
+        rand_bed = os.path.join(REGION_ROOT, f"{category}_random", f"{chrom}.bed")
 
         if not os.path.exists(roi_bed):
-            logging.warning(f"[load_paired_regions] missing roi bed: {roi_bed}")
+            logging.warning(f"[load_paired_random_regions] missing roi bed: {roi_bed}")
             continue
-        if not os.path.exists(up_bed):
-            logging.warning(f"[load_paired_regions] missing upstream bed: {up_bed}")
+        if not os.path.exists(rand_bed):
+            logging.warning(f"[load_paired_random_regions] missing random bed: {rand_bed}")
             continue
 
         roi_regions = load_bed_file(roi_bed, category, genome, bw)
-        up_regions = load_bed_file(up_bed, category, genome, bw)
+        rand_regions = load_bed_file(rand_bed, category, genome, bw)
 
-        # build key → upstream region map
-        up_by_key = {}
-        for r in up_regions:
+        # build key → random region map
+        rand_by_key = {}
+        for r in rand_regions:
             if r.get("chrom") != chrom:
                 continue
             key = _pair_key(r)
-            up_by_key[key] = r
+            rand_by_key[key] = r
 
-        # pair roi with upstream by pair id
+        # pair roi with random by pair id
         for r in roi_regions:
             if r.get("chrom") != chrom:
                 continue
             key = _pair_key(r)
-            up = up_by_key.get(key)
-            if up is None:
+            rnd = rand_by_key.get(key)
+            if rnd is None:
                 continue
-            pairs.append((r, up))
+            pairs.append((r, rnd))
             if num_regions is not None and len(pairs) >= num_regions:
                 return pairs
 
     return pairs
 
 
-def analyze_upstream_pairs(
+def analyze_random_pairs(
     genome_fasta,
     bigwig_file,
     checkpoint_dir,
@@ -521,7 +519,7 @@ def analyze_upstream_pairs(
     """
     for each category and chromosome group, compare:
       - roi region
-      - region shifted 2kb upstream (same length)
+      - matched random region (same length, paired by id)
 
     supports baselines (kmer6, phylop) and trained models (gamba/caduceus).
     """
@@ -576,8 +574,8 @@ def analyze_upstream_pairs(
         for category in categories:
             logging.info(f"  category={category}")
 
-            # load paired roi / upstream regions from bed files on scratch
-            paired_regions = load_paired_regions(
+            # load paired roi / random regions from bed files
+            paired_regions = load_paired_random_regions(
                 category=category,
                 group_chroms=group_chroms,
                 genome=genome,
@@ -589,28 +587,26 @@ def analyze_upstream_pairs(
                 logging.warning(f"    no paired regions for {category} in group {group_name}")
                 continue
 
-            logging.info(f"    using {len(paired_regions)} roi/upstream pairs")
+            logging.info(f"    using {len(paired_regions)} roi/random pairs")
 
-            # build paired contexts: roi + upstream (from precomputed beds)
             valid_regions = []
             n_pairs = 0
 
-            for r_roi, r_up in paired_regions:
-                # choose context mode
+            for r_roi, r_rand in paired_regions:
                 ctx_model_type = "baseline" if baseline in ("kmer6", "phylop") else model_type
 
                 pos_ctx = extract_context(bigwig_file, r_roi, genome, ctx_model_type)
-                neg_ctx = extract_context(bigwig_file, r_up, genome, ctx_model_type)
+                neg_ctx = extract_context(bigwig_file, r_rand, genome, ctx_model_type)
 
                 if not pos_ctx or "sequence" not in pos_ctx:
                     continue
                 if not neg_ctx or "sequence" not in neg_ctx:
                     continue
 
-                # attach labels and category
+                # attach labels and category; label the negative as 'random'
                 for ctx, cls, reg in (
                     (pos_ctx, "roi", r_roi),
-                    (neg_ctx, "upstream", r_up),
+                    (neg_ctx, "random", r_rand),
                 ):
                     ctx["chrom"] = reg["chrom"]
                     ctx["category"] = category
@@ -622,7 +618,7 @@ def analyze_upstream_pairs(
                 valid_regions.append(neg_ctx)
                 n_pairs += 1
 
-            logging.info(f"    built {n_pairs} roi/upstream pairs, {len(valid_regions)} total contexts")
+            logging.info(f"    built {n_pairs} roi/random pairs, {len(valid_regions)} total contexts")
 
             if len(valid_regions) < 4:
                 logging.warning(f"    not enough valid regions for {category} in group {group_name}")
@@ -636,7 +632,6 @@ def analyze_upstream_pairs(
                 full_embeds, full_labels, full_metas = compute_phylop_embeddings(valid_regions, mode="full")
                 roi_embeds, roi_labels, roi_metas = compute_phylop_embeddings(valid_regions, mode="roi")
             else:
-                # trained model
                 sequence_representations, region_info = predict_scores_batched(
                     model,
                     tokenizer,
@@ -647,7 +642,6 @@ def analyze_upstream_pairs(
                     training_task=training_task,
                 )
 
-                # propagate category + class_label from input regions
                 for ctx, info in zip(valid_regions, region_info):
                     info["chrom"] = ctx.get("chrom")
                     info["start"] = ctx.get("start")
@@ -662,29 +656,27 @@ def analyze_upstream_pairs(
                     sequence_representations, region_info, mode="roi"
                 )
 
-            # sanity checks
             assert len(full_embeds) == len(full_labels), "full labels/embeds mismatch"
             assert len(roi_embeds) == len(roi_labels), "roi labels/embeds mismatch"
 
-            # plotting + metrics for this group/category
             cat_outdir = output_dir / group_name / category
             cat_outdir.mkdir(parents=True, exist_ok=True)
 
             model_id = model_type if baseline == "none" else baseline
             tag = f"{model_id}_{group_name}_{category}"
 
-            # umap
+            # umap + knn plots
             plot_umap(
                 roi_embeds,
                 roi_labels,
                 cat_outdir / f"umap_roi_{tag}.png",
-                title=f"{category} roi vs upstream ({group_name})",
+                title=f"{category} roi vs random ({group_name})",
             )
             roi_metrics, roi_lbl_order, roi_mat = plot_knn_heatmap(
                 roi_embeds,
                 roi_labels,
                 cat_outdir / f"knn_roi_{tag}.png",
-                title=f"{category} roi vs upstream ({group_name})",
+                title=f"{category} roi vs random ({group_name})",
             )
 
             plot_umap(
@@ -700,7 +692,6 @@ def analyze_upstream_pairs(
                 title=f"{category} full-window ({group_name})",
             )
 
-            # save per-class recall jsons
             if roi_metrics is not None:
                 _save_per_class_json(
                     cat_outdir / f"per_class_roi_{tag}.json",
@@ -714,7 +705,6 @@ def analyze_upstream_pairs(
                     full_mat,
                 )
 
-            # save embeddings + meta
             extra = {
                 "model_id": model_id,
                 "training_task": training_task,
@@ -744,7 +734,6 @@ def analyze_upstream_pairs(
                 extra,
             )
 
-            # summary csv rows
             if roi_metrics is not None:
                 _save_summary(
                     summary_csv,
@@ -800,7 +789,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/final_representations/upstream_pairs",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/final_representations/random_pairs",
         help="directory to save analysis results",
     )
     parser.add_argument(
@@ -924,7 +913,7 @@ def main():
         )
 
     try:
-        analyze_upstream_pairs(
+        analyze_random_pairs(
             genome_fasta=args.genome_fasta,
             bigwig_file=args.bigwig_file,
             checkpoint_dir=checkpoint_dir,

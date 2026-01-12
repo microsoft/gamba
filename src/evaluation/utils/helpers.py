@@ -387,24 +387,40 @@ def extract_sequence_from_genome(genome: Fasta, chrom: str, start: int, end: int
         return "N" * (end - start)
 
 def load_bed_file(bed_path, category, genome, bw):
-        regions = []
-        with open(bed_path) as f:
-            for line in f:
-                if line.startswith("#"):
-                    continue
-                fields = line.strip().split("\t")
-                if len(fields) < 3:
-                    continue
-                chrom = fields[0]
-                start = int(fields[1])
-                end = int(fields[2])
-                strand = fields[5] if len(fields) >= 6 else "+"
-                if chrom in genome and chrom in bw.chroms():
-                    regions.append({
-                        "chrom": chrom,
-                        "start": start,
-                        "end": end,
-                        "strand": strand,
-                        "category": category
-                    })
-        return regions
+    """
+    parse beds of the form:
+    chrom  start  end  name  score  strand  pair_id
+    and return region dicts containing:
+      chrom, start, end, strand, category, name, pair_id
+    """
+    regions = []
+    with open(bed_path) as f:
+        for line in f:
+            if not line.strip() or line.startswith("#"):
+                continue
+
+            fields = line.rstrip("\t\r\n").split("\t")
+            if len(fields) < 7:
+                # malformed, skip
+                continue
+
+            chrom   = fields[0]
+            start   = int(fields[1])
+            end     = int(fields[2])
+            name    = fields[3]            # ENST... or ENST..._up
+            strand  = fields[5]            # +/-
+            pair_id = fields[6]            # final column
+
+            # only keep regions present in both genome fasta + bigwig
+            if chrom in genome and chrom in bw.chroms():
+                regions.append({
+                    "chrom": chrom,
+                    "start": start,
+                    "end": end,
+                    "strand": strand,
+                    "category": category,
+                    "name": name,        # transcript_name(+ "_up")
+                    "pair_id": pair_id,  # pairing key
+                })
+
+    return regions

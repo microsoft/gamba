@@ -517,7 +517,7 @@ def analyze_agreement(
     _save_per_class_json(output_dir / f"per_class_roi_{group_name}.json",  roi_labels,  roi_mat)
     _save_per_class_json(output_dir / f"per_class_full_{group_name}.json", full_labels, full_mat)
 
-    model_id = (model_type if baseline=="none" else baseline)  # e.g., gamba, caduceus, kmer6, phylop
+    model_id = (model_type if baseline==None else baseline)  # e.g., gamba, caduceus, kmer6, phylop
     extra = {
         "model_id": model_id,
         "training_task": training_task,

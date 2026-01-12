@@ -54,8 +54,8 @@ def load_model(config_path, checkpoint_path):
         vocab_size=len(DNA_ALPHABET_PLUS)
     )
     #model = CaduceusForMaskedLM(config)
-    #model = CaduceusConservationForMaskedLM(config)
-    model = CaduceusConservation(config)
+    model = CaduceusConservationForMaskedLM(config)
+    #model = CaduceusConservation(config)
     model.config.pad_token_id = pad_token_id
     # Load the model checkpoint
     #checkpoint = torch.load(os.path.join(checkpoint_path, "model_optimizer.pt"), weights_only=True)
@@ -115,6 +115,8 @@ def process_variants(genome, bw, model, collator, tokenizer, device, batch_size=
     import torch.nn.functional as F
 
     valid_chromosomes = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
+
+    valid_chromosomes = ["chr3", "chr16", "chr22", "chr2"]
     df = pd.read_parquet("hf://datasets/songlab/clinvar/test.parquet")
 
     ref_logits_data, alt_logits_data, conservation_scores = [], [], []
@@ -183,7 +185,7 @@ def process_variants(genome, bw, model, collator, tokenizer, device, batch_size=
         positions_rev = [info[2] for info in rev_info]  # reverse mutation pos
         logits_fwd, cons_fwd = run_model(fwd_inputs, positions_fwd)
         logits_rev, cons_rev = run_model(rev_inputs, positions_rev)
-
+        no_seq = False
         if logits_fwd is None or logits_rev is None:
             no_seq = True
 
@@ -321,7 +323,7 @@ def main():
     parser.add_argument('--csv_file', type=str, default ="/home/mica/gamba/data_processing/data/hg38_noncoding_mutations/clin_var_GPNMSA.csv", help='Path to the CSV file with noncoding variants')
     parser.add_argument('--genome_fasta', type=str,  default='/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa', help='Path to the genome FASTA file')
     parser.add_argument('--big_wig', type=str, default='/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig', help='Path to the bigWig file')
-    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/VEP/caduceus/CONSONLY/', help='Path to the output file')
+    parser.add_argument('--output_dir', type=str, default='/home/mica/gamba/data_processing/data/VEP/caduceus/ALLPOSCONS-150000/', help='Path to the output file')
     parser.add_argument('--config_fpath', type=str,  default='/home/mica/gamba/configs/jamba-small-240mammalian.json', help='Path to the config file')
     parser.add_argument('--batch_size', type=int, default=48, help='Batch size for model evaluation')
     
@@ -342,7 +344,8 @@ def main():
     bw = pyBigWig.open(args.big_wig)
     
     # Get checkpoint path
-    checkpoint_path = "/home/mica/gamba/clean_caduceus_dcps/dcp_consONLYcaduceus_60000"
+    # checkpoint_path = "/home/mica/gamba/clean_caduceus_dcps/dcp_consONLYcaduceus_60000"
+    checkpoint_path = "/home/mica/gamba/clean_caduceus_dcps/caduceus_allpos-dcps/dcp_conscaduceus_150000"
     # Load model
     print(f"Loading model from {checkpoint_path}")
     model, collator, tokenizer, device = load_model(args.config_fpath, checkpoint_path)

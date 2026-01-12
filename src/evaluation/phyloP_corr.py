@@ -507,21 +507,25 @@ def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None,
                 with torch.no_grad():
                     # run to get logits; labels not needed here
                     outputs = model(input_ids=sequence_input, return_dict=True)
+                
+                if "logits" in outputs:
+                    logits = outputs["logits"].float()          # (B,T,V)
+                    ce_labels = labels_pack[:, 0, :].long()     # (B,T), -100 outside ROI
+                    cons_tgt  = labels_pack[:, 1, :].float()    # (B,T), -100 outside ROI
+                    # ----- CE per-example (MLM, no shift) -----
+                    ce_tok = F.cross_entropy(
+                        logits.reshape(-1, logits.size(-1)),
+                        ce_labels.reshape(-1),
+                        reduction="none"
+                    ).view(ce_labels.size())                    # (B,T)
 
-                logits = outputs["logits"].float()          # (B,T,V)
-                ce_labels = labels_pack[:, 0, :].long()     # (B,T), -100 outside ROI
-                cons_tgt  = labels_pack[:, 1, :].float()    # (B,T), -100 outside ROI
-
-                # ----- CE per-example (MLM, no shift) -----
-                ce_tok = F.cross_entropy(
-                    logits.reshape(-1, logits.size(-1)),
-                    ce_labels.reshape(-1),
-                    reduction="none"
-                ).view(ce_labels.size())                    # (B,T)
-
-                ce_mask = ce_labels.ne(-100).float()        # (B,T)
-                ce_per_ex = _masked_mean_per_row(ce_tok, ce_mask, dim=1)  # (B,)
-                ce_accum += ce_per_ex
+                    ce_mask = ce_labels.ne(-100).float()        # (B,T)
+                    ce_per_ex = _masked_mean_per_row(ce_tok, ce_mask, dim=1)  # (B,)
+                    ce_accum += ce_per_ex
+                else:
+                    # accumulate NaNs to keep vector length
+                    cons_tgt = labels_pack[:, 1, :].float()    # (B,T), -100 outside ROI
+                    ce_accum += torch.full_like(mse_accum, float("nan"))
 
                 # ----- MSE per-example if conservation head exposed -----
                 if "scaling_logits" in outputs:
@@ -1127,7 +1131,7 @@ def main():
         #     checkpoint_dir = args.checkpoint_dir + f"/clean_dcps/"
         #     args.last_step = 56000
     else:
-        checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/"
+        checkpoint_dir = args.checkpoint_dir + f"/clean_caduceus_dcps/allPOSMLM"
         #args.last_step = 56000 #0
     
     if args.last_step ==0:
@@ -1135,12 +1139,12 @@ def main():
     else:
         last_step = args.last_step
     #change outputdir to + dcp checkpoint 
-    output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_step_{last_step}/"
+    output_dir = args.output_dir + f"/{args.model_type}_{args.training_task}_ALLPOSstep_{last_step}/"
     try:
         analyze_agreement(
             args.genome_fasta,
             args.bigwig_file,
-            checkpoint_dir,
+            args.checkpoint_dir,
             args.config_fpath,
             output_dir,
             num_regions=args.num_regions,

@@ -15,8 +15,6 @@ sys.path.append("../gamba")
 sys.path.append("/home/mica/gamba/")
 sys.path.append("/home/mica/gamba/src/")
 
-# you don't actually need load_bed_file anymore in this script,
-# but keeping the import doesn't hurt if other code reuses it.
 from src.evaluation.utils.helpers import load_bed_file  # type: ignore
 
 # ---------------- logging ----------------
@@ -125,15 +123,15 @@ def annotate_region_with_gtf(
 def discover_region_categories(regions_dir: str) -> List[str]:
     """
     find all *base* subdirectories under regions_dir to treat as annotation categories.
-    ignore *_upstream dirs here so we only annotate with real categories
-    (promoters, UCNE, etc.), not with synthetic upstream sets.
+    ignore *_upstream and *_random dirs so we only annotate with real categories
+    (promoters, UCNE, etc.), not synthetic sets.
     """
     cats = []
     for name in os.listdir(regions_dir):
         full = os.path.join(regions_dir, name)
         if not os.path.isdir(full):
             continue
-        if name.endswith("_upstream"):
+        if name.endswith("_upstream") or name.endswith("_random"):
             continue
         cats.append(name)
     cats.sort()
@@ -196,39 +194,42 @@ def annotate_region_with_categories(
     return ";".join(matches)
 
 
-# --------- paired base / upstream loading ----------
+# --------- paired base / alt loading ----------
 
 def load_paired_regions_for_category(
     regions_dir: str,
     category: str,
     chromosomes: List[str],
     max_pairs: int,
+    suffix: str,
 ) -> List[Dict[str, Any]]:
     """
-    load paired base + upstream regions from:
+    load paired base + alt regions from:
       regions_dir/category/chr*.bed
-      regions_dir/category_upstream/chr*.bed
+      regions_dir/category_{suffix}/chr*.bed
 
     assume both have a 'pair_id' column (7th column).
-    returns list of dicts with base + upstream coords and pair_id.
+    returns list of dicts with base + alt coords and pair_id.
+
+    suffix should be 'upstream' or 'random'.
     """
     base_dir = os.path.join(regions_dir, category)
-    up_dir = os.path.join(regions_dir, f"{category}_upstream")
+    alt_dir = os.path.join(regions_dir, f"{category}_{suffix}")
 
     if not os.path.isdir(base_dir):
-        logging.warning(f"[{category}] base dir not found: {base_dir}")
+        logging.warning(f"[{category}/{suffix}] base dir not found: {base_dir}")
         return []
-    if not os.path.isdir(up_dir):
-        logging.warning(f"[{category}] upstream dir not found: {up_dir}")
+    if not os.path.isdir(alt_dir):
+        logging.warning(f"[{category}/{suffix}] alt dir not found: {alt_dir}")
         return []
 
     pairs: List[Dict[str, Any]] = []
 
     for chrom in chromosomes:
         base_bed_path = os.path.join(base_dir, f"{chrom}.bed")
-        up_bed_path = os.path.join(up_dir, f"{chrom}.bed")
+        alt_bed_path = os.path.join(alt_dir, f"{chrom}.bed")
 
-        if not os.path.exists(base_bed_path) or not os.path.exists(up_bed_path):
+        if not os.path.exists(base_bed_path) or not os.path.exists(alt_bed_path):
             continue
 
         base_df = pd.read_csv(
@@ -237,39 +238,38 @@ def load_paired_regions_for_category(
             header=None,
             comment="#",
         )
-        up_df = pd.read_csv(
-            up_bed_path,
+        alt_df = pd.read_csv(
+            alt_bed_path,
             sep="\t",
             header=None,
             comment="#",
         )
 
         # expect: chrom, start, end, name, score, strand, pair_id
-        base_cols_full = ["chrom", "start", "end", "name", "score", "strand", "pair_id"]
-        up_cols_full = ["chrom", "start", "end", "name", "score", "strand", "pair_id"]
+        cols_full = ["chrom", "start", "end", "name", "score", "strand", "pair_id"]
 
-        if base_df.shape[1] < 7 or up_df.shape[1] < 7:
+        if base_df.shape[1] < 7 or alt_df.shape[1] < 7:
             raise ValueError(
-                f"[{category}] expected at least 7 columns (including pair_id) in "
-                f"{base_bed_path} and {up_bed_path}, got {base_df.shape[1]}, {up_df.shape[1]}"
+                f"[{category}/{suffix}] expected at least 7 columns (including pair_id) in "
+                f"{base_bed_path} and {alt_bed_path}, got {base_df.shape[1]}, {alt_df.shape[1]}"
             )
 
         base_df = base_df.iloc[:, :7]
-        up_df = up_df.iloc[:, :7]
-        base_df.columns = base_cols_full
-        up_df.columns = up_cols_full
+        alt_df = alt_df.iloc[:, :7]
+        base_df.columns = cols_full
+        alt_df.columns = cols_full
 
         # merge on pair_id
         merged = pd.merge(
             base_df,
-            up_df,
+            alt_df,
             on="pair_id",
-            suffixes=("_base", "_up"),
+            suffixes=("_base", "_alt"),
         )
 
         logging.info(
-            f"[{category}] {chrom}: {len(merged)} paired regions "
-            f"(base: {len(base_df)}, upstream: {len(up_df)})"
+            f"[{category}/{suffix}] {chrom}: {len(merged)} paired regions "
+            f"(base: {len(base_df)}, alt: {len(alt_df)})"
         )
 
         for _, row in merged.iterrows():
@@ -278,19 +278,19 @@ def load_paired_regions_for_category(
                     "chrom": row["chrom_base"],
                     "base_start": int(row["start_base"]),
                     "base_end": int(row["end_base"]),
-                    "up_start": int(row["start_up"]),
-                    "up_end": int(row["end_up"]),
+                    "alt_start": int(row["start_alt"]),
+                    "alt_end": int(row["end_alt"]),
                     "pair_id": row["pair_id"],
                 }
             )
 
     if not pairs:
-        logging.warning(f"[{category}] no paired regions found on requested chromosomes")
+        logging.warning(f"[{category}/{suffix}] no paired regions found on requested chromosomes")
 
     if max_pairs is not None and max_pairs > 0 and len(pairs) > max_pairs:
         pairs = pairs[:max_pairs]
 
-    logging.info(f"[{category}] using {len(pairs)} paired base/upstream regions total")
+    logging.info(f"[{category}/{suffix}] using {len(pairs)} paired base/{suffix} regions total")
     return pairs
 
 
@@ -298,7 +298,7 @@ def load_paired_regions_for_category(
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "annotate pre-computed ROI + 2kb-upstream pairs "
+            "annotate pre-computed ROI + 2kb-upstream OR random pairs "
             "using per-chromosome GTF + regions/CATEGORY BEDs"
         )
     )
@@ -324,13 +324,23 @@ def main():
         "--regions_dir",
         type=str,
         default="/home/mica/gamba/data_processing/data/regions",
-        help="root directory containing CATEGORY and CATEGORY_upstream subdirs",
+        help="root directory containing CATEGORY, CATEGORY_upstream, CATEGORY_random subdirs",
     )
     parser.add_argument(
-        "--output_tsv",
+        "--region_type",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/upstream_region_annotations.tsv",
-        help="output TSV with upstream region annotations",
+        choices=["upstream", "random"],
+        default="upstream",
+        help="which paired regions to annotate; expects CATEGORY_<region_type> subdirs",
+    )
+    parser.add_argument(
+        "--output_folder",
+        type=str,
+        default="data_processing/data/240-mammalian/region_info/",
+        help=(
+            "output TSV path. if empty, auto-named as "
+            "'{region_type}_region_annotations.tsv' in the same dir as genome_fasta"
+        ),
     )
     parser.add_argument(
         "--num_regions",
@@ -359,9 +369,17 @@ def main():
 
     args = parser.parse_args()
 
-    out_path = Path(args.output_tsv)
+
+    # derive default output path if not provided
+    if args.output_folder:
+        out_path =  Path(f"{args.output_folder}/{args.region_type}_region_annotations.tsv")
+    else:
+        out_dir = Path(args.genome_fasta).parent
+        out_path = out_dir / f"{args.region_type}_region_annotations.tsv"
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    logging.info(f"region_type: {args.region_type}")
     logging.info(f"genome: {args.genome_fasta}")
     logging.info(f"gtf dir: {args.gtf_dir}")
     logging.info(f"regions dir: {args.regions_dir}")
@@ -385,13 +403,14 @@ def main():
     bw = pyBigWig.open(args.bigwig_file)
 
     for category in CATEGORY_ORDER:
-        logging.info(f"processing category={category}")
+        logging.info(f"processing category={category} ({args.region_type})")
 
         pairs = load_paired_regions_for_category(
             regions_dir=args.regions_dir,
             category=category,
             chromosomes=args.chromosomes,
             max_pairs=args.num_regions,
+            suffix=args.region_type,
         )
         if not pairs:
             continue
@@ -402,14 +421,14 @@ def main():
             chrom = pair["chrom"]
             base_start = pair["base_start"]
             base_end = pair["base_end"]
-            up_start = pair["up_start"]
-            up_end = pair["up_end"]
+            alt_start = pair["alt_start"]
+            alt_end = pair["alt_end"]
             pair_id = pair["pair_id"]
 
             gtf_df = gtf_by_chrom.get(chrom)
-            gtf_annotation = annotate_region_with_gtf(chrom, up_start, up_end, gtf_df)
+            gtf_annotation = annotate_region_with_gtf(chrom, alt_start, alt_end, gtf_df)
             category_annotation = annotate_region_with_categories(
-                chrom, up_start, up_end, region_beds
+                chrom, alt_start, alt_end, region_beds
             )
 
             rows.append(
@@ -419,8 +438,9 @@ def main():
                     "category_its_upstream_of": category,
                     "category_start_pos": base_start,
                     "category_end_pos": base_end,
-                    "start_pos": up_start,
-                    "end_pos": up_end,
+                    "start_pos": alt_start,
+                    "end_pos": alt_end,
+                    "region_type": args.region_type,  # 'upstream' or 'random'
                     "region_identified_by_gtf": gtf_annotation,
                     "region_identified_by_category": category_annotation,
                     "upstream_offset": args.upstream_offset,
@@ -428,14 +448,14 @@ def main():
             )
 
         logging.info(
-            f"[{category}] collected {len(rows) - cat_rows_before} upstream rows "
+            f"[{category}/{args.region_type}] collected {len(rows) - cat_rows_before} rows "
             f"(total so far: {len(rows)})"
         )
 
     bw.close()
 
     if not rows:
-        logging.warning("no upstream regions collected; nothing to write")
+        logging.warning("no regions collected; nothing to write")
         return
 
     df = pd.DataFrame(rows)
