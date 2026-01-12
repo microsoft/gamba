@@ -16,6 +16,60 @@ import numpy as np
 
 from glob import glob
 
+
+from bisect import bisect_left
+import random
+
+def _overlaps(iv, start, end):
+    # intervals are [start, end) half-open
+    i = bisect_left(iv, (start, end))
+    if i > 0 and iv[i-1][1] > start:   # left end > new start
+        return True
+    if i < len(iv) and iv[i][0] < end: # right start < new end
+        return True
+    return False
+
+def _insert_merge(iv, start, end):
+    # keep iv sorted, non-overlapping (do NOT merge abutting)
+    i = bisect_left(iv, (start, end))
+    s, e = start, end
+    j = i-1
+    while j >= 0 and iv[j][1] > s:     # strictly overlap
+        s = min(s, iv[j][0]); e = max(e, iv[j][1]); j -= 1
+    j += 1
+    k = i
+    while k < len(iv) and iv[k][0] < e: # strictly overlap
+        s = min(s, iv[k][0]); e = max(e, iv[k][1]); k += 1
+    iv[j:k] = [(s, e)]
+
+
+def ensure_nonoverlap(categories, order, limit_per_category=None, seed=42):
+    """
+    categories: dict[str, list[dict(chrom,start,end,...)]]
+    order: list[str] priority; earlier keeps more
+    """
+    rng = random.Random(seed)
+    occupied = defaultdict(list)  # chrom -> sorted, merged intervals
+    out = {}
+
+    for cat in order:
+        pool = list(categories.get(cat, []))
+        rng.shuffle(pool)
+        kept = []
+        for r in pool:
+            c = r['chrom']; s = int(r['start']); e = int(r['end'])
+            if s > e: s, e = e, s
+            iv = occupied[c]
+            if not _overlaps(iv, s, e):
+                kept.append(r)
+                _insert_merge(iv, s, e)
+                if limit_per_category and len(kept) >= limit_per_category:
+                    break
+        out[cat] = kept
+        logging.info(f"[NON-OVERLAP] {cat}: kept {len(kept)} non-overlapping regions")
+    return out
+
+
 def list_gtf_files(gtf_dir):
     files = sorted(glob(os.path.join(gtf_dir, "*.gtf"))) + sorted(glob(os.path.join(gtf_dir, "*.gtf.gz")))
     if not files:
@@ -841,13 +895,32 @@ def main():
         ),
     }
 
-    if args.limit_per_category is not None:
-        for k in list(categories.keys()):
-            categories[k] = limit_regions(categories[k], args.limit_per_category, args.seed)
-
 
     for k,v in categories.items():
         logging.info(f"[SUMMARY] {k}: {len(v)} regions")
+
+    # priority: specific files first, then phyloP bins, then GTF-derived last
+    priority_order = [
+        "repeats", "UCNE", "vista_enhancer", "promoters", "UTR5", "UTR3",
+        "phyloP_positive", "phyloP_neutral", "phyloP_negative",
+        "coding_regions", "exons", "introns", "upstream_TSS", "noncoding_regions",
+        "start_codon", "stop_codon"
+    ]
+
+    # optional per-class cap
+    cap = args.limit_per_category
+
+    # enforce half-open everywhere
+    for cat, rs in categories.items():
+        for r in rs:
+            r['start'] = int(r['start'])
+            r['end']   = int(r['end'])
+            if r['end'] < r['start']:
+                r['start'], r['end'] = r['end'], r['start']
+
+
+    categories = ensure_nonoverlap(categories, priority_order, limit_per_category=cap, seed=args.seed)
+
 
 
     bw = pyBigWig.open(args.bigwig_file)
