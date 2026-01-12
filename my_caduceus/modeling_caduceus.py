@@ -580,7 +580,8 @@ class CaduceusConservationForMaskedLM(CaduceusPreTrainedModel):
             logvar = scaling[..., 1]
             mask = conservation_labels != -100
             mean = mean[mask]
-            var = torch.exp(logvar[mask])
+            #var = torch.exp(logvar[mask])
+            var = torch.nn.functional.softplus(logvar[mask]) 
             target = conservation_labels[mask]
 
             gaussian_loss = self.cons_loss_func(mean, target, var)
