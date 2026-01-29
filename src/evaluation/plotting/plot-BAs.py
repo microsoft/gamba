@@ -512,23 +512,23 @@ def main():
     if args.eval_type == "upstream":
         y_label = "global ROI 1-vs-upstream balanced accuracy (%)"
         title = "global ROI 1-vs-upstream balanced accuracy"
-        filename = "plot_global_balacc_upstream_by_model.png"
+        filename = "plot_global_balacc_upstream_by_model.svg"
     elif args.eval_type == "random":
         y_label = "global ROI feature-vs-random balanced accuracy (%)"
         title = "global ROI feature-vs-random balanced accuracy"
-        filename = "plot_global_balacc_random_by_model.png"
+        filename = "plot_global_balacc_random_by_model.svg"
     elif args.eval_type == "multiclass":
         y_label = "global multiclass balanced accuracy (%)"
         title = "global multiclass balanced accuracy"
-        filename = "plot_global_balacc_multiclass_by_model.png"
+        filename = "plot_global_balacc_multiclass_by_model.svg"
     elif args.eval_type == "random_noannot":
         y_label = "global ROI feature-vs-random (no annotation) balanced accuracy (%)"
         title = "global ROI feature-vs-random (no annotation) balanced accuracy"
-        filename = "plot_global_balacc_random_noannot_by_model.png"
+        filename = "plot_global_balacc_random_noannot_by_model.svg"
     else: # eval_type == "multiclass100bproi":
         y_label= "global multiclass (100bp sampled from ROI) balanced accuracy (%)"
         title = "global multiclass (100bp sampled from ROI) balanced accuracy"
-        filename = "plot_global_balacc_multiclass100bproi_by_model.png"
+        filename = "plot_global_balacc_multiclass100bproi_by_model.svg"
 
     # ------------------------------------------------------------------
     # plot: x-axis = model (categorical)

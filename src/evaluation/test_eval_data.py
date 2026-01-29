@@ -255,6 +255,71 @@ def main():
             "/home/mica/gamba/other-models/final_representations/pair_id_labelset_mapping_check.csv",
             index=False,
         )
+    # ---------------------------------------------------------------------
+    # 1b) cross-family ROI equality: compare all_tasks vs gamba_onepass
+    # ---------------------------------------------------------------------
+    print("\n=== cross-family ROI pair_id equality (all_tasks vs gamba_onepass) ===")
+
+    cf = summary.copy()
+
+    # focus on ROIs only; adjust if your ROI label differs
+    cf = cf[cf["label"] == "roi"].copy()
+
+    # aggregate per (family, task, category, scope, group, label) -> union of pair_ids
+    cf_bucket_cols = ["family", "task", "category", "scope", "group", "label"]
+    cf_agg = (
+        cf.groupby(cf_bucket_cols, dropna=False)["pair_ids"]
+        .apply(lambda xs: set().union(*xs))
+        .reset_index()
+    )
+
+    # pivot families into columns
+    pivot_cols = ["task", "category", "scope", "group", "label"]
+    cf_piv = cf_agg.pivot_table(
+        index=pivot_cols,
+        columns="family",
+        values="pair_ids",
+        aggfunc="first",
+    )
+
+    def _as_set(x):
+        return x if isinstance(x, set) else set()
+
+    rows_cf = []
+    for idx, row in cf_piv.iterrows():
+        s_all = _as_set(row.get("all_tasks"))
+        s_gop = _as_set(row.get("gamba_onepass"))
+
+        missing_in_gop = s_all - s_gop
+        extra_in_gop = s_gop - s_all
+
+        status = "match" if (not missing_in_gop and not extra_in_gop) else "mismatch"
+        rows_cf.append({
+            "task": idx[0],
+            "category": idx[1],
+            "scope": idx[2],
+            "group": idx[3],
+            "label": idx[4],
+            "status": status,
+            "n_all_tasks": len(s_all),
+            "n_gamba_onepass": len(s_gop),
+            "n_missing_in_gamba_onepass": len(missing_in_gop),
+            "n_extra_in_gamba_onepass": len(extra_in_gop),
+            "example_missing": ",".join(sorted(list(missing_in_gop))[:5]),
+            "example_extra": ",".join(sorted(list(extra_in_gop))[:5]),
+        })
+
+    cf_rep = pd.DataFrame(rows_cf).sort_values(
+        ["status", "task", "category", "scope", "group", "label"]
+    )
+    pd.set_option("display.max_rows", 5000)
+    pd.set_option("display.max_colwidth", 120)
+    print(cf_rep.to_string(index=False))
+
+    # optional: fail hard if any mismatch
+    if (cf_rep["status"] == "mismatch").any():
+        raise SystemExit("cross-family ROI mismatch detected")
+
 
 
 if __name__ == "__main__":

@@ -98,15 +98,15 @@ GLOBAL_MODELS = [
     "gamba_cons_only_ALLPOSstep_44000",
     "gamba_dual_ALLPOSstep_44000",
     "gamba_seq_only_ALLPOSstep_44000",
-    "gamba_cons_only_step_random_init",
-    "gamba_dual_step_random_init",
-    "gamba_seq_only_step_random_init",
+    "gamba_cons_only_step0",
+    "gamba_dual_step0",
+    "gamba_seq_only_step0",
     "caduceus_cons_only_ALLPOSstep_44000",
     "caduceus_dual_ALLPOSstep_44000",
     "caduceus_seq_only_ALLPOSstep_44000",
-    "caduceus_cons_only_step_random_init",
-    "caduceus_dual_step_random_init",
-    "caduceus_seq_only_step_random_init",
+    "caduceus_cons_only_step0",
+    "caduceus_dual_step0",
+    "caduceus_seq_only_step0",
 ]
 
 GLOBAL_SPLIT = "all"  # legacy onepass split (training/test) for non-random-init models

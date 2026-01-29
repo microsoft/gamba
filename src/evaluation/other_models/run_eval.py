@@ -22,11 +22,13 @@ nt note:
 - mapping bp spans -> token spans must account for that + a leading special token
 """
 
+import gc
 import argparse
 import os
 import json
 import logging
 import pathlib
+import shutil
 from pathlib import Path
 from types import MethodType
 
@@ -40,7 +42,7 @@ import pyBigWig
 from pyfaidx import Fasta
 from tqdm import tqdm
 
-from evo2 import Evo2
+#from evo2 import Evo2
 from transformers import (
     AutoModelForSequenceClassification,
     AutoModelForMaskedLM,
@@ -59,7 +61,7 @@ from sklearn.metrics import (
 )
 
 import sys
-sys.path.append("/home/mica/gamba/")
+sys.path.append("/home/mica/scratch/gamba/")
 from src.evaluation.utils.helpers import extract_context  # uses bigwig + genome
 
 
@@ -134,7 +136,7 @@ def patched_forward(
 
 
 # evo2 config
-EVO2_LAYER_NAME = "blocks.28.mlp.l3"
+EVO2_LAYER_NAME = "blocks.26"
 
 
 def load_model(model_type="nt-ms", device=None):
@@ -400,12 +402,6 @@ def pool_from_rep(
 # caching: build item list and embed once per split
 # -----------------------------------------------------------------------------
 def build_items_for_group(regions_root: Path, categories, group_chroms):
-    """
-    returns:
-      items: list of dicts with keys:
-        key (str), category, role, pair_id, chrom,start,end,strand,name, score
-      plus per-category pair_id intersections for each task (for evaluation)
-    """
     group_chroms = set(group_chroms)
 
     role_dirs = {
@@ -415,8 +411,8 @@ def build_items_for_group(regions_root: Path, categories, group_chroms):
         "random-noannot": lambda c: regions_root / f"{c}_random-noannot",
     }
 
+    # load all region maps first
     per = {c: {r: {} for r in role_dirs.keys()} for c in categories}
-
     for c in categories:
         for role, dfn in role_dirs.items():
             d = dfn(c)
@@ -424,41 +420,35 @@ def build_items_for_group(regions_root: Path, categories, group_chroms):
             for bf in iter_category_beds(d):
                 regs.extend(read_pair_bed(bf, c, role))
             regs = [r for r in regs if r["chrom"] in group_chroms]
-            per[c][role] = {r["pair_id"]: r for r in regs}
+            per[c][role] = {str(r["pair_id"]): r for r in regs}
 
-    pairs_upstream = {}
-    pairs_random = {}
-    pairs_random_noannot = {}
-
+    # enforce 4-way intersection
+    pairs_common = {}
     for c in categories:
         roi_p = set(per[c]["roi"].keys())
-        up_p = set(per[c]["upstream"].keys())
-        r_p = set(per[c]["random"].keys())
-        rn_p = set(per[c]["random-noannot"].keys())
-
-        pairs_upstream[c] = sorted(roi_p & up_p)
-        pairs_random[c] = sorted(roi_p & r_p)
-        pairs_random_noannot[c] = sorted(roi_p & rn_p)
+        up_p  = set(per[c]["upstream"].keys())
+        r_p   = set(per[c]["random"].keys())
+        rn_p  = set(per[c]["random-noannot"].keys())
+        pairs_common[c] = sorted(roi_p & up_p & r_p & rn_p)
 
     needed = set()
     for c in categories:
-        for pid in per[c]["roi"].keys():
-            needed.add((c, pid, "roi"))
-        for pid in pairs_upstream[c]:
-            needed.add((c, pid, "upstream"))
-        for pid in pairs_random[c]:
-            needed.add((c, pid, "random"))
-        for pid in pairs_random_noannot[c]:
-            needed.add((c, pid, "random-noannot"))
+        for pid in pairs_common[c]:
+            for role in ("roi", "upstream", "random", "random-noannot"):
+                needed.add((c, pid, role))
 
     items = []
     for (c, pid, role) in sorted(needed):
         r = per[c][role].get(pid)
         if r is None:
             continue
-        key = f"{c}|{pid}|{role}"
-        items.append(dict(key=key, **r))
+        items.append(dict(key=f"{c}|{pid}|{role}", **r))
 
+    # keep return shape unchanged for rest of pipeline
+    pairs_upstream = pairs_common
+    pairs_random = pairs_common
+    pairs_random_noannot = pairs_common
+    
     return items, pairs_upstream, pairs_random, pairs_random_noannot
 
 
@@ -487,30 +477,61 @@ def embed_items_to_cache(
     if out_n == 0:
         raise ValueError("no items to embed")
 
+    cache_npz_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_meta_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Progress tracking
+    progress_file = cache_npz_path.with_suffix('.progress.json')
+    
+    # Check for existing progress
+    start_idx = 0
+    H = None
+    if progress_file.exists():
+        with open(progress_file, 'r') as f:
+            progress = json.load(f)
+            start_idx = progress.get('last_completed_idx', 0) + 1
+            H = progress.get('embedding_dim')
+            logging.info(f"[resume] continuing from index {start_idx}, H={H}")
+    
+    # Memory-mapped arrays (auto-saves to disk)
+    memmap_dir = cache_npz_path.parent / f"{cache_npz_path.stem}_memmap"
+    memmap_dir.mkdir(exist_ok=True)
+    
+    def get_or_create_memmap(name, shape, dtype=np.float32):
+        path = memmap_dir / f"{name}.npy"
+        if path.exists() and start_idx > 0:
+            # Resume: load existing memmap
+            return np.memmap(path, dtype=dtype, mode='r+', shape=shape)
+        else:
+            # New: create fresh memmap
+            return np.memmap(path, dtype=dtype, mode='w+', shape=shape)
+    
+    # Metadata tracking
+    meta_rows = []
+    meta_cache = cache_meta_path.with_suffix('.meta_cache.jsonl')
+    
+    if meta_cache.exists() and start_idx > 0:
+        # Load existing metadata
+        with open(meta_cache, 'r') as f:
+            for line in f:
+                meta_rows.append(json.loads(line))
+        logging.info(f"[resume] loaded {len(meta_rows)} existing metadata rows")
+    
+    ctx_model_name = model_name_for_context(model_type)
+    tok0_nt = _nt_tok0_from_tokenizer(tokenizer) if model_type.startswith("nt-") else 1
+    
+    # Initialize on first batch or resume
     roi_mean = None
     full_mean = None
     roi100_mean = None
-    valid = np.zeros(out_n, dtype=bool)
-
-    meta_rows = []
-
-    ctx_model_name = model_name_for_context(model_type)
-
-    def ensure_arrays(H):
-        nonlocal roi_mean, full_mean, roi100_mean
-        if roi_mean is None:
-            roi_mean = np.zeros((out_n, H), dtype=np.float32)
-            full_mean = np.zeros((out_n, H), dtype=np.float32)
-            roi100_mean = np.zeros((out_n, H), dtype=np.float32)
-
-    idx = 0
-    pbar = tqdm(total=out_n, desc="embedding items (pooled)")
-
-    tok0_nt = _nt_tok0_from_tokenizer(tokenizer) if model_type.startswith("nt-") else 1
+    valid = None
+    
+    pbar = tqdm(total=out_n, initial=start_idx, desc="embedding items (pooled)")
+    idx = start_idx
 
     while idx < out_n:
         batch_items = items[idx : idx + batch_size]
-
+        
         contexts = []
         ctx_indices = []
 
@@ -518,7 +539,8 @@ def embed_items_to_cache(
             r = dict(it)
             ctx = extract_context(bigwig_file, r, genome, model_type=ctx_model_name)
             if not ctx or "sequence" not in ctx or not ctx["sequence"]:
-                meta_rows.append({**it, "window_len": None, "fs": None, "fe": None, "valid": False})
+                if idx + j >= len(meta_rows):
+                    meta_rows.append({**it, "window_len": None, "fs": None, "fe": None, "valid": False})
                 pbar.update(1)
                 continue
 
@@ -560,8 +582,16 @@ def embed_items_to_cache(
                     )
                     rep = emb_dict[EVO2_LAYER_NAME][0].to(torch.float32).cpu()  # [T,H]
 
-                H = rep.shape[1]
-                ensure_arrays(H)
+                H_batch = rep.shape[1]
+                
+                # Initialize memmap on first batch
+                if roi_mean is None:
+                    H = H_batch
+                    roi_mean = get_or_create_memmap("roi_mean", (out_n, H))
+                    full_mean = get_or_create_memmap("full_mean", (out_n, H))
+                    roi100_mean = get_or_create_memmap("roi100_mean", (out_n, H))
+                    valid = get_or_create_memmap("valid", (out_n,), dtype=bool)
+                    logging.info(f"[memmap] initialized with H={H}")
 
                 seed = None
                 if ctx["role"] == "roi":
@@ -577,7 +607,8 @@ def embed_items_to_cache(
                     valid_T=None,
                 )
                 if pooled is None:
-                    meta_rows.append({**items[gi], "window_len": window_len, "fs": fs, "fe": fe, "valid": False})
+                    if gi >= len(meta_rows):
+                        meta_rows.append({**items[gi], "window_len": window_len, "fs": fs, "fe": fe, "valid": False})
                     continue
                 rvec, fvec, r100 = pooled
 
@@ -586,11 +617,31 @@ def embed_items_to_cache(
                 roi100_mean[gi] = r100
                 valid[gi] = True
 
-                meta_rows.append({**items[gi], "window_len": window_len, "fs": fs, "fe": fe, "valid": True})
+                if gi >= len(meta_rows):
+                    meta_rows.append({**items[gi], "window_len": window_len, "fs": fs, "fe": fe, "valid": True})
 
                 del rep, token_ids
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
+
+            # Flush memmap after evo2 batch
+            roi_mean.flush()
+            full_mean.flush()
+            roi100_mean.flush()
+            valid.flush()
+            
+            # Save metadata incrementally
+            with open(meta_cache, 'w') as f:
+                for row in meta_rows:
+                    f.write(json.dumps(row) + '\n')
+            
+            # Save progress
+            with open(progress_file, 'w') as f:
+                json.dump({
+                    'last_completed_idx': idx + len(batch_items) - 1,
+                    'embedding_dim': H,
+                    'total_items': out_n,
+                }, f)
 
             pbar.update(len(contexts))
             idx += batch_size
@@ -652,8 +703,16 @@ def embed_items_to_cache(
                 last_hidden = out.hidden_states[-1].to(torch.float32)
                 attn = inputs.get("attention_mask", None)
 
-        B, T, H = last_hidden.shape
-        ensure_arrays(H)
+        B, T, H_batch = last_hidden.shape
+        
+        # Initialize memmap on first batch
+        if roi_mean is None:
+            H = H_batch
+            roi_mean = get_or_create_memmap("roi_mean", (out_n, H))
+            full_mean = get_or_create_memmap("full_mean", (out_n, H))
+            roi100_mean = get_or_create_memmap("roi100_mean", (out_n, H))
+            valid = get_or_create_memmap("valid", (out_n,), dtype=bool)
+            logging.info(f"[memmap] initialized with H={H}")
 
         for b, (rep, gi, fs, fe, wl, ctx) in enumerate(
             zip(last_hidden, ctx_indices, batch_fs, batch_fe, batch_wl, contexts)
@@ -668,10 +727,7 @@ def embed_items_to_cache(
 
             if model_type.startswith("nt-"):
                 pooled = pool_from_rep(
-                    rep,
-                    wl,
-                    fs,
-                    fe,
+                    rep, wl, fs, fe,
                     roi100_seed=seed,
                     mapping="nt6",
                     valid_T=valid_T,
@@ -680,26 +736,46 @@ def embed_items_to_cache(
                 )
             else:
                 pooled = pool_from_rep(
-                    rep,
-                    wl,
-                    fs,
-                    fe,
+                    rep, wl, fs, fe,
                     roi100_seed=seed,
                     mapping="linear",
                     valid_T=valid_T,
                 )
 
             if pooled is None:
-                meta_rows.append({**items[gi], "window_len": wl, "fs": fs, "fe": fe, "valid": False})
+                if gi >= len(meta_rows):
+                    meta_rows.append({**items[gi], "window_len": wl, "fs": fs, "fe": fe, "valid": False})
                 continue
 
             rvec, fvec, r100 = pooled
+            
+            # Write directly to memmap (auto-saves to disk)
             roi_mean[gi] = rvec
             full_mean[gi] = fvec
             roi100_mean[gi] = r100
             valid[gi] = True
 
-            meta_rows.append({**items[gi], "window_len": wl, "fs": fs, "fe": fe, "valid": True})
+            if gi >= len(meta_rows):
+                meta_rows.append({**items[gi], "window_len": wl, "fs": fs, "fe": fe, "valid": True})
+
+        # Flush memmap to disk after each batch
+        roi_mean.flush()
+        full_mean.flush()
+        roi100_mean.flush()
+        valid.flush()
+        
+        # Save metadata incrementally
+        with open(meta_cache, 'w') as f:
+            for row in meta_rows:
+                f.write(json.dumps(row) + '\n')
+        
+        # Save progress
+        with open(progress_file, 'w') as f:
+            json.dump({
+                'last_completed_idx': idx + len(batch_items) - 1,
+                'embedding_dim': H,
+                'total_items': out_n,
+            }, f)
 
         del last_hidden, inputs
         if device.type == "cuda":
@@ -710,9 +786,20 @@ def embed_items_to_cache(
 
     pbar.close()
 
-    cache_npz_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_meta_path.parent.mkdir(parents=True, exist_ok=True)
+    # Final: convert memmap to compressed npz
+    logging.info("[finalize] converting memmap to compressed npz...")
+    valid_mask = np.asarray(valid).astype(bool)
+    
+    np.savez_compressed(
+        cache_npz_path,
+        roi_mean=np.asarray(roi_mean),
+        full_mean=np.asarray(full_mean),
+        roi100_mean=np.asarray(roi100_mean),
+        valid=valid_mask,
+        keys=np.asarray([it["key"] for it in items]),
+    )
 
+    # Save metadata
     meta_df = pd.DataFrame(items)
     meta_df = meta_df.merge(
         pd.DataFrame(meta_rows),
@@ -723,18 +810,41 @@ def embed_items_to_cache(
     if "valid" not in meta_df.columns:
         meta_df["valid"] = False
     meta_df["valid"] = meta_df["valid"].fillna(False).astype(bool)
-
-    meta_df["valid"] = valid
-
-    np.savez_compressed(
-        cache_npz_path,
-        roi_mean=roi_mean,
-        full_mean=full_mean,
-        roi100_mean=roi100_mean,
-        valid=valid,
-        keys=np.asarray([it["key"] for it in items]),
-    )
+    meta_df["valid"] = valid_mask
     meta_df.to_parquet(cache_meta_path, index=False)
+
+    # Cleanup temp files
+    logging.info("[cleanup] removing temporary memmap files...")
+
+    # Explicitly delete memmap references to close file handles
+    del roi_mean, full_mean, roi100_mean, valid
+
+    # Force garbage collection to ensure file handles are released
+    import gc
+    gc.collect()
+
+    # Now try to remove the directory with error handling
+    try:
+        shutil.rmtree(memmap_dir)
+    except OSError as e:
+        logging.warning(f"[cleanup] failed to remove {memmap_dir}: {e}")
+        logging.warning("[cleanup] attempting manual file removal...")
+        for item in memmap_dir.iterdir():
+            try:
+                if item.is_file():
+                    item.unlink()
+            except Exception as e2:
+                logging.warning(f"[cleanup] failed to remove {item}: {e2}")
+        try:
+            memmap_dir.rmdir()
+        except Exception as e3:
+            logging.warning(f"[cleanup] failed to remove directory: {e3}")
+
+    # Check if files exist before unlinking
+    if progress_file.exists():
+        progress_file.unlink()
+    if meta_cache.exists():
+        meta_cache.unlink()
 
     logging.info(f"[cache] wrote {cache_npz_path}")
     logging.info(f"[cache] wrote {cache_meta_path}")
@@ -776,7 +886,7 @@ def plot_umap(embeddings, labels, output_path, title):
 def loo_1nn_predictions(embeddings, labels):
     labels = np.asarray(labels)
     X = np.asarray(embeddings)
-    nn = NearestNeighbors(n_neighbors=2, metric="euclidean").fit(X)
+    nn = NearestNeighbors(n_neighbors=2, metric="cosine").fit(X)
     _, idx = nn.kneighbors(X)
     y_true = labels
     y_pred = labels[idx[:, 1]]
@@ -990,8 +1100,7 @@ def eval_binary_task_from_cache(
                 MacroF1Pct=100.0 * metrics["macro_f1"],
             ),
         )
-
-
+        
 def eval_multiclass_from_cache(
     meta,
     roi_mean,
@@ -1001,28 +1110,15 @@ def eval_multiclass_from_cache(
     group_name: str,
     categories,
 ):
-    m = meta[(meta["role"] == "roi") & (meta["category"].isin(categories))]
+    m = meta[(meta["role"] == "roi") & (meta["category"].isin(categories))].copy()
     if len(m) == 0:
         logging.warning(f"[{group_name}] multiclass: no roi rows, skipping")
         return
 
-    counts = m["category"].value_counts()
-    min_n = int(counts.min())
-    if min_n <= 1:
-        logging.warning(f"[{group_name}] multiclass: too few per class (min={min_n}), skipping")
-        return
-
-    parts = []
-    for cat in categories:
-        mi = m[m["category"] == cat]
-        parts.append(mi.sample(n=min_n, random_state=42))
-    m_bal = pd.concat(parts, axis=0).reset_index(drop=True)
-
-    meta2 = meta.reset_index().rename(columns={"index": "row_id"})
-    m_bal = m_bal.merge(meta2[["key", "row_id"]], on="key", how="left")
-    idx = m_bal["row_id"].to_numpy()
-
-    y = m_bal["category"].to_numpy()
+    # REMOVED: All the balancing logic
+    # Just use all ROI regions directly
+    idx = m.index.to_numpy()
+    y = m["category"].to_numpy()
 
     for scope_name, Xsrc in [("roi", roi_mean), ("roi100bp", roi100_mean)]:
         X = Xsrc[idx]
@@ -1049,7 +1145,7 @@ def eval_multiclass_from_cache(
             mat,
         )
 
-        metas = m_bal.to_dict("records")
+        metas = m.to_dict("records")
         tag = f"{group_name}_multiclass_{scope_name}"
         save_reps(output_dir, model_type, tag, X, y, metas)
 
@@ -1060,8 +1156,8 @@ def eval_multiclass_from_cache(
                 Group=group_name,
                 Task="multiclass",
                 Scope=scope_name,
-                NPerClass=min_n,
-                NTotal=int(len(m_bal)),
+                NTotal=int(len(m)),  # Changed from NPerClass
+                NCats=int(len(np.unique(y))),  # Changed to count actual categories
                 BalancedAccuracyPct=100.0 * metrics["balanced_accuracy"],
                 BalancedAccuracySEM_Pct=100.0 * metrics["balanced_accuracy_sem"],
                 MicroAccuracyPct=100.0 * metrics["micro_accuracy"],
@@ -1206,23 +1302,23 @@ def main():
     p.add_argument(
         "--bigwig_file",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
+        default="/home/mica/scratch/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
     )
     p.add_argument(
         "--genome_fasta",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
+        default="/home/mica/scratch/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
     )
     p.add_argument(
         "--regions_root",
         type=str,
-        default="/home/mica/gamba/data_processing/data/regions",
+        default="/home/mica/scratch/gamba/data_processing/data/regions_common",
         help="root containing CATEGORY/, CATEGORY_upstream/, CATEGORY_random/, CATEGORY_random-noannot/",
     )
     p.add_argument(
         "--output_dir",
         type=str,
-        default="/home/mica/gamba/other-models/final_representations/all_tasks",
+        default="/home/mica/scratch/gamba/other-models/final_representations/all_tasks",
     )
     p.add_argument(
         "--categories",
@@ -1242,7 +1338,7 @@ def main():
             "promoters",
         ],
     )
-    p.add_argument("--num_regions_per_category", type=int, default=1000)
+    p.add_argument("--num_regions_per_category", type=int, default=None)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument(
         "--model_type",

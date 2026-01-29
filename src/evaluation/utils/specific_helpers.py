@@ -281,6 +281,7 @@ def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None,
 
     return all_hidden_states, all_region_info
 
+
 # def predict_scores_batched(model, tokenizer, regions, batch_size=8, device=None, model_type="gamba", training_task="dual"):
 #     """Extract full hidden state representations for each region without masking."""
 #     if device is None:

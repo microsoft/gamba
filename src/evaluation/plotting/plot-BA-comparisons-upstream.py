@@ -457,9 +457,42 @@ if __name__ == "__main__":
     main()
 
 
+
 #  python /home/mica/gamba/src/evaluation/plotting/plot-BA-comparisons-upstream.py\
-#   --ref-model gamba_seq_only_step44000 \
+#   --ref-model caduceus_seq_only_step44000 \
 #   --models \
+#     gamba_seq_only_step44000 \
+#     gamba_cons_only_step44000 \
+#     gamba_dual_step44000 \
+#     caduceus_cons_only_step44000 \
+#     caduceus_dual_step44000
+
+
+#  python /home/mica/gamba/src/evaluation/plotting/plot-BA-comparisons-upstream.py\
+#   --ref-model phylop \
+#   --models \
+#     gamba_seq_only_step44000 \
+#     gamba_cons_only_step44000 \
+#     gamba_dual_step44000 \
+#     caduceus_seq_only_step44000 \
+#     caduceus_cons_only_step44000 \
+#     caduceus_dual_step44000
+
+
+#  python /home/mica/gamba/src/evaluation/plotting/plot-BA-comparisons-upstream.py\
+#   --ref-model caduceus-theirs \
+#   --models \
+#     gamba_seq_only_step44000 \
+#     gamba_cons_only_step44000 \
+#     gamba_dual_step44000 \
+#     caduceus_seq_only_step44000 \
+#     caduceus_cons_only_step44000 \
+#     caduceus_dual_step44000
+
+#  python /home/mica/gamba/src/evaluation/plotting/plot-BA-comparisons-upstream.py\
+#   --ref-model evo2 \
+#   --models \
+#     gamba_seq_only_step44000 \
 #     gamba_cons_only_step44000 \
 #     gamba_dual_step44000 \
 #     caduceus_seq_only_step44000 \

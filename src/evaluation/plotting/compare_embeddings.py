@@ -12,106 +12,47 @@ from sklearn.metrics import confusion_matrix
 # ---------------- config ----------------
 
 CATEGORIES = [
-    "vista_enhancer",
-    "UCNE",
-    "repeats",
-    "exons",
-    "introns",
-    "noncoding_regions",
-    "coding_regions",
-    "upstream_TSS",
-    "UTR5",
-    "UTR3",
-    "promoters",
+    "vista_enhancer", "UCNE", "repeats", "exons", "introns",
+    "noncoding_regions", "coding_regions", "upstream_TSS",
+    "UTR5", "UTR3", "promoters",
 ]
 
-SCOPES = ["roi"]  # add "full" if/when needed
+SCOPES = ["roi"]  # add "full" if needed
 
-# nt / hyena / phyloGPN / caduceus-theirs models
+# NT / hyena / phyloGPN / caduceus-theirs / evo2 models (other-models)
 NT_MODELS = [
-    "hyenaDNA-random-init",
-    "hyenaDNA",
-    "phyloGPN",
-    "nt-ms",
-    "nt-human",
-    "phyloGPN-random-init",
-    "nt-ms-random-init",
-    "nt-human-random-init",
-    "caduceus-theirs",
-    "caduceus-theirs-random-init",
-    "evo2",
+    "hyenaDNA-random-init", "hyenaDNA", "phyloGPN", "nt-ms", "nt-human",
+    "phyloGPN-random-init", "nt-ms-random-init", "nt-human-random-init",
+    "caduceus-theirs", "caduceus-theirs-random-init", "evo2",
 ]
 
-# ---------- roots for each task ----------
-
-# random: feature vs random (pair-based npz with labels)
-RANDOM_PAIRS_ROOT = "/home/mica/NucleotideTransformer/final_representations/random_pairs"
-
-# upstream: feature vs upstream (pair-based npz with labels)
-UPSTREAM_PAIRS_ROOT = "/home/mica/NucleotideTransformer/final_representations/upstream_pairs"
-
-# baselines for random/upstream (already combined feature+control per category)
-RANDOM_BASELINE_ROOT = (
-    "/home/mica/gamba/data_processing/data/240-mammalian/"
-    "final_representations/random_pairs/baseline"
-)
-UPSTREAM_BASELINE_ROOT = (
-    "/home/mica/gamba/data_processing/data/240-mammalian/"
-    "final_representations/upstream_pairs/baseline"
-)
-
-
-GLOBAL_RANDOM_ROOT = (
-    "/home/mica/gamba/data_processing/data/240-mammalian/final_representations/random_pairs"
-)
-GLOBAL_UPSTREAM_ROOT = (
-    "/home/mica/gamba/data_processing/data/240-mammalian/final_representations/upstream_pairs"
-)
-
-# multiclass: NT from upstream pair reps, gamba/caduceus + baselines from upstream_pairs global reps
-NT_PAIRS_ROOT = "/home/mica/NucleotideTransformer/final_representations/upstream_pairs"
-PAIR_GROUP_NAME = "all"
-PAIR_LABEL_FILTER = "feature"  # which pair_label to treat as "category-bearing" in multiclass
-
-# gamba / caduceus global models (now under upstream_pairs)
-GLOBAL_MODELS = [
-    "gamba_cons_only_ALLPOSstep_44000",
-    "gamba_dual_ALLPOSstep_44000",
-    "gamba_seq_only_ALLPOSstep_44000",
-    "gamba_cons_only_step_random_init",
-    "gamba_dual_step_random_init",
-    "gamba_seq_only_step_random_init",
-    "caduceus_cons_only_ALLPOSstep_44000",
-    "caduceus_dual_ALLPOSstep_44000",
-    "caduceus_seq_only_ALLPOSstep_44000",
-    "caduceus_cons_only_step_random_init",
-    "caduceus_dual_step_random_init",
-    "caduceus_seq_only_step_random_init",
+# gamba/caduceus models (gamba_onepass)
+GAMBA_MODELS = [
+    "gamba_cons_only_step44000",
+    "gamba_dual_step44000",
+    "gamba_seq_only_step44000",
+    "gamba_cons_only_step0",
+    "gamba_dual_step0",
+    "gamba_seq_only_step0",
+    "caduceus_cons_only_step44000",
+    "caduceus_dual_step44000",
+    "caduceus_seq_only_step44000",
+    "caduceus_cons_only_step0",
+    "caduceus_dual_step0",
+    "caduceus_seq_only_step0",
 ]
-
-# new global root matches:
-# /.../final_representations/upstream_pairs/<model>/<split>/<category>/reps_<short>_<split>_<category>_<scope>.npz
-GLOBAL_ROOT = (
-    "/home/mica/gamba/data_processing/data/240-mammalian/final_representations/upstream_pairs"
-)
-GLOBAL_SPLIT = "test"  # for non-random-init
-
-# global baselines (multiclass) now under upstream_pairs/baseline with per-category dirs:
-# /.../final_representations/upstream_pairs/baseline/kmer6/all/coding_regions/reps_kmer6_all_coding_regions_full_meta.parquet
-GLOBAL_BASELINE_ROOT = (
-    "/home/mica/gamba/data_processing/data/240-mammalian/final_representations/upstream_pairs/baseline"
-)
 
 BASELINE_MODELS = ["kmer6", "phylop"]
+
+# ---------- roots ----------
+OTHER_MODELS_ROOT = "/home/mica/gamba/other-models/final_representations/all_tasks"
+GAMBA_ONEPASS_ROOT = "/home/mica/gamba/other-models/final_representations/gamba_onepass"
 
 
 # ---------------- core metrics ----------------
 
 def compute_ba_and_se(X: np.ndarray, y: np.ndarray):
-    """
-    LOO 1-NN balanced accuracy and SE (binary or multiclass).
-    X: [N, D], y: [N]
-    """
+    """LOO 1-NN balanced accuracy and SE (binary or multiclass)."""
     X = np.asarray(X)
     y = np.asarray(y)
 
@@ -121,7 +62,6 @@ def compute_ba_and_se(X: np.ndarray, y: np.ndarray):
     nn = NearestNeighbors(n_neighbors=2, metric="cosine")
     nn.fit(X)
     _, idx = nn.kneighbors(X)
-    # idx[:, 0] is self, idx[:, 1] is nearest neighbor excluding self
     y_pred = y[idx[:, 1]]
 
     classes = np.unique(y)
@@ -136,760 +76,338 @@ def compute_ba_and_se(X: np.ndarray, y: np.ndarray):
         )
 
     K = len(classes)
-    ba = float(np.nanmean(recalls))  # 0–1
-
+    ba = float(np.nanmean(recalls))
     var = np.nansum(
         recalls * (1.0 - recalls) / np.where(n_per_class == 0, np.inf, n_per_class)
     ) / (K ** 2)
     se = math.sqrt(max(var, 0.0))
 
-    return ba * 100.0, se * 100.0  # percent
-
-
-def compute_ba_and_se_from_npz(npz_path: str):
-    """
-    baseline npz with 'embeddings' [N,D] and 'labels' [N] (e.g. feature vs random/upstream).
-    """
-    z = np.load(npz_path, allow_pickle=True)
-    X = np.asarray(z["embeddings"])
-    y = np.asarray(z["labels"])
-    return compute_ba_and_se(X, y)
+    return ba * 100.0, se * 100.0
 
 
 # ---------------- helpers ----------------
 
-def infer_model_short(model_folder: str) -> str:
-    if model_folder.startswith("gamba_"):
-        return "gamba"
-    if model_folder.startswith("caduceus_"):
-        return "caduceus"
-    return model_folder.split("_")[0]
-
-def _load_global_pair_binary(
-    root: str,
-    model_folder: str,
-    split: str,
-    category: str,
-    scope: str,
-    pos_label: str,
-    neg_label: str,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    generic loader for pair-based binary tasks for global (gamba/caduceus) models.
-
-    expects npz:
-      root/<model_folder>/<split>/<category>/
-        reps_<short>_<split>_<category>_<scope>.npz
-
-    where:
-      embeddings: [N, D]
-      labels: [N] with values including pos_label and neg_label
-    """
-    model_root = os.path.join(root, model_folder, split, category)
-    if not os.path.isdir(model_root):
-        print(f"[warn] missing global pair dir for model={model_folder}, split={split}, category={category}: {model_root}")
-        return None, None
-
-    short = infer_model_short(model_folder)
-    base = os.path.join(model_root, f"reps_{short}_{split}_{category}_{scope}")
-    npz_path = base + ".npz"
-    if not os.path.exists(npz_path):
-        print(f"[warn] missing global pair npz: {npz_path}")
-        return None, None
-
-    z = np.load(npz_path, allow_pickle=True)
-    X = np.asarray(z["embeddings"])
-    if "labels" not in z:
-        print(f"[warn] global pair npz has no 'labels': {npz_path}")
-        return None, None
-    labels = np.asarray(z["labels"]).astype(str)
-
-    mask_pos = labels == pos_label
-    mask_neg = labels == neg_label
-
-    if not np.any(mask_pos) or not np.any(mask_neg):
-        print(
-            f"[warn] {npz_path}: pos_label={pos_label} count={mask_pos.sum()}, "
-            f"neg_label={neg_label} count={mask_neg.sum()}"
-        )
-        return None, None
-
-    X_pos = X[mask_pos]
-    X_neg = X[mask_neg]
-
-    if X_pos.shape[0] < 3 or X_neg.shape[0] < 3:
-        print(
-            f"[warn] {npz_path}: too few samples "
-            f"(pos={X_pos.shape[0]}, neg={X_neg.shape[0]})"
-        )
-        return None, None
-
-    return X_pos, X_neg
-
-
-def _load_pair_binary(
-    root: str,
+def load_nt_binary(
     model: str,
+    group: str,
+    task: str,
     category: str,
     scope: str,
-    group_name: str,
-    pos_label: str,
-    neg_label: str,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """
-    generic loader for pair-based binary tasks (feature vs random / upstream).
-
-    expects npz:
-      root/<model>/reps_<model>_<group_name>_<category>_<scope>.npz
-
-    where:
-      embeddings: [N, D]
-      labels: [N] with values including pos_label and neg_label
+    Load NT-style binary task (feature vs random/upstream).
+    Path: OTHER_MODELS_ROOT/{model}/{group}/reps_{model}_{group}_{task}_{cat}_{scope}.npz
+    Returns: (X_pos, X_neg) where pos=feature, neg=task
     """
-    model_dir = os.path.join(root, model)
-    if not os.path.isdir(model_dir):
-        print(f"[warn] missing pairs dir for model={model}: {model_dir}")
-        return None, None
-
-    base = os.path.join(model_dir, f"reps_{model}_{group_name}_{category}_{scope}")
-    npz_path = base + ".npz"
+    npz_path = os.path.join(
+        OTHER_MODELS_ROOT,
+        model,
+        group,
+        f"reps_{model}_{group}_{task}_{category}_{scope}.npz",
+    )
     if not os.path.exists(npz_path):
-        print(f"[warn] missing pair npz: {npz_path}")
+        print(f"[warn] missing NT binary: {npz_path}")
         return None, None
 
     z = np.load(npz_path, allow_pickle=True)
     X = np.asarray(z["embeddings"])
-    if "labels" not in z:
-        print(f"[warn] npz has no 'labels': {npz_path}")
-        return None, None
     labels = np.asarray(z["labels"]).astype(str)
 
-    mask_pos = labels == pos_label
-    mask_neg = labels == neg_label
+    mask_pos = labels == "feature"
+    mask_neg = labels == task
 
     if not np.any(mask_pos) or not np.any(mask_neg):
-        print(
-            f"[warn] {npz_path}: pos_label={pos_label} count={mask_pos.sum()}, "
-            f"neg_label={neg_label} count={mask_neg.sum()}"
-        )
+        print(f"[warn] {npz_path}: pos={mask_pos.sum()}, neg={mask_neg.sum()}")
         return None, None
 
-    X_pos = X[mask_pos]
-    X_neg = X[mask_neg]
+    return X[mask_pos], X[mask_neg]
 
-    if X_pos.shape[0] < 3 or X_neg.shape[0] < 3:
-        print(
-            f"[warn] {npz_path}: too few samples "
-            f"(pos={X_pos.shape[0]}, neg={X_neg.shape[0]})"
-        )
+
+def load_gamba_binary(
+    model_id: str,
+    group: str,
+    task: str,
+    category: str,
+    scope: str,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Load gamba/caduceus binary task.
+    Path: GAMBA_ONEPASS_ROOT/{model_id}/tasks/binary/{task}/{cat}/reps_{model_id}_{group}_{cat}_binary-{task}_{scope}.npz
+    Returns: (X_pos, X_neg) where pos=feature, neg=task
+    """
+    npz_path = os.path.join(
+        GAMBA_ONEPASS_ROOT,
+        model_id,
+        "tasks",
+        "binary",
+        task,
+        category,
+        f"reps_{model_id}_{group}_{category}_binary-{task}_{scope}.npz",
+    )
+    if not os.path.exists(npz_path):
+        print(f"[warn] missing gamba binary: {npz_path}")
         return None, None
 
-    return X_pos, X_neg
+    z = np.load(npz_path, allow_pickle=True)
+    X = np.asarray(z["embeddings"])
+    labels = np.asarray(z["labels"]).astype(str)
+
+    mask_pos = labels == "feature"
+    mask_neg = labels == task
+
+    if not np.any(mask_pos) or not np.any(mask_neg):
+        print(f"[warn] {npz_path}: pos={mask_pos.sum()}, neg={mask_neg.sum()}")
+        return None, None
+
+    return X[mask_pos], X[mask_neg]
 
 
-# ---------------- RANDOM: feature vs random ----------------
+def load_nt_multiclass(model: str, group: str, scope: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Load NT multiclass (all categories combined).
+    Path: OTHER_MODELS_ROOT/{model}/{group}/reps_{model}_{group}_multiclass_{scope}.npz
+    """
+    npz_path = os.path.join(
+        OTHER_MODELS_ROOT,
+        model,
+        group,
+        f"reps_{model}_{group}_multiclass_{scope}.npz",
+    )
+    if not os.path.exists(npz_path):
+        print(f"[warn] missing NT multiclass: {npz_path}")
+        return None, None
 
-def collect_random_rows(group_name: str = "all"):
+    z = np.load(npz_path, allow_pickle=True)
+    X = np.asarray(z["embeddings"])
+    y = np.asarray(z["labels"]).astype(str)
+
+    if X.shape[0] < 3:
+        print(f"[warn] {npz_path}: too few samples ({X.shape[0]})")
+        return None, None
+
+    return X, y
+
+
+def load_gamba_multiclass(model_id: str, group: str, scope: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Load gamba/caduceus multiclass (all categories combined).
+    Path: GAMBA_ONEPASS_ROOT/{model_id}/tasks/multiclass/reps_{model_id}_{group}_multiclass_{scope}.npz
+    """
+    npz_path = os.path.join(
+        GAMBA_ONEPASS_ROOT,
+        model_id,
+        "tasks",
+        "multiclass",
+        f"reps_{model_id}_{group}_multiclass_{scope}.npz",
+    )
+    if not os.path.exists(npz_path):
+        print(f"[warn] missing gamba multiclass: {npz_path}")
+        return None, None
+
+    z = np.load(npz_path, allow_pickle=True)
+    X = np.asarray(z["embeddings"])
+    y = np.asarray(z["labels"]).astype(str)
+
+    if X.shape[0] < 3:
+        print(f"[warn] {npz_path}: too few samples ({X.shape[0]})")
+        return None, None
+
+    return X, y
+
+
+# ---------------- task collectors ----------------
+
+def collect_binary_rows(task: str, group: str = "all"):
+    """Collect rows for binary task (random or upstream)."""
     rows = []
 
-    # ---------- NT-style models, pair-based (NucleotideTransformer random_pairs) ----------
+    # NT models
     for model in NT_MODELS:
         for scope in SCOPES:
             for cat in CATEGORIES:
-                X_feat, X_rand = _load_pair_binary(
-                    RANDOM_PAIRS_ROOT,
-                    model,
-                    cat,
-                    scope,
-                    group_name,
-                    pos_label="feature",
-                    neg_label="random",
-                )
-                if X_feat is None:
+                X_pos, X_neg = load_nt_binary(model, group, task, cat, scope)
+                if X_pos is None:
                     continue
 
                 # balance classes
-                n = min(X_feat.shape[0], X_rand.shape[0])
-                if n < 5:
-                    print(
-                        f"[warn] RANDOM NT {model} {scope} {cat}: "
-                        f"too few after balancing (n_feat={X_feat.shape[0]}, "
-                        f"n_rand={X_rand.shape[0]})"
-                    )
-                    continue
-
-                rng = np.random.default_rng(1337)
-                idx_feat = rng.choice(X_feat.shape[0], size=n, replace=False)
-                idx_rand = rng.choice(X_rand.shape[0], size=n, replace=False)
-
-                X = np.concatenate([X_feat[idx_feat], X_rand[idx_rand]], axis=0)
-                y = np.array(["feature"] * n + ["random"] * n, dtype=object)
-
-                try:
-                    ba, se = compute_ba_and_se(X, y)
-                except Exception as e:
-                    print(f"[skip] RANDOM NT {model} {scope} {cat}: {e}")
-                    continue
-
-                rows.append(
-                    dict(
-                        Model=model,
-                        Family="NT_random",
-                        Group=group_name,
-                        Category=cat,
-                        Scope=scope,
-                        BA_pct=ba,
-                        BA_SE_pct=se,
-                        N_pos=int(n),
-                        N_neg=int(n),
-                    )
-                )
-
-    # ---------- gamba/caduceus global pair-based random ----------
-    # only contributes if you have random_pairs/<model_folder>/<split>/<category>/...
-    for model_folder in GLOBAL_MODELS:
-        split = "all" if "random_init" in model_folder else GLOBAL_SPLIT
-        for scope in SCOPES:
-            for cat in CATEGORIES:
-                model_root = os.path.join(GLOBAL_RANDOM_ROOT, model_folder, split, cat)
-                if not os.path.isdir(model_root):
-                    # no random pairs for this model/category – skip silently
-                    continue
-
-                short = infer_model_short(model_folder)
-                base = os.path.join(
-                    model_root,
-                    f"reps_{short}_{split}_{cat}_{scope}",
-                )
-                npz_path = base + ".npz"
-                if not os.path.exists(npz_path):
-                    print(f"[warn] missing RANDOM global npz: {npz_path}")
-                    continue
-
-                z = np.load(npz_path, allow_pickle=True)
-                X = np.asarray(z["embeddings"])
-                if "labels" not in z:
-                    print(f"[warn] RANDOM global npz has no 'labels': {npz_path}")
-                    continue
-                labels = np.asarray(z["labels"]).astype(str)
-
-                if "random" not in labels:
-                    print(f"[warn] RANDOM global {npz_path}: no 'random' label")
-                    continue
-
-                mask_neg = labels == "random"
-                mask_pos = ~mask_neg
-
-                if not np.any(mask_pos) or not np.any(mask_neg):
-                    print(
-                        f"[warn] RANDOM global {npz_path}: "
-                        f"pos={mask_pos.sum()} neg={mask_neg.sum()}"
-                    )
-                    continue
-
-                X_pos = X[mask_pos]
-                X_neg = X[mask_neg]
-
                 n = min(X_pos.shape[0], X_neg.shape[0])
                 if n < 5:
-                    print(
-                        f"[warn] RANDOM global {model_folder} {split} {scope} {cat}: "
-                        f"too few after balancing (pos={X_pos.shape[0]}, neg={X_neg.shape[0]})"
-                    )
+                    print(f"[warn] {task} NT {model} {scope} {cat}: n={n} too small")
                     continue
 
                 rng = np.random.default_rng(1337)
                 idx_pos = rng.choice(X_pos.shape[0], size=n, replace=False)
                 idx_neg = rng.choice(X_neg.shape[0], size=n, replace=False)
 
-                X_bal = np.concatenate([X_pos[idx_pos], X_neg[idx_neg]], axis=0)
-                y_bal = np.array(["feature"] * n + ["random"] * n, dtype=object)
-
-                try:
-                    ba, se = compute_ba_and_se(X_bal, y_bal)
-                except Exception as e:
-                    print(f"[skip] RANDOM global {model_folder} {split} {scope} {cat}: {e}")
-                    continue
-
-                rows.append(
-                    dict(
-                        Model=model_folder,
-                        Family="gamba/caduceus_random",
-                        Group=split,
-                        Category=cat,
-                        Scope=scope,
-                        BA_pct=ba,
-                        BA_SE_pct=se,
-                        N_pos=int(n),
-                        N_neg=int(n),
-                    )
-                )
-
-    # ---------- baselines: per-category binary npz with labels ----------
-    for model in BASELINE_MODELS:
-        for scope in SCOPES:
-            for cat in CATEGORIES:
-                npz_path = os.path.join(
-                    RANDOM_BASELINE_ROOT,
-                    model,
-                    "all",
-                    cat,
-                    f"reps_{model}_all_{cat}_{scope}.npz",
-                )
-                if not os.path.exists(npz_path):
-                    print(f"[warn] missing RANDOM baseline npz: {npz_path}")
-                    continue
-
-                try:
-                    ba, se = compute_ba_and_se_from_npz(npz_path)
-                except Exception as e:
-                    print(f"[skip] RANDOM baseline {model} {scope} {cat}: {e}")
-                    continue
-
-                rows.append(
-                    dict(
-                        Model=model,
-                        Family="baseline_random",
-                        Group="all",
-                        Category=cat,
-                        Scope=scope,
-                        BA_pct=ba,
-                        BA_SE_pct=se,
-                        N_pos=np.nan,
-                        N_neg=np.nan,
-                    )
-                )
-
-    return rows
-
-
-# ---------------- UPSTREAM: feature vs upstream ----------------
-
-def collect_upstream_rows(group_name: str = "all"):
-    rows = []
-
-    # ---------- NT-style models, pair-based (NucleotideTransformer upstream_pairs) ----------
-    for model in NT_MODELS:
-        for scope in SCOPES:
-            for cat in CATEGORIES:
-                X_feat, X_up = _load_pair_binary(
-                    UPSTREAM_PAIRS_ROOT,
-                    model,
-                    cat,
-                    scope,
-                    group_name,
-                    pos_label="feature",
-                    neg_label="upstream",
-                )
-                if X_feat is None:
-                    continue
-
-                n = min(X_feat.shape[0], X_up.shape[0])
-                if n < 5:
-                    print(
-                        f"[warn] UPSTREAM NT {model} {scope} {cat}: "
-                        f"too few after balancing (n_feat={X_feat.shape[0]}, "
-                        f"n_up={X_up.shape[0]})"
-                    )
-                    continue
-
-                rng = np.random.default_rng(1337)
-                idx_feat = rng.choice(X_feat.shape[0], size=n, replace=False)
-                idx_up = rng.choice(X_up.shape[0], size=n, replace=False)
-
-                X = np.concatenate([X_feat[idx_feat], X_up[idx_up]], axis=0)
-                y = np.array(["feature"] * n + ["upstream"] * n, dtype=object)
+                X = np.concatenate([X_pos[idx_pos], X_neg[idx_neg]], axis=0)
+                y = np.array(["feature"] * n + [task] * n, dtype=object)
 
                 try:
                     ba, se = compute_ba_and_se(X, y)
                 except Exception as e:
-                    print(f"[skip] UPSTREAM NT {model} {scope} {cat}: {e}")
+                    print(f"[skip] {task} NT {model} {scope} {cat}: {e}")
                     continue
 
-                rows.append(
-                    dict(
-                        Model=model,
-                        Family="NT_upstream",
-                        Group=group_name,
-                        Category=cat,
-                        Scope=scope,
-                        BA_pct=ba,
-                        BA_SE_pct=se,
-                        N_pos=int(n),
-                        N_neg=int(n),
-                    )
-                )
+                rows.append(dict(
+                    Model=model,
+                    Family=f"NT_{task}",
+                    Group=group,
+                    Category=cat,
+                    Scope=scope,
+                    BA_pct=ba,
+                    BA_SE_pct=se,
+                    N_pos=int(n),
+                    N_neg=int(n),
+                ))
 
-    # ---------- gamba/caduceus global pair-based upstream ----------
-    for model_folder in GLOBAL_MODELS:
-        split = "all" if "random_init" in model_folder else GLOBAL_SPLIT
+    # gamba/caduceus models
+    for model_id in GAMBA_MODELS:
         for scope in SCOPES:
             for cat in CATEGORIES:
-                model_root = os.path.join(GLOBAL_UPSTREAM_ROOT, model_folder, split, cat)
-                if not os.path.isdir(model_root):
-                    # e.g. you may only have upstream_pairs for some models/categories
+                X_pos, X_neg = load_gamba_binary(model_id, "all", task, cat, scope)
+                if X_pos is None:
                     continue
-
-                short = infer_model_short(model_folder)
-                base = os.path.join(
-                    model_root,
-                    f"reps_{short}_{split}_{cat}_{scope}",
-                )
-                npz_path = base + ".npz"
-                if not os.path.exists(npz_path):
-                    print(f"[warn] missing UPSTREAM global npz: {npz_path}")
-                    continue
-
-                z = np.load(npz_path, allow_pickle=True)
-                X = np.asarray(z["embeddings"])
-                if "labels" not in z:
-                    print(f"[warn] UPSTREAM global npz has no 'labels': {npz_path}")
-                    continue
-                labels = np.asarray(z["labels"]).astype(str)
-
-                if "upstream" not in labels:
-                    print(f"[warn] UPSTREAM global {npz_path}: no 'upstream' label")
-                    continue
-
-                mask_neg = labels == "upstream"
-                mask_pos = ~mask_neg  # roi / feature
-
-                if not np.any(mask_pos) or not np.any(mask_neg):
-                    print(
-                        f"[warn] UPSTREAM global {npz_path}: "
-                        f"pos={mask_pos.sum()} neg={mask_neg.sum()}"
-                    )
-                    continue
-
-                X_pos = X[mask_pos]
-                X_neg = X[mask_neg]
 
                 n = min(X_pos.shape[0], X_neg.shape[0])
                 if n < 5:
-                    print(
-                        f"[warn] UPSTREAM global {model_folder} {split} {scope} {cat}: "
-                        f"too few after balancing (pos={X_pos.shape[0]}, neg={X_neg.shape[0]})"
-                    )
+                    print(f"[warn] {task} gamba {model_id} {scope} {cat}: n={n} too small")
                     continue
 
                 rng = np.random.default_rng(1337)
                 idx_pos = rng.choice(X_pos.shape[0], size=n, replace=False)
                 idx_neg = rng.choice(X_neg.shape[0], size=n, replace=False)
 
-                X_bal = np.concatenate([X_pos[idx_pos], X_neg[idx_neg]], axis=0)
-                y_bal = np.array(["feature"] * n + ["upstream"] * n, dtype=object)
+                X = np.concatenate([X_pos[idx_pos], X_neg[idx_neg]], axis=0)
+                y = np.array(["feature"] * n + [task] * n, dtype=object)
 
                 try:
-                    ba, se = compute_ba_and_se(X_bal, y_bal)
+                    ba, se = compute_ba_and_se(X, y)
                 except Exception as e:
-                    print(f"[skip] UPSTREAM global {model_folder} {split} {scope} {cat}: {e}")
+                    print(f"[skip] {task} gamba {model_id} {scope} {cat}: {e}")
                     continue
 
-                rows.append(
-                    dict(
-                        Model=model_folder,
-                        Family="gamba/caduceus_upstream",
-                        Group=split,
-                        Category=cat,
-                        Scope=scope,
-                        BA_pct=ba,
-                        BA_SE_pct=se,
-                        N_pos=int(n),
-                        N_neg=int(n),
-                    )
-                )
-
-    # ---------- baselines: per-category binary npz with labels ----------
-    for model in BASELINE_MODELS:
-        for scope in SCOPES:
-            for cat in CATEGORIES:
-                npz_path = os.path.join(
-                    UPSTREAM_BASELINE_ROOT,
-                    model,
-                    "all",
-                    cat,
-                    f"reps_{model}_all_{cat}_{scope}.npz",
-                )
-                if not os.path.exists(npz_path):
-                    print(f"[warn] missing UPSTREAM baseline npz: {npz_path}")
-                    continue
-
-                try:
-                    ba, se = compute_ba_and_se_from_npz(npz_path)
-                except Exception as e:
-                    print(f"[skip] UPSTREAM baseline {model} {scope} {cat}: {e}")
-                    continue
-
-                rows.append(
-                    dict(
-                        Model=model,
-                        Family="baseline_upstream",
-                        Group="all",
-                        Category=cat,
-                        Scope=scope,
-                        BA_pct=ba,
-                        BA_SE_pct=se,
-                        N_pos=np.nan,
-                        N_neg=np.nan,
-                    )
-                )
-
-    return rows
-
-
-# ---------------- MULTICLASS: category vs category ----------------
-
-def load_nt_pairs_multiclass(
-    model: str,
-    scope: str,
-    group_name: str = PAIR_GROUP_NAME,
-    pair_label_filter: Optional[str] = PAIR_LABEL_FILTER,
-):
-    """
-    NT multiclass from upstream pair reps: filter to pair_label == 'feature'
-    and use category as label.
-    """
-    model_dir = os.path.join(NT_PAIRS_ROOT, model)
-    if not os.path.isdir(model_dir):
-        print(f"[warn] missing NT pairs dir: {model_dir}")
-        return None, None
-
-    X_list = []
-    y_list = []
-
-    for cat in CATEGORIES:
-        base = os.path.join(
-            model_dir,
-            f"reps_{model}_{group_name}_{cat}_{scope}",
-        )
-        npz_path = base + ".npz"
-        if not os.path.exists(npz_path):
-            print(f"[warn] missing NT pairs npz for {model} {cat} {scope}: {npz_path}")
-            continue
-
-        z = np.load(npz_path, allow_pickle=True)
-        X_cat = np.asarray(z["embeddings"])
-
-        labels_pair = None
-        if "labels" in z:
-            labels_pair = np.asarray(z["labels"]).astype(str)
-
-        if labels_pair is not None and pair_label_filter is not None:
-            mask = labels_pair == pair_label_filter
-            if not np.any(mask):
-                print(
-                    f"[warn] NT {model} {cat} {scope}: "
-                    f"no samples with pair_label == '{pair_label_filter}'"
-                )
-                continue
-            X_cat = X_cat[mask]
-
-        if X_cat.shape[0] == 0:
-            continue
-
-        X_list.append(X_cat)
-        y_list.append(np.full(X_cat.shape[0], cat, dtype=object))
-
-    if not X_list:
-        print(f"[warn] NT {model} {scope}: no categories loaded from pairs")
-        return None, None
-
-    X_all = np.concatenate(X_list, axis=0)
-    y_all = np.concatenate(y_list, axis=0)
-
-    if X_all.shape[0] < 3:
-        print(f"[warn] NT {model} {scope}: too few samples after combining categories")
-        return None, None
-
-    return X_all, y_all
-
-
-def load_global_gamba_caduceus(model_folder: str, scope: str, split: str = "all"):
-    """
-    global gamba/caduceus multiclass from upstream_pairs layout:
-
-      GLOBAL_ROOT/<model_folder>/<split>/<category>/
-        reps_<short>_<split>_<category>_<scope>.npz
-        reps_<short>_<split>_<category>_<scope>_meta.parquet
-    """
-    model_root = os.path.join(GLOBAL_ROOT, model_folder, split)
-    if not os.path.isdir(model_root):
-        print(f"[warn] missing global model dir: {model_root}")
-        return None, None
-
-    short = infer_model_short(model_folder)
-
-    X_list = []
-    y_list = []
-
-    for cat in CATEGORIES:
-        base = os.path.join(
-            model_root,
-            cat,
-            f"reps_{short}_{split}_{cat}_{scope}",
-        )
-        npz_path = base + ".npz"
-        meta_path = base + "_meta.parquet"
-
-        if not os.path.exists(npz_path) or not os.path.exists(meta_path):
-            print(f"[warn] missing global reps for {model_folder} {split} {cat} {scope}: {npz_path} / {meta_path}")
-            continue
-
-        z = np.load(npz_path, allow_pickle=True)
-        X_cat = np.asarray(z["embeddings"])
-        meta = pd.read_parquet(meta_path)
-
-        # meta should all be this category, but we can still guard:
-        if "category" in meta.columns:
-            mask = meta["category"].isin(CATEGORIES).values
-            X_cat = X_cat[mask]
-
-        if X_cat.shape[0] == 0:
-            continue
-
-        X_list.append(X_cat)
-        y_list.append(np.full(X_cat.shape[0], cat, dtype=object))
-
-    if not X_list:
-        print(f"[warn] global {model_folder} {split} {scope}: no categories loaded")
-        return None, None
-
-    X = np.concatenate(X_list, axis=0)
-    y = np.concatenate(y_list, axis=0)
-
-    if X.shape[0] < 3:
-        print(f"[warn] global {model_folder} {split} {scope}: too few samples after combining")
-        return None, None
-
-    return X, y
-
-
-def load_global_baseline(model: str, scope: str):
-    """
-    global baseline multiclass from upstream_pairs layout:
-
-      GLOBAL_BASELINE_ROOT/<model>/all/<category>/
-        reps_<model>_all_<category>_<scope>.npz
-        reps_<model>_all_<category>_<scope>_meta.parquet
-    """
-    X_list = []
-    y_list = []
-
-    for cat in CATEGORIES:
-        base = os.path.join(
-            GLOBAL_BASELINE_ROOT,
-            model,
-            "all",
-            cat,
-            f"reps_{model}_all_{cat}_{scope}",
-        )
-        npz_path = base + ".npz"
-        meta_path = base + "_meta.parquet"
-
-        if not os.path.exists(npz_path) or not os.path.exists(meta_path):
-            print(f"[warn] missing global baseline reps for {model} {cat} {scope}: {npz_path} / {meta_path}")
-            continue
-
-        z = np.load(npz_path, allow_pickle=True)
-        X_cat = np.asarray(z["embeddings"])
-        meta = pd.read_parquet(meta_path)
-
-        if "category" in meta.columns:
-            mask = meta["category"].isin(CATEGORIES).values
-            X_cat = X_cat[mask]
-
-        if X_cat.shape[0] == 0:
-            continue
-
-        X_list.append(X_cat)
-        y_list.append(np.full(X_cat.shape[0], cat, dtype=object))
-
-    if not X_list:
-        print(f"[warn] global baseline {model} {scope}: no categories loaded")
-        return None, None
-
-    X = np.concatenate(X_list, axis=0)
-    y = np.concatenate(y_list, axis=0)
-
-    if X.shape[0] < 3:
-        print(f"[warn] global baseline {model} {scope}: too few samples after combining")
-        return None, None
-
-    return X, y
-
-
-def collect_multiclass_rows():
-    rows = []
-
-    # NT-style from pair reps
-    for model in NT_MODELS:
-        for scope in SCOPES:
-            X, y = load_nt_pairs_multiclass(model, scope)
-            if X is None:
-                continue
-            try:
-                ba, se = compute_ba_and_se(X, y)
-            except Exception as e:
-                print(f"[skip] MULTICLASS NT_pairs {model} {scope}: {e}")
-                continue
-
-            rows.append(
-                dict(
-                    Model=model,
-                    Family="NT_pairs_multiclass",
-                    Group=PAIR_GROUP_NAME,
-                    Scope=scope,
-                    BA_pct=ba,
-                    BA_SE_pct=se,
-                )
-            )
-
-    # gamba/caduceus global
-    for model_folder in GLOBAL_MODELS:
-        split = "all" if "random_init" in model_folder else GLOBAL_SPLIT
-        for scope in SCOPES:
-            X, y = load_global_gamba_caduceus(model_folder, scope, split=split)
-            if X is None:
-                continue
-            try:
-                ba, se = compute_ba_and_se(X, y)
-            except Exception as e:
-                print(f"[skip] MULTICLASS global {model_folder} {split} {scope}: {e}")
-                continue
-
-            rows.append(
-                dict(
-                    Model=model_folder,
-                    Family="gamba/caduceus_multiclass",
-                    Group=split,
-                    Scope=scope,
-                    BA_pct=ba,
-                    BA_SE_pct=se,
-                )
-            )
-
-    # global baselines
-    for model in BASELINE_MODELS:
-        for scope in SCOPES:
-            X, y = load_global_baseline(model, scope)
-            if X is None:
-                continue
-            try:
-                ba, se = compute_ba_and_se(X, y)
-            except Exception as e:
-                print(f"[skip] MULTICLASS baseline {model} {scope}: {e}")
-                continue
-
-            rows.append(
-                dict(
-                    Model=model,
-                    Family="baseline_multiclass",
+                rows.append(dict(
+                    Model=model_id,
+                    Family=f"gamba_{task}",
                     Group="all",
+                    Category=cat,
                     Scope=scope,
                     BA_pct=ba,
                     BA_SE_pct=se,
-                )
-            )
+                    N_pos=int(n),
+                    N_neg=int(n),
+                ))
+
+    # baselines
+    for baseline in BASELINE_MODELS:
+        for scope in SCOPES:
+            for cat in CATEGORIES:
+                X_pos, X_neg = load_gamba_binary(baseline, "all", task, cat, scope)
+                if X_pos is None:
+                    continue
+
+                n = min(X_pos.shape[0], X_neg.shape[0])
+                if n < 5:
+                    print(f"[warn] {task} baseline {baseline} {scope} {cat}: n={n} too small")
+                    continue
+
+                rng = np.random.default_rng(1337)
+                idx_pos = rng.choice(X_pos.shape[0], size=n, replace=False)
+                idx_neg = rng.choice(X_neg.shape[0], size=n, replace=False)
+
+                X = np.concatenate([X_pos[idx_pos], X_neg[idx_neg]], axis=0)
+                y = np.array(["feature"] * n + [task] * n, dtype=object)
+
+                try:
+                    ba, se = compute_ba_and_se(X, y)
+                except Exception as e:
+                    print(f"[skip] {task} baseline {baseline} {scope} {cat}: {e}")
+                    continue
+
+                rows.append(dict(
+                    Model=baseline,
+                    Family=f"baseline_{task}",
+                    Group="all",
+                    Category=cat,
+                    Scope=scope,
+                    BA_pct=ba,
+                    BA_SE_pct=se,
+                    N_pos=int(n),
+                    N_neg=int(n),
+                ))
+
+    return rows
+
+
+def collect_multiclass_rows(group: str = "all"):
+    """Collect multiclass rows (category vs category)."""
+    rows = []
+
+    # NT models
+    for model in NT_MODELS:
+        for scope in SCOPES:
+            X, y = load_nt_multiclass(model, group, scope)
+            if X is None:
+                continue
+
+            try:
+                ba, se = compute_ba_and_se(X, y)
+            except Exception as e:
+                print(f"[skip] multiclass NT {model} {scope}: {e}")
+                continue
+
+            rows.append(dict(
+                Model=model,
+                Family="NT_multiclass",
+                Group=group,
+                Scope=scope,
+                BA_pct=ba,
+                BA_SE_pct=se,
+            ))
+
+    # gamba/caduceus models
+    for model_id in GAMBA_MODELS:
+        for scope in SCOPES:
+            X, y = load_gamba_multiclass(model_id, "all", scope)
+            if X is None:
+                continue
+
+            try:
+                ba, se = compute_ba_and_se(X, y)
+            except Exception as e:
+                print(f"[skip] multiclass gamba {model_id} {scope}: {e}")
+                continue
+
+            rows.append(dict(
+                Model=model_id,
+                Family="gamba_multiclass",
+                Group="all",
+                Scope=scope,
+                BA_pct=ba,
+                BA_SE_pct=se,
+            ))
+
+    # baselines
+    for baseline in BASELINE_MODELS:
+        for scope in SCOPES:
+            X, y = load_gamba_multiclass(baseline, "all", scope)
+            if X is None:
+                continue
+
+            try:
+                ba, se = compute_ba_and_se(X, y)
+            except Exception as e:
+                print(f"[skip] multiclass baseline {baseline} {scope}: {e}")
+                continue
+
+            rows.append(dict(
+                Model=baseline,
+                Family="baseline_multiclass",
+                Group="all",
+                Scope=scope,
+                BA_pct=ba,
+                BA_SE_pct=se,
+            ))
 
     return rows
 
@@ -911,18 +429,16 @@ def aggregate_per_category(df: pd.DataFrame) -> pd.DataFrame:
         se_global = math.sqrt(max(var_global, 0.0)) * 100.0
         std_across_cats = float(np.std(ba_vals, ddof=1)) if K > 1 else 0.0
 
-        summaries.append(
-            dict(
-                Model=model,
-                Family=family,
-                Group=group,
-                Scope=scope,
-                N_Categories=K,
-                GlobalBalancedAccuracyPct=ba_global,
-                GlobalBalancedAccuracyStdPct=std_across_cats,
-                GlobalBalancedAccuracySEPct=se_global,
-            )
-        )
+        summaries.append(dict(
+            Model=model,
+            Family=family,
+            Group=group,
+            Scope=scope,
+            N_Categories=K,
+            GlobalBalancedAccuracyPct=ba_global,
+            GlobalBalancedAccuracyStdPct=std_across_cats,
+            GlobalBalancedAccuracySEPct=se_global,
+        ))
     return pd.DataFrame(summaries)
 
 
@@ -941,18 +457,16 @@ def aggregate_multiclass(df: pd.DataFrame) -> pd.DataFrame:
         se_global = math.sqrt(max(var_global, 0.0)) * 100.0
         std_across_runs = float(np.std(ba_vals, ddof=1)) if K > 1 else 0.0
 
-        summaries.append(
-            dict(
-                Model=model,
-                Family=family,
-                Group=group,
-                Scope=scope,
-                N_Runs=K,
-                GlobalBalancedAccuracyPct=ba_global,
-                GlobalBalancedAccuracyStdPct=std_across_runs,
-                GlobalBalancedAccuracySEPct=se_global,
-            )
-        )
+        summaries.append(dict(
+            Model=model,
+            Family=family,
+            Group=group,
+            Scope=scope,
+            N_Runs=K,
+            GlobalBalancedAccuracyPct=ba_global,
+            GlobalBalancedAccuracyStdPct=std_across_runs,
+            GlobalBalancedAccuracySEPct=se_global,
+        ))
     return pd.DataFrame(summaries)
 
 
@@ -960,12 +474,7 @@ def aggregate_multiclass(df: pd.DataFrame) -> pd.DataFrame:
 
 def main():
     ap = argparse.ArgumentParser(
-        description=(
-            "compare embeddings via LOO 1-NN BA with modes:\n"
-            "  - multiclass: Category vs all other categories\n"
-            "  - random: feature vs random (per-category, pair-based)\n"
-            "  - upstream: feature vs upstream (per-category, pair-based)"
-        )
+        description="compare embeddings via LOO 1-NN BA: multiclass / random / upstream"
     )
     ap.add_argument(
         "--task",
@@ -974,8 +483,7 @@ def main():
         help="comparison type",
     )
     ap.add_argument(
-        "-o",
-        "--outdir",
+        "-o", "--outdir",
         default="/home/mica/gamba/data_processing/data/240-mammalian/global_balacc_combined",
         help="output directory for TSVs",
     )
@@ -984,49 +492,33 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
 
-    if args.task == "random":
-        rows = collect_random_rows(group_name=args.group_name)
-        #rows = collect_random_rows()
+    if args.task in ["random", "upstream"]:
+        rows = collect_binary_rows(args.task, group=args.group_name)
         if not rows:
-            raise SystemExit("no rows collected for random; check paths")
+            raise SystemExit(f"no rows collected for {args.task}")
         df = pd.DataFrame(rows)
-        percat_path = os.path.join(args.outdir, "balacc_random_per_category.tsv")
+        percat_path = os.path.join(args.outdir, f"balacc_{args.task}_per_category.tsv")
         df.to_csv(percat_path, sep="\t", index=False)
-        print(f"[info] wrote per-category RANDOM table: {percat_path}")
+        print(f"[info] wrote per-category {args.task.upper()}: {percat_path}")
 
         df_global = aggregate_per_category(df)
-        global_path = os.path.join(args.outdir, "balacc_random_global.tsv")
+        global_path = os.path.join(args.outdir, f"balacc_{args.task}_global.tsv")
         df_global.to_csv(global_path, sep="\t", index=False)
-        print(f"[info] wrote global RANDOM table: {global_path}")
-
-    elif args.task == "upstream":
-        rows = collect_upstream_rows(group_name=args.group_name)
-        #rows = collect_upstream_rows()
-        if not rows:
-            raise SystemExit("no rows collected for upstream; check paths")
-        df = pd.DataFrame(rows)
-        percat_path = os.path.join(args.outdir, "balacc_upstream_per_category.tsv")
-        df.to_csv(percat_path, sep="\t", index=False)
-        print(f"[info] wrote per-category UPSTREAM table: {percat_path}")
-
-        df_global = aggregate_per_category(df)
-        global_path = os.path.join(args.outdir, "balacc_upstream_global.tsv")
-        df_global.to_csv(global_path, sep="\t", index=False)
-        print(f"[info] wrote global UPSTREAM table: {global_path}")
+        print(f"[info] wrote global {args.task.upper()}: {global_path}")
 
     else:  # multiclass
-        rows = collect_multiclass_rows()
+        rows = collect_multiclass_rows(group=args.group_name)
         if not rows:
-            raise SystemExit("no rows collected for multiclass; check paths")
+            raise SystemExit("no rows collected for multiclass")
         df = pd.DataFrame(rows)
         per_model_path = os.path.join(args.outdir, "balacc_multiclass_per_model.tsv")
         df.to_csv(per_model_path, sep="\t", index=False)
-        print(f"[info] wrote per-model MULTICLASS table: {per_model_path}")
+        print(f"[info] wrote per-model MULTICLASS: {per_model_path}")
 
         df_global = aggregate_multiclass(df)
         global_path = os.path.join(args.outdir, "balacc_multiclass_global.tsv")
         df_global.to_csv(global_path, sep="\t", index=False)
-        print(f"[info] wrote aggregated MULTICLASS table: {global_path}")
+        print(f"[info] wrote aggregated MULTICLASS: {global_path}")
 
 
 if __name__ == "__main__":

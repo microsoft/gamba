@@ -63,50 +63,6 @@ def _load_cleaned_chrom_sizes(data_dir: str) -> Dict[str, int]:
     return sizes
 
 
-
-import os
-import os.path as osp
-import json
-from typing import List, Dict, Optional
-
-import numpy as np
-
-# assume these helpers / constants exist somewhere above:
-# REPEATS_ROOT
-# _load_repeats_per_chrom(chroms: List[str], repeats_root: str)
-# _window_overlaps_repeats(chrom: str, start: int, end: int, repeats: Dict[str, List[tuple]])
-
-
-def _load_dataset_splits(data_dir: str) -> Dict[str, List[str]]:
-    """
-    load train/valid/test chromosome lists from splits.json.
-
-    splits.json is expected to map split names to lists of chromosome strings,
-    e.g. {"train": ["1","2","X"], "valid": [...], "test": [...]}
-    """
-    splits_path = osp.join(data_dir, "splits.json")
-    with open(splits_path, "r") as f:
-        splits = json.load(f)
-    return splits
-
-
-def _load_cleaned_chrom_sizes(data_dir: str) -> Dict[str, int]:
-    """
-    load cleaned chrom sizes as a dict mapping bare chrom names ("1","2","X") -> length.
-    expects lines like: "chr1 1234567" in cleaned_chrom_sizes.txt.
-    """
-    path = osp.join(data_dir, "cleaned_chrom_sizes.txt")
-    sizes: Dict[str, int] = {}
-    with open(path, "r") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            name, size = line.split()[:2]
-            bare = name.replace("chr", "")
-            sizes[bare] = int(size)
-    return sizes
-
-
 def _sample_random_regions_from_dataset(
     data_dir: str,
     split: str,                 # "train" or "test"
@@ -159,13 +115,13 @@ def _sample_random_regions_from_dataset(
 
     def _get_seq_memmap(c_bare: str):
         if c_bare not in seq_memmaps:
-            path = osp.join(data_dir, split, f"{c_bare}_sequence_small.npy")
+            path = os.path.join(data_dir, split, f"{c_bare}_sequence_small.npy")
             seq_memmaps[c_bare] = np.load(path, mmap_mode="r")
         return seq_memmaps[c_bare]
 
     def _get_cons_memmap(c_bare: str):
         if c_bare not in cons_memmaps:
-            path = osp.join(data_dir, split, f"{c_bare}_conservation_small.npy")
+            path = os.path.join(data_dir, split, f"{c_bare}_conservation_small.npy")
             cons_memmaps[c_bare] = np.load(path, mmap_mode="r")
         return cons_memmaps[c_bare]
 
@@ -226,7 +182,6 @@ def _sample_random_regions_from_dataset(
         logging.info(f"[dataset_sample] split={split}: sampled {len(regions)} windows of {window_len} bp")
 
     return regions
-
 
 
 def _load_repeats_per_chrom(chroms: List[str], repeats_root: str = REPEATS_ROOT) -> Dict[str, List[Tuple[int, int]]]:
@@ -323,33 +278,124 @@ def _sample_regions(regions: List[Dict], k: int, seed: int) -> List[Dict]:
     idx = rng.choice(len(regions), size=k, replace=False)
     return [regions[i] for i in idx]
 
-def _collect_contexts(
+
+def _extend_region_with_upstream_context(
+    region: Dict,
+    genome: Fasta,
+    context_size: int = 1024,
+    window_size: int = 2048,
+) -> Dict:
+    """
+    Extend a region upstream by context_size to provide real genomic context.
+    Returns a new region dict with:
+      - Extended genomic coordinates
+      - Updated feature_start/end to mark the original ROI within the extended window
+    """
+    chrom = region["chrom"]
+    start = region["start"]
+    end = region["end"]
+    
+    # Get chromosome length
+    chrom_len = len(genome[chrom])
+    
+    # Original feature length
+    feature_len = end - start
+    
+    # Extend upstream by context_size
+    extended_start = max(0, start - context_size)
+    extended_end = end
+    
+    # If still shorter than window_size, pad downstream to reach window_size
+    extended_len = extended_end - extended_start
+    if extended_len < window_size:
+        additional_needed = window_size - extended_len
+        extended_end = min(chrom_len, extended_end + additional_needed)
+        # If still can't reach window_size, extend more upstream if possible
+        if (extended_end - extended_start) < window_size:
+            extended_start = max(0, extended_end - window_size)
+    
+    # Calculate where the original feature sits in the extended window
+    feature_start_in_window = start - extended_start
+    feature_end_in_window = end - extended_start
+    
+    return {
+        "chrom": chrom,
+        "start": extended_start,
+        "end": extended_end,
+        "original_start": start,
+        "original_end": end,
+        "category": region.get("category", region.get("label", "unknown")),
+        "feature_id": region.get("feature_id", f"{chrom}:{start}-{end}"),
+        "feature_start_in_window": feature_start_in_window,
+        "feature_end_in_window": feature_end_in_window,
+        "original_feature_len": feature_len,
+    }
+
+
+def _collect_contexts_with_upstream(
     bigwig_file: str,
     genome: Fasta,
     regions: List[Dict],
     model_type_for_context: str,
+    context_size: int = 1024,
+    window_size: int = 2048,
 ) -> List[Dict]:
+    """
+    Collect contexts with real upstream genomic context.
+    Each region is extended upstream by context_size bp.
+    """
     valid = []
+    
     for r in regions:
-        ctx = extract_context(bigwig_file, r, genome, model_type=model_type_for_context)
+        # Extend region to include upstream context
+        extended = _extend_region_with_upstream_context(
+            r, genome, context_size=context_size, window_size=window_size
+        )
+        
+        # Extract sequence and scores for the extended region
+        ctx = extract_context(
+            bigwig_file, 
+            extended, 
+            genome, 
+            model_type=model_type_for_context
+        )
+        
         if not ctx or "sequence" not in ctx:
-            print(f"Skipping region {r.get('chrom')}:{r.get('start')}-{r.get('end')} due to missing context.")
+            logging.warning(
+                f"Skipping region {r.get('chrom')}:{r.get('start')}-{r.get('end')} "
+                f"due to missing context."
+            )
             continue
-        # Ensure phyloP scores are present for truth
+            
         if "scores" not in ctx or ctx["scores"] is None:
-            print(f"Skipping region {r.get('chrom')}:{r.get('start')}-{r.get('end')} due to missing phyloP scores.")
+            logging.warning(
+                f"Skipping region {r.get('chrom')}:{r.get('start')}-{r.get('end')} "
+                f"due to missing phyloP scores."
+            )
             continue
-        ctx["category"] = r.get("category", r.get("label", "unknown"))
+        
+        # Preserve feature span information
+        ctx["category"] = extended["category"]
+        ctx["feature_start_in_window"] = extended["feature_start_in_window"]
+        ctx["feature_end_in_window"] = extended["feature_end_in_window"]
+        ctx["original_start"] = extended["original_start"]
+        ctx["original_end"] = extended["original_end"]
+        ctx["original_feature_len"] = extended["original_feature_len"]
+        
         valid.append(ctx)
+    
+    logging.info(
+        f"Extended {len(regions)} regions with {context_size}bp upstream context "
+        f"-> {len(valid)} valid"
+    )
     return valid
-
 
 
 def apply_effective_region_mask(
     labels: torch.Tensor,                      # (B, 2, T): [:,0,:]=seq labels, [:,1,:]=cons labels
     feature_spans: list[tuple[int, int]],      # per-sample (fs, fe) in *token* indices (already shifted for [START] if needed)
     is_mlm: bool,                              # True for Caduceus (MLM), False for Gamba (AR)
-    last_k: int = 1000,
+    last_k: int = 1024,
 ) -> torch.Tensor:
     """
     Constrains both sequence CE and conservation losses to the *same* effective region:
@@ -418,8 +464,8 @@ def _masked_mean_per_row(x: torch.Tensor, mask: torch.Tensor, dim: int = -1):
 
 
 def predict_scores_batched(model, tokenizer, tokenized, regions, batch_size=8, device=None,
-                           model_type="gamba", training_task="dual"):
-    """Run predictions on sampled regions with masking applied only over the feature region.
+                           model_type="gamba", training_task="dual", last_k=1024):
+    """Run predictions on sampled regions with masking applied only over the last last_k bp of feature region.
     Returns:
       all_predictions: per-example CONS loss proxy (MSE over ROI) or NaN
       all_true_scores: list of 1D true phyloP arrays per region (full window)
@@ -439,9 +485,9 @@ def predict_scores_batched(model, tokenizer, tokenized, regions, batch_size=8, d
     all_seq_predictions = []
     all_true_seqs = []
     region_info = []
-    all_pred_scores = []  # NEW
+    all_pred_scores = []
 
-    logging.info(f"Running predictions on {len(regions)} regions with batch size {batch_size}...")
+    logging.info(f"Running predictions on {len(regions)} regions with batch size {batch_size}, last_k={last_k}...")
 
     if model_type == "gamba":
         collator = gLMCollator(tokenizer=tokenizer, test=True)
@@ -489,7 +535,7 @@ def predict_scores_batched(model, tokenizer, tokenized, regions, batch_size=8, d
                              for m in batch_region_info]
 
             labels = apply_effective_region_mask(labels, feature_spans,
-                                                 is_mlm=False, last_k=1000)
+                                                 is_mlm=False, last_k=last_k)
 
             with torch.no_grad():
                 out = model(inputs, labels)  # expects dict-like
@@ -554,7 +600,7 @@ def predict_scores_batched(model, tokenizer, tokenized, regions, batch_size=8, d
             # shift for [START]
             feature_spans_shifted = [(fs + 1, fe + 1) for (fs, fe) in raw_spans]
             labels_pack = apply_effective_region_mask(
-                labels_pack, feature_spans_shifted, is_mlm=True, last_k=1000
+                labels_pack, feature_spans_shifted, is_mlm=True, last_k=last_k
             )
 
             with torch.no_grad():
@@ -601,22 +647,24 @@ def predict_scores_batched(model, tokenizer, tokenized, regions, batch_size=8, d
 def _get_predictions_for_contexts(
     model,
     tokenizer,
-    tokenized:bool,
+    tokenized: bool,
     contexts: List[Dict],
     batch_size: int,
     device,
     model_type: str,
     model_label: str,
     training_task: str,
+    last_k: int = 1024,
 ) -> List[np.ndarray]:
     """Returns per-base predictions on ORIGINAL phyloP-240 scale."""
-    logging.info("Running predict_scores_batched to obtain predicted per-base phyloP…")
+    logging.info(f"Running predict_scores_batched with last_k={last_k} to obtain predicted per-base phyloP…")
 
     
     out = predict_scores_batched(
         model, tokenizer, tokenized, contexts,
         batch_size=batch_size, device=device,
-        model_type=model_type, training_task=training_task
+        model_type=model_type, training_task=training_task,
+        last_k=last_k
     )
 
     if isinstance(out, (list, tuple)) and len(out) == 6:
@@ -667,6 +715,8 @@ def _fit_slope_intercept(x, y) -> Tuple[float, float]:
         return np.nan, np.nan
     slope, intercept, _, _, _ = stats.linregress(x[mask], y[mask])
     return float(slope), float(intercept)
+
+
 def _run_group(
     *,
     name: str,
@@ -682,6 +732,7 @@ def _run_group(
     model_id: str,
     training_task: str,
     outdir: Path,
+    last_k: int = 1024,
 ):
     if not contexts:
         logging.warning(f"[{name}] group={group_name}: no contexts, skipping.")
@@ -698,6 +749,7 @@ def _run_group(
         model_type=model_type,
         model_label=model_label,
         training_task=training_task,
+        last_k=last_k,
     )
 
     # assemble per-region metrics
@@ -836,6 +888,7 @@ def _run_group(
         )
         agg.to_csv(outdir / f"{tag}_position_rate_category_summary.csv", index=False)
 
+
 def compute_region_and_position_correlations(
     bigwig_file: str,
     genome_fasta: str,
@@ -854,6 +907,8 @@ def compute_region_and_position_correlations(
     baseline: str,
     model_label: str,
     seed: int = 1337,
+    context_size: int = 1024,
+    last_k: int = 1024,
 ):
     outdir = Path(output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -880,7 +935,7 @@ def compute_region_and_position_correlations(
     # ------------- mode 1: sample directly from dataset splits -------------
     if len(categories) == 1 and categories[0].lower() == "random_from_dataset":
         window_len = 2048
-        target_n  = per_category_n *10 # N per split
+        target_n  = per_category_n * 10 # N per split
 
         for split_name in ["train", "test"]:
             logging.info(f"[dataset_sample] sampling from split={split_name}")
@@ -907,6 +962,7 @@ def compute_region_and_position_correlations(
                 model_id=model_id,
                 training_task=training_task,
                 outdir=outdir,
+                last_k=last_k,
             )
         return
 
@@ -991,11 +1047,13 @@ def compute_region_and_position_correlations(
 
             logging.info(f"[random_sample] drew {len(sampled_regions)} non-repeat windows of {window_len} bp")
 
-            ctxs = _collect_contexts(
+            ctxs = _collect_contexts_with_upstream(
                 bigwig_file,
                 genome,
                 sampled_regions,
                 model_type_for_context=model_type or "baseline",
+                context_size=context_size,
+                window_size=2048,
             )
             logging.info(f"[random_sample] valid contexts: {len(ctxs)}")
             all_contexts.extend(ctxs)
@@ -1013,11 +1071,13 @@ def compute_region_and_position_correlations(
                 for r in regs:
                     r["category"] = cat
                 sampled = _sample_regions(regs, per_category_n, seed)
-                ctxs = _collect_contexts(
+                ctxs = _collect_contexts_with_upstream(
                     bigwig_file,
                     genome,
                     sampled,
                     model_type_for_context=model_type or "baseline",
+                    context_size=context_size,
+                    window_size=2048,
                 )
                 logging.info(f"[{cat}] sampled {len(sampled)} -> valid {len(ctxs)}")
                 all_contexts.extend(ctxs)
@@ -1036,10 +1096,10 @@ def compute_region_and_position_correlations(
             model_id=model_id,
             training_task=training_task,
             outdir=outdir,
+            last_k=last_k,
         )
 
     bw.close()
-
 
 
 # ---------------- CLI ----------------
@@ -1061,20 +1121,26 @@ def main():
     parser.add_argument("--per_category_n", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--last_step", type=int, default=44000)
-    #set training and test to empty
-    #parser.add_argument("--training_chromosomes", type=str, nargs="+", default=None)
-    #parser.add_argument("--test_chromosomes", type=str, nargs="+", default=None)
-    parser.add_argument("--training_chromosomes", type=str, nargs="+", default=["chr1", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr10","chr11", "chr12", "chr13", "chr14", "chr15", "chr17", "chr18", "chr19", "chr20", "chr21", "chrX"])
-    parser.add_argument("--test_chromosomes", type=str, nargs="+", default=["chr2", "chr22", "chr16", "chr3"])
+    parser.add_argument("--training_chromosomes", type=str, nargs="+", 
+                        default=["chr1", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr10",
+                                "chr11", "chr12", "chr13", "chr14", "chr15", "chr17", "chr18", 
+                                "chr19", "chr20", "chr21", "chrX"])
+    parser.add_argument("--test_chromosomes", type=str, nargs="+", 
+                        default=["chr2", "chr22", "chr16", "chr3"])
     parser.add_argument("--model_type", type=str, choices=["gamba","caduceus"], default="gamba")
     parser.add_argument("--training_task", type=str, choices=["dual","cons_only","seq_only"], default="dual")
     parser.add_argument("--baseline", type=str, choices=["none"], default="none",
                         help="Use trained model only; baselines without predictions are unsupported here.")
     parser.add_argument("--categories", type=str, nargs="+", default=DEFAULT_CATEGORIES)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--context_size", type=int, default=1024,
+                        help="Upstream context size (bp) to add before each region")
+    parser.add_argument("--last_k", type=int, default=1024,
+                        help="Only evaluate predictions on the last K bp of each region")
 
     args = parser.parse_args()
-    #model_label should be: Short tag for plots/files, e.g., seq+cons | cons-only | seq-only | seq-2-seq
+    
+    # model_label should be: Short tag for plots/files, e.g., seq+cons | cons-only | seq-only | seq-2-seq
     if args.training_task == "dual":
         model_label = "seq+cons" + str(args.last_step)
     elif args.training_task == "cons_only":
@@ -1089,14 +1155,14 @@ def main():
         checkpoint_dir = args.checkpoint_dir + "/clean_caduceus_dcps/allPOSMLM"
         model_label = model_label + "-seq2seq" + str(args.last_step)
 
-    #add model label info to output_dir
+    # add model label info to output_dir
     args.output_dir = os.path.join(args.output_dir, args.model_type, model_label)
 
     compute_region_and_position_correlations(
         bigwig_file=args.bigwig_file,
         genome_fasta=args.genome_fasta,
         data_dir=args.data_dir,
-        checkpoint_dir=args.checkpoint_dir,
+        checkpoint_dir=checkpoint_dir,
         config_fpath=args.config_fpath,
         output_dir=args.output_dir,
         categories=args.categories,
@@ -1110,6 +1176,8 @@ def main():
         baseline=args.baseline,
         model_label=model_label,
         seed=args.seed,
+        context_size=args.context_size,
+        last_k=args.last_k,
     )
     logging.info("Done.")
 

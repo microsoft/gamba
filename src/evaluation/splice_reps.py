@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+"""
+Splice site 8-way (gamba/caduceus) with chromosome-stratified sampling.
+
+- loads ONE TSV: /home/mica/gamba/data_processing/data/splice_sites/all_chr1_22_splice_8way_complete.tsv
+- samples N examples total, approximately evenly across chr1..chr22 (default N=1000)
+- builds 8 contexts per example (so total contexts = 8*N; default 8000)
+- embeds with gamba/caduceus via predict_scores_batched
+- saves reps_{model_tag}_SPLICE_8way_all_labels.{npz,parquet}
+- runs:
+  - 8-way 1-NN confusion heatmap on labels 1..8
+  - binary 1-NN tasks: 1 vs each of 2..8
+"""
+
 import argparse
 import os
 import json
@@ -13,9 +26,7 @@ import seaborn as sns
 import torch
 import pyBigWig
 from pyfaidx import Fasta
-from tqdm import tqdm
 
-import umap
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import (
     confusion_matrix,
@@ -31,7 +42,6 @@ sys.path.append("/home/mica/gamba/")
 from src.evaluation.utils.helpers import extract_context
 from src.evaluation.utils.specific_helpers import load_model, predict_scores_batched
 
-
 # ---------------- logging ----------------
 
 logging.basicConfig(
@@ -43,6 +53,24 @@ logging.basicConfig(
 
 # ---------------- KNN + metrics helpers ----------------
 
+# --- drop into splice_reps.py (or a small utils section) ---
+
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import confusion_matrix
+
+# label groups (splice 8-way)
+DONOR_SET = {1, 7}
+ACCEPTOR_SET = {2, 8}
+
+# “within-group” binary subproblems you likely care about
+WITHIN_GROUP_TASKS = [
+    ("donor: L1 vs L7", (1, 7)),
+    ("acceptor: L2 vs L8", (2, 8)),
+    ("GT: exon vs intron (L3 vs L4)", (3, 4)),
+    ("AG: exon vs intron (L5 vs L6)", (5, 6)),
+]
+
 def loo_1nn_predictions(embeddings, labels):
     labels = np.asarray(labels)
     X = np.asarray(embeddings)
@@ -52,112 +80,221 @@ def loo_1nn_predictions(embeddings, labels):
     y_pred = labels[indices[:, 1]]
     return y_true, y_pred
 
-
-def eval_metrics(y_true, y_pred, label_order=None):
-    if label_order is None:
-        label_order = np.unique(y_true)
-
-    cm = confusion_matrix(y_true, y_pred, labels=label_order)
+def _balanced_accuracy_from_cm(cm: np.ndarray) -> float:
+    # cm rows = true, cols = pred
     row_sums = cm.sum(axis=1, keepdims=True)
-    per_class_recall = np.diag(cm) / np.where(row_sums == 0, 1, row_sums).squeeze()
+    recalls = np.diag(cm) / np.where(row_sums == 0, 1, row_sums).squeeze()
+    valid = ~np.isnan(recalls)
+    return float(np.mean(recalls[valid])) if np.any(valid) else float("nan")
 
-    valid = ~np.isnan(per_class_recall)
-    ba = float(np.mean(per_class_recall[valid]))
-    sem = float(np.std(per_class_recall[valid], ddof=1) / np.sqrt(np.sum(valid)))
-    ci95 = float(1.96 * sem)
-
-    metrics = {
-        "micro_accuracy": float((y_true == y_pred).mean()),
+def eval_hard_metrics(y_true, y_pred, label_order=None):
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    if label_order is None:
+        label_order = sorted(set(y_true.tolist()))
+    cm = confusion_matrix(y_true, y_pred, labels=label_order)
+    ba = _balanced_accuracy_from_cm(cm)
+    micro = float((y_true == y_pred).mean())
+    per_class_recall = {}
+    for i, lab in enumerate(label_order):
+        denom = cm[i, :].sum()
+        per_class_recall[int(lab)] = float(cm[i, i] / denom) if denom else float("nan")
+    support = {int(lab): int(cm[i, :].sum()) for i, lab in enumerate(label_order)}
+    return {
+        "micro_accuracy": micro,
         "balanced_accuracy": ba,
-        "balanced_accuracy_sem": sem,
-        "balanced_accuracy_ci95": ci95,
-        "macro_f1": float(
-            f1_score(y_true, y_pred, labels=label_order, average="macro", zero_division=0)
-        ),
-        "weighted_f1": float(
-            f1_score(y_true, y_pred, labels=label_order, average="weighted", zero_division=0)
-        ),
-        "cohens_kappa": float(cohen_kappa_score(y_true, y_pred, labels=label_order)),
-        "mcc": float(matthews_corrcoef(y_true, y_pred)),
-        "per_class_recall": dict(zip(label_order, per_class_recall.astype(float))),
-        "support": dict(zip(label_order, cm.sum(axis=1).astype(int))),
+        "per_class_recall": per_class_recall,
+        "support": support,
+        "cm": cm,
+        "label_order": label_order,
     }
-    return cm, metrics, label_order
+
+def _collapse_splice_donor_acceptor(labels_8way: np.ndarray) -> np.ndarray:
+    """
+    collapse to 2-class:
+      donor (L1,L7) -> 0
+      acceptor (L2,L8) -> 1
+    all other labels (L3-6) are excluded by caller.
+    """
+    out = np.empty_like(labels_8way, dtype=int)
+    out[:] = -1
+    out[np.isin(labels_8way, list(DONOR_SET))] = 0
+    out[np.isin(labels_8way, list(ACCEPTOR_SET))] = 1
+    return out
+
+def donor_vs_acceptor_ba(embeddings, labels_8way):
+    """
+    Uses only {1,2,7,8}, collapses to donor vs acceptor, then LOO 1-NN BA.
+    """
+    labels_8way = np.asarray(labels_8way, dtype=int)
+    keep = np.isin(labels_8way, [1, 2, 7, 8])
+    X = np.asarray(embeddings)[keep]
+    y8 = labels_8way[keep]
+    if len(y8) == 0:
+        return {"micro_accuracy": float("nan"), "balanced_accuracy": float("nan"), "n": 0}
+
+    y2 = _collapse_splice_donor_acceptor(y8)
+    # sanity: no -1 left
+    mask = y2 >= 0
+    X, y2 = X[mask], y2[mask]
+
+    y_true, y_pred = loo_1nn_predictions(X, y2)
+    m = eval_hard_metrics(y_true, y_pred, label_order=[0, 1])
+    return {"micro_accuracy": m["micro_accuracy"], "balanced_accuracy": m["balanced_accuracy"], "n": int(len(y2))}
+
+def within_group_mean_ba(embeddings, labels_8way, tasks=WITHIN_GROUP_TASKS):
+    """
+    For each 2-class subtask (a,b), restrict to those labels and compute BA via LOO 1-NN.
+    Returns mean BA across tasks (unweighted), plus per-task details.
+    """
+    labels_8way = np.asarray(labels_8way, dtype=int)
+    X_all = np.asarray(embeddings)
+
+    per_task = {}
+    bas = []
+
+    for name, (a, b) in tasks:
+        keep = np.isin(labels_8way, [a, b])
+        X = X_all[keep]
+        y = labels_8way[keep]
+        if len(y) == 0 or len(set(y.tolist())) < 2:
+            per_task[name] = {"balanced_accuracy": float("nan"), "micro_accuracy": float("nan"), "n": int(len(y))}
+            continue
+
+        y_true, y_pred = loo_1nn_predictions(X, y)
+        m = eval_hard_metrics(y_true, y_pred, label_order=[a, b])
+        per_task[name] = {
+            "balanced_accuracy": m["balanced_accuracy"],
+            "micro_accuracy": m["micro_accuracy"],
+            "n": int(len(y)),
+        }
+        if not np.isnan(m["balanced_accuracy"]):
+            bas.append(m["balanced_accuracy"])
+
+    mean_ba = float(np.mean(bas)) if len(bas) else float("nan")
+    return {"mean_balanced_accuracy": mean_ba, "per_task": per_task}
+
+def _binary_ba_from_embeddings(X, y, a, b):
+    mask = (y == a) | (y == b)
+    X2 = X[mask]
+    y2 = y[mask]
+    if len(y2) == 0 or (np.sum(y2 == a) == 0) or (np.sum(y2 == b) == 0):
+        return None  # missing a class
+
+    yt, yp = loo_1nn_predictions(X2, y2)
+    cm = confusion_matrix(yt, yp, labels=[a, b])
+    rec_a = cm[0, 0] / cm[0, :].sum() if cm[0, :].sum() else np.nan
+    rec_b = cm[1, 1] / cm[1, :].sum() if cm[1, :].sum() else np.nan
+    if np.isnan(rec_a) or np.isnan(rec_b):
+        return None
+    return float(0.5 * (rec_a + rec_b))
 
 
-def plot_knn_heatmap(embeddings, labels, output_path, title="1-NN"):
-    if len(embeddings) == 0:
-        logging.warning("[plot_knn_heatmap] no embeddings to plot")
-        return None, None, None
+def splice_three_metrics(X, y):
+    X = np.asarray(X)
+    y = np.asarray(y, dtype=int)
 
-    labels = np.asarray(labels)
-    present = sorted(set(labels))
+    # 8-way hard BA (on whatever labels are present in X,y)
+    yt, yp = loo_1nn_predictions(X, y)
+    hard = eval_hard_metrics(yt, yp, label_order=sorted(set(y.tolist())))
+    hard_ba = float(hard["balanced_accuracy"])
+
+    # donor vs acceptor BA: only defined on {1,7} vs {2,8}
+    da_mask = np.isin(y, [1, 2, 7, 8])
+    donor_acceptor_ba = None
+    if np.any(da_mask) and len(set(y[da_mask].tolist())) == 2:
+        # map donors->0, acceptors->1
+        y_da = np.where(np.isin(y[da_mask], [1, 7]), 0, 1)
+        yt_da, yp_da = loo_1nn_predictions(X[da_mask], y_da)
+        cm = confusion_matrix(yt_da, yp_da, labels=[0, 1])
+        rec0 = cm[0, 0] / cm[0, :].sum() if cm[0, :].sum() else np.nan
+        rec1 = cm[1, 1] / cm[1, :].sum() if cm[1, :].sum() else np.nan
+        donor_acceptor_ba = float(0.5 * (rec0 + rec1)) if not (np.isnan(rec0) or np.isnan(rec1)) else None
+
+    # within-group BAs (only compute if both labels exist)
+    pairs = {
+        "donor: L1 vs L7": (1, 7),
+        "acceptor: L2 vs L8": (2, 8),
+        "GT: exon vs intron (L3 vs L4)": (3, 4),
+        "AG: exon vs intron (L5 vs L6)": (5, 6),
+    }
+
+    details = {}
+    bas = []
+    for name, (a, b) in pairs.items():
+        ba = _binary_ba_from_embeddings(X, y, a, b)
+        n = int(np.sum((y == a) | (y == b)))
+        details[name] = {"balanced_accuracy": (float("nan") if ba is None else float(ba)), "n": n}
+        if ba is not None:
+            bas.append(ba)
+
+    within_mean = float(np.mean(bas)) if bas else float("nan")
+
+    return {
+        "8way_hard_ba": hard_ba,
+        "donor_vs_acceptor_ba": float("nan") if donor_acceptor_ba is None else float(donor_acceptor_ba),
+        "within_group_mean_ba": within_mean,
+        "within_group_details": details,
+    }
+
+def plot_knn_heatmap(embeddings, labels, output_path, title="1-NN", do_splice_three=False):
+    labels = np.asarray(labels).astype(int)  # important
+    present = sorted(set(labels.tolist()))
+
     y_true, y_pred = loo_1nn_predictions(embeddings, labels)
-    cm, metrics, label_order = eval_metrics(y_true, y_pred, label_order=present)
+    hard = eval_hard_metrics(y_true, y_pred, label_order=present)
 
-    with np.errstate(invalid="ignore", divide="ignore"):
-        acc_matrix = cm.astype(float) / np.where(
-            cm.sum(axis=1, keepdims=True) == 0,
-            1,
-            cm.sum(axis=1, keepdims=True),
-        )
+    three = None
+    if do_splice_three and set(present) == set(range(1, 9)):
+        three = splice_three_metrics(np.asarray(embeddings), labels)
+        for k, v in three["within_group_details"].items():
+            logging.info(f"[within] {k}: BA={v['balanced_accuracy']:.3f} (n={v['n']})")
 
-    plt.figure(figsize=(5, 4))
+    # build heatmap from hard cm
+    cm = hard["cm"]
+    label_order = hard["label_order"]
+    row_sums = cm.sum(axis=1, keepdims=True)
+    acc_matrix = cm.astype(float) / np.where(row_sums == 0, 1, row_sums)
+
+    plt.figure(figsize=(6.8, 5.8))
     sns.heatmap(
         acc_matrix,
-        xticklabels=label_order,
-        yticklabels=label_order,
-        vmin=0,
-        vmax=1.0,
-        cmap="Blues",
-        annot=True,
-        fmt=".2f",
+        xticklabels=[f"L{l}" for l in label_order],
+        yticklabels=[f"L{l}" for l in label_order],
+        vmin=0, vmax=1, cmap="Blues", annot=True, fmt=".2f",
         cbar_kws={"label": "per-class recall"},
     )
-    plt.title(
-        f"{title}\n"
-        f"micro={metrics['micro_accuracy']:.2%} | "
-        f"balanced={metrics['balanced_accuracy']:.2%} | "
-        f"macro-F1={metrics['macro_f1']:.2%}"
-    )
-    plt.xlabel("predicted")
-    plt.ylabel("true")
+
+    if three is not None:
+        plt.title(
+            f"{title}\n"
+            f"8-way hard BA={three['8way_hard_ba']:.2%} | "
+            f"donor/acceptor BA={three['donor_vs_acceptor_ba']:.2%} | "
+            f"within mean BA={three['within_group_mean_ba']:.2%}"
+        )
+    else:
+        plt.title(f"{title}\nBA={hard['balanced_accuracy']:.2%}")
+
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
 
-    logging.info(
-        f"[KNN] {title} | micro={metrics['micro_accuracy']:.3f}, "
-        f"balanced={metrics['balanced_accuracy']:.3f}, "
-        f"macroF1={metrics['macro_f1']:.3f}, "
-        f"weightedF1={metrics['weighted_f1']:.3f}, "
-        f"kappa={metrics['cohens_kappa']:.3f}, "
-        f"mcc={metrics['mcc']:.3f}"
-    )
-    return metrics, label_order, acc_matrix
+    out = dict(hard)
+    if three is not None:
+        out.update(three)
+    return out, label_order, acc_matrix
 
-
-# ---------------- NEW: saving reps ----------------
+# ---------------- saving reps ----------------
 
 def save_reps(base_dir, model_tag, name, X, labels, metas, extra=None):
-    """
-    save embeddings + labels to npz and metadata to parquet.
-
-    base_dir / f"reps_{model_tag}_{name}.npz"
-    base_dir / f"reps_{model_tag}_{name}_meta.parquet"
-    """
     base_dir = Path(base_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
 
     X = np.asarray(X, dtype=np.float32)
-    labels = np.asarray(labels)
+    labels = np.asarray(labels, dtype=int)
 
     prefix = f"reps_{model_tag}_{name}"
-    np.savez_compressed(
-        base_dir / f"{prefix}.npz",
-        embeddings=X,
-        labels=labels,
-    )
+    np.savez_compressed(base_dir / f"{prefix}.npz", embeddings=X, labels=labels)
 
     mdf = pd.DataFrame(metas)
     if "label" in mdf.columns:
@@ -172,132 +309,238 @@ def save_reps(base_dir, model_tag, name, X, labels, metas, extra=None):
     mdf.to_parquet(base_dir / f"{prefix}_meta.parquet", index=False)
 
 
-# ---------------- splice site context loading ----------------
+def save_sampled_examples_tsv(output_dir: Path, df_sampled: pd.DataFrame, seed: int, n_examples: int):
+    """
+    Save the exact sampled example rows so other models can reuse the identical set.
+    """
+    out = output_dir / "sampled_examples_splice8.tsv"
+    meta = {
+        "n_examples_requested": int(n_examples),
+        "n_examples_saved": int(len(df_sampled)),
+        "seed": int(seed),
+    }
+    df_sampled.to_csv(out, sep="\t", index=False)
+    with open(output_dir / "sampled_examples_splice8.meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    logging.info(f"wrote sampled examples TSV: {out}")
 
-def load_splice_contexts(
-    splice_tsv_dir,
-    bigwig_file,
-    genome,
-    model_type,
-    site_type,
-    chromosomes,
-    max_examples=None,
+
+# ---------------- Splice 8-way context loading ----------------
+
+LABEL_COLS_8WAY = {
+    1: "label1_donor_pos",
+    2: "label2_same_acceptor_pos",
+    3: "label3_same_gt_exon_pos",
+    4: "label4_same_gt_intron_pos",
+    5: "label5_same_ag_exon_pos",
+    6: "label6_same_ag_intron_pos",
+    7: "label7_diff_donor_pos",
+    8: "label8_diff_acceptor_pos",
+}
+
+DELTA_COLS_8WAY = {
+    1: None,
+    2: "label2_delta_bp",
+    3: "label3_delta_bp",
+    4: "label4_delta_bp",
+    5: "label5_delta_bp",
+    6: "label6_delta_bp",
+    7: "label7_delta_bp",
+    8: "label8_delta_bp",
+}
+
+
+def _even_sample_by_chrom(df: pd.DataFrame, chromosomes: list[str], n_total: int, seed: int) -> pd.DataFrame:
+    """
+    sample ~evenly across chromosomes. if a chromosome has fewer rows than requested,
+    we take all of them and re-distribute the remaining quota across others.
+
+    returns sampled df (<= n_total).
+    """
+    rng = np.random.default_rng(seed)
+
+    df = df[df["chrom"].isin(chromosomes)].copy()
+    if len(df) == 0:
+        return df
+
+    base = n_total // len(chromosomes)
+    rem = n_total % len(chromosomes)
+
+    targets = {c: base for c in chromosomes}
+    for c in chromosomes[:rem]:
+        targets[c] += 1
+
+    selected = []
+    remaining = df.copy()
+    remaining_targets = targets.copy()
+
+    while True:
+        progress = False
+        carry = 0
+
+        for c in chromosomes:
+            sub = remaining[remaining["chrom"] == c]
+            want = remaining_targets.get(c, 0)
+            if want <= 0:
+                continue
+
+            have = len(sub)
+            take = min(want, have)
+
+            if take > 0:
+                idx = rng.choice(sub.index.to_numpy(), size=take, replace=False)
+                selected.append(remaining.loc[idx])
+                remaining = remaining.drop(index=idx)
+                progress = True
+
+            if have < want:
+                carry += (want - have)
+
+            remaining_targets[c] = 0
+
+        if not progress:
+            break
+
+        if len(pd.concat(selected, axis=0)) >= n_total:
+            break
+
+        if carry <= 0:
+            break
+
+        avail = []
+        for c in chromosomes:
+            have_left = (remaining["chrom"] == c).sum()
+            if have_left > 0:
+                avail.append((c, have_left))
+
+        if not avail:
+            break
+
+        i = 0
+        while carry > 0 and avail:
+            c, _have_left = avail[i % len(avail)]
+            remaining_targets[c] = remaining_targets.get(c, 0) + 1
+            carry -= 1
+            i += 1
+
+    out = pd.concat(selected, axis=0) if selected else df.iloc[0:0].copy()
+    if len(out) > n_total:
+        out = out.sample(n=n_total, random_state=seed)
+    return out
+
+
+def load_splice_8way_contexts_from_tsv(
+    splice_tsv_path: str,
+    bigwig_file: str,
+    genome: Fasta,
+    model_type: str,
+    n_examples: int = 1000,
+    seed: int = 42,
+    chromosomes: list[str] | None = None,
+    sampled_examples_tsv: str | None = None,
+    output_dir_for_sampling: Path | None = None,
 ):
     """
-    load splice site contexts for gamba/caduceus.
-
-    for each splice site row with all label2–5 present:
-      - build regions (start, start+2) for labels 1..5
-      - call extract_context for each
-      - keep example only if all 5 contexts succeed
-
-    returns:
-      contexts: list[dict], each with sequence, feature_start_in_window, feature_end_in_window,
-                plus example_id, label_id, site_type
+    If sampled_examples_tsv is provided, uses it directly (no re-sampling).
+    Otherwise samples from splice_tsv_path and (optionally) writes sampled_examples_splice8.tsv
+    into output_dir_for_sampling for reuse by other models.
     """
-    import glob
+    _ = pyBigWig.open(bigwig_file).close()
 
-    bw = pyBigWig.open(bigwig_file)
+    if chromosomes is None:
+        chromosomes = [f"chr{i}" for i in range(1, 23)]
+
+    if sampled_examples_tsv is not None:
+        sampled = pd.read_csv(sampled_examples_tsv, sep="\t")
+        logging.info(f"loaded sampled examples from: {sampled_examples_tsv} (n={len(sampled)})")
+    else:
+        df = pd.read_csv(splice_tsv_path, sep="\t")
+        required = list(LABEL_COLS_8WAY.values()) + ["ref_transcript_id", "ref_gene_id", "ref_strand", "chrom"]
+        for c in required:
+            if c not in df.columns:
+                raise ValueError(f"missing required column in TSV: {c}")
+
+        for col in LABEL_COLS_8WAY.values():
+            df = df[df[col].astype(str) != "."]
+        df = df.dropna(subset=list(LABEL_COLS_8WAY.values()) + ["chrom", "ref_transcript_id", "ref_strand"])
+
+        sampled = _even_sample_by_chrom(df, chromosomes=chromosomes, n_total=n_examples, seed=seed)
+        logging.info(f"sampling: requested n_examples={n_examples}, got n={len(sampled)}")
+
+        if output_dir_for_sampling is not None:
+            output_dir_for_sampling = Path(output_dir_for_sampling)
+            output_dir_for_sampling.mkdir(parents=True, exist_ok=True)
+            save_sampled_examples_tsv(output_dir_for_sampling, sampled, seed=seed, n_examples=n_examples)
+
+    if len(sampled) == 0:
+        return []
+
+    counts = sampled["chrom"].value_counts().reindex(chromosomes, fill_value=0)
+    logging.info("per-chrom example counts:\n" + "\n".join([f"  {c}: {int(counts[c])}" for c in chromosomes]))
 
     contexts = []
-    n_examples = 0
-
-    label_cols = {
-        1: "label1_pos",
-        2: "label2_pos_cryptic_near",
-        3: "label3_pos_cryptic_far",
-        4: "label4_pos_annotated_near",
-        5: "label5_pos_annotated_far",
-    }
-
-    for chrom in chromosomes:
-        pattern = os.path.join(splice_tsv_dir, f"{chrom}_{site_type}_labels.tsv")
-        matches = glob.glob(pattern)
-        if not matches:
-            logging.warning(f"no splice tsv for {chrom} {site_type} at {pattern}")
+    for _, row in sampled.iterrows():
+        try:
+            pos_dict = {lid: int(row[col]) for lid, col in LABEL_COLS_8WAY.items()}
+        except Exception:
             continue
-        tsv = matches[0]
-        logging.info(f"loading {tsv}")
-        df = pd.read_csv(tsv, sep="\t")
 
-        # require all four label pairs (2–5) to be present
-        mask_all = (
-            (df["label2_pos_cryptic_near"] != ".")
-            & (df["label3_pos_cryptic_far"] != ".")
-            & (df["label4_pos_annotated_near"] != ".")
-            & (df["label5_pos_annotated_far"] != ".")
-        )
-        df = df[mask_all].copy()
-        logging.info(f"{chrom} {site_type}: {len(df)} sites with all label pairs")
+        anchor = pos_dict[1]
+        example_id = f"{row['chrom']}|{row['ref_transcript_id']}|{row['ref_strand']}|{anchor}"
 
-        for _, row in df.iterrows():
-            try:
-                pos_dict = {
-                    lid: int(row[col])
-                    for lid, col in label_cols.items()
-                }
-            except ValueError:
-                # malformed numeric field
-                continue
+        ok = True
+        example_contexts = []
+        for lid, pos in pos_dict.items():
+            # donor/acceptor are 2bp, GT/AG motifs are 2bp
+            region = {
+                "chrom": row["chrom"],
+                "start": pos,
+                "end": pos + 2,
+                "feature_id": f"{row['ref_transcript_id']}_L{lid}",
+            }
+            ctx = extract_context(bigwig_file, region, genome, model_type)
+            if not ctx or "sequence" not in ctx:
+                ok = False
+                break
 
-            example_id = f"{row['chrom']}|{row['tx_id']}|{row['strand']}|{site_type}|{row['label1_pos']}"
-            example_contexts = []
-            ok = True
+            ctx["example_id"] = example_id
+            ctx["label_id"] = lid
+            ctx["delta_bp"] = 0 if DELTA_COLS_8WAY[lid] is None else int(row[DELTA_COLS_8WAY[lid]])
 
-            for lid, pos in pos_dict.items():
-                region = {
-                    "chrom": row["chrom"],
-                    "start": pos,
-                    "end": pos + 2,  # dinucleotide span
-                    "feature_id": f"{row['tx_id']}_{site_type}_L{lid}",
-                }
+            ctx["ref_transcript_id"] = row["ref_transcript_id"]
+            ctx["ref_gene_id"] = row["ref_gene_id"]
+            ctx["ref_strand"] = row["ref_strand"]
+            ctx["diff_transcript_id"] = row.get("diff_transcript_id", ".")
+            ctx["diff_gene_id"] = row.get("diff_gene_id", ".")
+            ctx["diff_strand"] = row.get("diff_strand", ".")
 
-                ctx = extract_context(
-                    bigwig_file,
-                    region,
-                    genome,
-                    model_type,  # "gamba" or "caduceus"
-                )
-                if not ctx or "sequence" not in ctx:
-                    ok = False
-                    break
+            example_contexts.append(ctx)
 
-                ctx["example_id"] = example_id
-                ctx["label_id"] = lid
-                ctx["site_type"] = site_type
-                
-                # keep raw deltas as optional meta
-                if lid == 2:
-                    ctx["delta_bp"] = int(row["label2_delta_bp"])
-                elif lid == 3:
-                    ctx["delta_bp"] = int(row["label3_delta_bp"])
-                elif lid == 4:
-                    ctx["delta_bp"] = int(row["label4_delta_bp"])
-                elif lid == 5:
-                    ctx["delta_bp"] = int(row["label5_delta_bp"])
-                else:
-                    ctx["delta_bp"] = 0
-
-                example_contexts.append(ctx)
-
-            if not ok:
-                continue
-
+        if ok:
             contexts.extend(example_contexts)
-            n_examples += 1
 
-            if max_examples is not None and n_examples >= max_examples:
-                bw.close()
-                logging.info(f"reached max_examples={max_examples}")
-                return contexts
-
-    bw.close()
-    logging.info(f"total {site_type} examples with all labels: {n_examples}")
-    logging.info(f"total {site_type} contexts (5 per example): {len(contexts)}")
+    logging.info(f"total contexts loaded: {len(contexts)} (expected ~ {8*len(sampled)})")
     return contexts
 
 
-# ---------------- embedding (gamba / caduceus) ----------------
+# ---------------- cached reps loader ----------------
+
+def maybe_load_cached_reps(output_dir: Path, model_tag: str, name: str):
+    prefix = f"reps_{model_tag}_{name}"
+    npz = output_dir / f"{prefix}.npz"
+    meta = output_dir / f"{prefix}_meta.parquet"
+    if npz.exists() and meta.exists():
+        logging.info(f"[cache] found existing reps, skipping embedding: {npz.name}")
+        d = np.load(npz, allow_pickle=True)
+        X = d["embeddings"].astype(np.float32)
+        y = d["labels"].astype(int)
+        mdf = pd.read_parquet(meta)
+        metas = mdf.to_dict(orient="records")
+        return X, y, metas
+    return None
+
+
+# ---------------- embedding ----------------
 
 def compute_splice_roi_embeddings(
     model,
@@ -307,19 +550,9 @@ def compute_splice_roi_embeddings(
     device,
     model_type,
     training_task,
-    site_type,
 ):
-    """
-    run predict_scores_batched on splice site contexts and pool ROI (dinucleotide) embeddings.
-
-    returns:
-      roi_embeds [N, H]
-      label_ids [N] (1..5)
-      metas: list[dict] with example_id, label_id, chrom, start, end, delta_bp, site_type
-    """
     logging.info(
-        f"computing {site_type} roi embeddings for {len(contexts)} contexts, "
-        f"model_type={model_type}, task={training_task}"
+        f"computing splice roi embeddings for {len(contexts)} contexts, model_type={model_type}, task={training_task}"
     )
 
     seq_reps, region_info = predict_scores_batched(
@@ -333,14 +566,21 @@ def compute_splice_roi_embeddings(
     )
 
     assert len(seq_reps) == len(region_info) == len(contexts)
+
     for ctx, info in zip(contexts, region_info):
         info["example_id"] = ctx["example_id"]
         info["label_id"] = ctx["label_id"]
-        info["site_type"] = ctx.get("site_type", site_type)
+        info["delta_bp"] = ctx.get("delta_bp", 0)
         info["chrom"] = ctx.get("chrom", info.get("chrom", None))
         info["start"] = ctx.get("start", info.get("start", -1))
         info["end"] = ctx.get("end", info.get("end", -1))
-        info["delta_bp"] = ctx.get("delta_bp", 0)
+
+        info["ref_transcript_id"] = ctx.get("ref_transcript_id", "")
+        info["ref_gene_id"] = ctx.get("ref_gene_id", "")
+        info["ref_strand"] = ctx.get("ref_strand", "")
+        info["diff_transcript_id"] = ctx.get("diff_transcript_id", "")
+        info["diff_gene_id"] = ctx.get("diff_gene_id", "")
+        info["diff_strand"] = ctx.get("diff_strand", "")
 
     roi_embeds = []
     label_ids = []
@@ -362,85 +602,41 @@ def compute_splice_roi_embeddings(
 
         pooled = rep_slice.mean(axis=0)
 
-        lid = int(info["label_id"])
-        ex_id = info["example_id"]
-
         roi_embeds.append(pooled.astype(np.float32))
-        label_ids.append(lid)
+        label_ids.append(int(info["label_id"]))
         metas.append(
             {
-                "example_id": ex_id,
-                "label_id": lid,
-                "site_type": info.get("site_type"),
+                "example_id": info["example_id"],
+                "label_id": int(info["label_id"]),
                 "chrom": info.get("chrom"),
                 "start": int(info.get("start", -1)),
                 "end": int(info.get("end", -1)),
                 "delta_bp": int(info.get("delta_bp", 0)),
                 "feature_start_in_window": fs,
                 "feature_end_in_window": fe,
+                "ref_transcript_id": info.get("ref_transcript_id", ""),
+                "ref_gene_id": info.get("ref_gene_id", ""),
+                "ref_strand": info.get("ref_strand", ""),
+                "diff_transcript_id": info.get("diff_transcript_id", ""),
+                "diff_gene_id": info.get("diff_gene_id", ""),
+                "diff_strand": info.get("diff_strand", ""),
             }
         )
 
     if len(roi_embeds) == 0:
-        logging.error(f"no {site_type} roi embeddings produced")
+        logging.error("no roi embeddings produced")
         return np.empty((0, 1), dtype=np.float32), np.array([]), []
 
     roi_embeds = np.stack(roi_embeds)
     label_ids = np.asarray(label_ids, dtype=int)
-    logging.info(f"{site_type} roi_embeds shape={roi_embeds.shape}, n={len(label_ids)}")
+    logging.info(f"roi_embeds shape={roi_embeds.shape}, n={len(label_ids)}")
     return roi_embeds, label_ids, metas
 
 
-def plot_binary_knn(embeddings, labels, output_path, title):
-    if len(embeddings) == 0:
-        logging.warning(f"[KNN] no embeddings for {title}")
-        return None, None, None
+# ---------------- main analysis ----------------
 
-    y_true, y_pred = loo_1nn_predictions(embeddings, labels)
-    present = sorted(set(labels))
-    cm, metrics, label_order = eval_metrics(y_true, y_pred, label_order=present)
-
-    with np.errstate(invalid="ignore", divide="ignore"):
-        acc_matrix = cm.astype(float) / np.where(
-            cm.sum(axis=1, keepdims=True) == 0,
-            1,
-            cm.sum(axis=1, keepdims=True),
-        )
-
-    plt.figure(figsize=(5, 4))
-    sns.heatmap(
-        acc_matrix,
-        xticklabels=label_order,
-        yticklabels=label_order,
-        vmin=0,
-        vmax=1,
-        cmap="Blues",
-        annot=True,
-        fmt=".2f",
-        cbar_kws={"label": "per-class recall"},
-    )
-    plt.title(title)
-    plt.xlabel("predicted")
-    plt.ylabel("true")
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
-    plt.close()
-
-    logging.info(
-        f"[KNN] {title} | micro={metrics['micro_accuracy']:.3f}, "
-        f"balanced={metrics['balanced_accuracy']:.3f}, "
-        f"macroF1={metrics['macro_f1']:.3f}, "
-        f"weightedF1={metrics['weighted_f1']:.3f}, "
-        f"kappa={metrics['cohens_kappa']:.3f}, "
-        f"mcc={metrics['mcc']:.3f}"
-    )
-    return metrics, label_order, acc_matrix
-
-
-# ---------------- main splice site analysis (5 tasks) ----------------
-
-def analyze_splice_pairs_gamba_caduceus(
-    splice_tsv_dir,
+def analyze_splice_8way_knn(
+    splice_tsv_path,
     genome_fasta,
     bigwig_file,
     checkpoint_dir,
@@ -448,218 +644,157 @@ def analyze_splice_pairs_gamba_caduceus(
     output_dir,
     model_type,
     training_task,
-    site_type,
     last_step,
-    chromosomes,
     batch_size,
-    max_examples=None,
+    n_examples,
+    seed,
+    chromosomes,
+    sampled_examples_tsv=None,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logging.info(f"using device: {device}")
+    step_tag = "random_init" if last_step == 0 else str(last_step)
+    model_tag = f"{model_type}_{training_task}_step{step_tag}"
 
-    # load model
-    model, tokenizer = load_model(
-        checkpoint_dir,
-        config_fpath,
-        last_step=last_step,
-        device=device,
-        training_task=training_task,
-        model_type=model_type,
-    )
+    cached = maybe_load_cached_reps(output_dir, model_tag, "SPLICE_8way_all_labels")
+    if cached is not None:
+        roi_embeds, label_ids, metas = cached
+        label_ids = np.asarray(label_ids).astype(int)
+        logging.info(f"[cache] loaded roi_embeds shape={roi_embeds.shape}")
 
-    genome = Fasta(genome_fasta)
+        # 8-way heatmap
+        plot_knn_heatmap(
+            roi_embeds,
+            label_ids,
+            output_path=output_dir / f"knn_heatmap_{model_tag}_SPLICE8way_all_labels.png",
+            title=f"Splice 8-way 1-NN ({model_tag})", do_splice_three=True
+        )
 
-    # load splice contexts
-    contexts = load_splice_contexts(
-        splice_tsv_dir=splice_tsv_dir,
-        bigwig_file=bigwig_file,
-        genome=genome,
-        model_type=model_type,
-        site_type=site_type,
-        chromosomes=chromosomes,
-        max_examples=max_examples,
-    )
-    if not contexts:
-        logging.error(f"no {site_type} contexts loaded, aborting")
-        return
+        # binary 1-vs-rest plots
+        for target_label in range(2, 9):
+            indices = np.where((label_ids == 1) | (label_ids == target_label))[0]
+            if len(indices) == 0:
+                logging.warning(f"[KNN] no examples for 1-vs-{target_label}, skipping plot")
+                continue
 
-    # embed
-    roi_embeds, label_ids, metas = compute_splice_roi_embeddings(
-        model,
-        tokenizer,
-        contexts,
-        batch_size=batch_size,
-        device=device,
-        model_type=model_type,
-        training_task=training_task,
-        site_type=site_type,
-    )
-    if roi_embeds.shape[0] == 0:
-        logging.error(f"empty {site_type} embeddings, aborting")
-        return
+            sub_embeds = roi_embeds[indices]
+            sub_labels = label_ids[indices]
+            plot_knn_heatmap(
+                sub_embeds,
+                sub_labels,
+                output_path=output_dir / f"knn_heatmap_{model_tag}_SPLICE1_vs_{target_label}.png",
+                title=f"Splice 1-vs-{target_label} 1-NN ({model_tag})", do_splice_three=False
+            )
 
-    # index embeddings by example_id + label_id
-    index_by_example = defaultdict(dict)
-    for i, meta in enumerate(metas):
-        ex_id = meta["example_id"]
-        lid = int(meta["label_id"])
-        index_by_example[ex_id][lid] = i
-
-    valid_examples = [
-        ex_id
-        for ex_id, lids in index_by_example.items()
-        if all(l in lids for l in (1, 2, 3, 4, 5))
-    ]
-    logging.info(f"valid {site_type} examples with all 5 labels after embedding: {len(valid_examples)}")
-
-    if len(valid_examples) == 0:
-        logging.error(f"no valid {site_type} examples with all 5 labels, aborting")
-        return
-
-    # model tag for saving
-    if last_step == 0:
-        step_tag = "random_init"
     else:
-        step_tag = str(last_step)
-    model_tag = f"{model_type}_{training_task}_{site_type}_step{step_tag}"
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logging.info(f"using device: {device}")
 
-    # save all roi embeddings (labels 1–5)
-    extra_all = {
-        "model_type": model_type,
-        "training_task": training_task,
-        "site_type": site_type,
-        "last_step": last_step,
-        "scope": "roi_all",
-    }
-    save_reps(output_dir, model_tag, f"{site_type}_all_labels", roi_embeds, label_ids, metas, extra=extra_all)
+        model, tokenizer = load_model(
+            checkpoint_dir,
+            config_fpath,
+            last_step=last_step,
+            device=device,
+            training_task=training_task,
+            model_type=model_type,
+        )
 
-    # helper: build binary task + track indices for metas
-    def build_binary_task(functional_label, other_label, other_name):
-        X = []
-        y = []
-        idxs = []
+        genome = Fasta(genome_fasta)
+
+        contexts = load_splice_8way_contexts_from_tsv(
+            splice_tsv_path=splice_tsv_path,
+            bigwig_file=bigwig_file,
+            genome=genome,
+            model_type=model_type,
+            n_examples=n_examples,
+            seed=seed,
+            chromosomes=chromosomes,
+            sampled_examples_tsv=sampled_examples_tsv,
+            output_dir_for_sampling=output_dir,
+        )
+        if not contexts:
+            logging.error("no contexts loaded, aborting")
+            return
+
+        roi_embeds, label_ids, metas = compute_splice_roi_embeddings(
+            model,
+            tokenizer,
+            contexts,
+            batch_size=batch_size,
+            device=device,
+            model_type=model_type,
+            training_task=training_task,
+        )
+        if roi_embeds.shape[0] == 0:
+            logging.error("empty embeddings, aborting")
+            return
+
+        # ensure strict 8-per-example after embedding
+        index_by_example = defaultdict(dict)
+        for i, meta in enumerate(metas):
+            index_by_example[meta["example_id"]][int(meta["label_id"])] = i
+
+        valid_examples = [
+            ex_id for ex_id, lids in index_by_example.items()
+            if all(l in lids for l in (1, 2, 3, 4, 5, 6, 7, 8))
+        ]
+        logging.info(f"valid examples with all 8 labels after embedding: {len(valid_examples)}")
+
+        keep_indices = []
         for ex in valid_examples:
-            i_func = index_by_example[ex][functional_label]
-            i_other = index_by_example[ex][other_label]
-            X.append(roi_embeds[i_func])
-            y.append(f"functional_{site_type}")  # label1
-            idxs.append(i_func)
-            X.append(roi_embeds[i_other])
-            y.append(other_name)
-            idxs.append(i_other)
-        return np.stack(X), np.array(y), idxs
+            for lid in (1, 2, 3, 4, 5, 6, 7, 8):
+                keep_indices.append(index_by_example[ex][lid])
+        keep_indices = np.asarray(keep_indices, dtype=int)
 
-    # task 1: label1 vs label2 (cryptic close – functional)
-    X1, y1, _ = build_binary_task(1, 2, "cryptic_close")
+        roi_embeds = roi_embeds[keep_indices]
+        label_ids = label_ids[keep_indices]
+        metas = [metas[i] for i in keep_indices.tolist()]
 
-    # task 2: label1 vs label3 (cryptic far – proximity)
-    X2, y2, _ = build_binary_task(1, 3, "cryptic_far")
+        extra_all = {
+            "model_type": model_type,
+            "training_task": training_task,
+            "last_step": last_step,
+            "scope": "roi_all",
+            "n_examples_requested": int(n_examples),
+            "seed": int(seed),
+        }
+        save_reps(output_dir, model_tag, "SPLICE_8way_all_labels", roi_embeds, label_ids, metas, extra=extra_all)
 
-    # task 3: label1 vs label4 (annotated close – functional)
-    X3, y3, _ = build_binary_task(1, 4, "annotated_close")
+        # make plots after saving
+        plot_knn_heatmap(
+            roi_embeds,
+            label_ids,
+            output_path=output_dir / f"knn_heatmap_{model_tag}_SPLICE8way_all_labels.png",
+            title=f"Splice 8-way 1-NN ({model_tag})",
+        )
 
-    # task 4: label1 vs label5 (annotated far – proximity)
-    X4, y4, _ = build_binary_task(1, 5, "annotated_far")
+        for target_label in range(2, 9):
+            indices = np.where((label_ids == 1) | (label_ids == target_label))[0]
+            if len(indices) == 0:
+                logging.warning(f"[KNN] no examples for 1-vs-{target_label}, skipping plot")
+                continue
 
-    # task 5: annotated vs cryptic (labels 1,4,5 vs 2,3)
-    X5 = []
-    y5 = []
-    for ex in valid_examples:
-        for lid in (1, 2, 3, 4, 5):
-            idx = index_by_example[ex][lid]
-            X5.append(roi_embeds[idx])
-            if lid in (1, 4, 5):
-                y5.append("annotated")
-            else:
-                y5.append("cryptic")
-    X5 = np.stack(X5)
-    y5 = np.array(y5)
-
-    # run knn + plots for each task
-    task_metrics = {}
-
-    metrics1, _, _ = plot_binary_knn(
-        X1,
-        y1,
-        output_dir / f"knn_{model_tag}_task1_functional_vs_cryptic_close.png",
-        title=f"task1 ({site_type}): functional vs cryptic close",
-    )
-    task_metrics["task1"] = metrics1["balanced_accuracy"] if metrics1 else np.nan
-
-    metrics2, _, _ = plot_binary_knn(
-        X2,
-        y2,
-        output_dir / f"knn_{model_tag}_task2_functional_vs_cryptic_far.png",
-        title=f"task2 ({site_type}): functional vs cryptic far",
-    )
-    task_metrics["task2"] = metrics2["balanced_accuracy"] if metrics2 else np.nan
-
-    metrics3, _, _ = plot_binary_knn(
-        X3,
-        y3,
-        output_dir / f"knn_{model_tag}_task3_functional_vs_annotated_close.png",
-        title=f"task3 ({site_type}): functional vs annotated close",
-    )
-    task_metrics["task3"] = metrics3["balanced_accuracy"] if metrics3 else np.nan
-
-    metrics4, _, _ = plot_binary_knn(
-        X4,
-        y4,
-        output_dir / f"knn_{model_tag}_task4_functional_vs_annotated_far.png",
-        title=f"task4 ({site_type}): functional vs annotated far",
-    )
-    task_metrics["task4"] = metrics4["balanced_accuracy"] if metrics4 else np.nan
-
-    metrics5, _, _ = plot_binary_knn(
-        X5,
-        y5,
-        output_dir / f"knn_{model_tag}_task5_annotated_vs_cryptic.png",
-        title=f"task5 ({site_type}): annotated vs cryptic",
-    )
-    task_metrics["task5"] = metrics5["balanced_accuracy"] if metrics5 else np.nan
-
-    # save metrics json
-    with open(output_dir / f"balanced_accuracy_{model_tag}_tasks.json", "w") as f:
-        json.dump(task_metrics, f, indent=2)
-
-    # bar plot across tasks
-    task_order = ["task1", "task2", "task3", "task4", "task5"]
-    task_labels = [
-        "1: functional v cryptic (close)",
-        "2: functional v cryptic (far)",
-        "3: functional v annotated (close)",
-        "4: functional v annotated (far)",
-        "5: annotated vs cryptic",
-    ]
-    bas = [task_metrics.get(t, np.nan) for t in task_order]
-
-    plt.figure(figsize=(7, 4))
-    sns.barplot(x=task_labels, y=bas)
-    plt.ylabel("balanced accuracy")
-    plt.ylim(0, 1)
-    plt.xticks(rotation=25, ha="right")
-    plt.title(f"balanced accuracy per {site_type} task ({model_type}, {training_task})")
-    plt.tight_layout()
-    plt.savefig(output_dir / f"balanced_accuracy_{model_tag}_tasks_bar.png", dpi=300)
-    plt.close()
-
-    logging.info(f"{site_type} task balanced accuracies: {task_metrics}")
+            sub_embeds = roi_embeds[indices]
+            sub_labels = label_ids[indices]
+            plot_knn_heatmap(
+                sub_embeds,
+                sub_labels,
+                output_path=output_dir / f"knn_heatmap_{model_tag}_SPLICE1_vs_{target_label}.png",
+                title=f"Splice 1-vs-{target_label} 1-NN ({model_tag})",
+            )
 
 
 # ---------------- cli ----------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Splice site representation tasks for gamba / caduceus (5 tasks, 1-NN)"
+        description="Splice site 8-way representation tasks for gamba / caduceus (1-NN; chrom-stratified sampling)"
     )
     parser.add_argument(
-        "--splice_tsv_dir",
+        "--splice_tsv_path",
         type=str,
-        default='/home/mica/gamba/data_processing/data/splice_sites/',
-        help="dir with chr*_{donor,acceptor}_labels.tsv files",
+        default="/home/mica/gamba/data_processing/data/splice_sites/all_chr1_22_splice_8way_complete.tsv",
     )
     parser.add_argument(
         "--bigwig_file",
@@ -671,12 +806,7 @@ def main():
         type=str,
         default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
     )
-    parser.add_argument(
-        "--checkpoint_dir",
-        type=str,
-        default="/home/mica/gamba/",
-        help="base checkpoint dir (for gamba this is the root; we add clean_dcps/CCP/)",
-    )
+    parser.add_argument("--checkpoint_dir", type=str, default="/home/mica/gamba/")
     parser.add_argument(
         "--config_fpath",
         type=str,
@@ -685,80 +815,42 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/splice_reps",
+        default="/home/mica/gamba/data_processing/data/240-mammalian/splice_reps_8way",
     )
+    parser.add_argument("--model_type", type=str, choices=["gamba", "caduceus"], required=True)
+    parser.add_argument("--training_task", type=str, choices=["dual", "cons_only", "seq_only"], required=True)
+    parser.add_argument("--last_step", type=int, default=44000)
+    parser.add_argument("--batch_size", type=int, default=32)
+
     parser.add_argument(
-        "--model_type",
-        type=str,
-        choices=["gamba", "caduceus"],
-        required=True,
-    )
-    parser.add_argument(
-        "--training_task",
-        type=str,
-        choices=["dual", "cons_only", "seq_only"],
-        required=True,
-    )
-    parser.add_argument(
-        "--site_type",
-        type=str,
-        choices=["donor", "acceptor"],
-        required=True,
-        help="Type of splice site to analyze",
-    )
-    parser.add_argument(
-        "--last_step",
+        "--n_examples",
         type=int,
-        default=44000,
-        help="checkpoint step (0 = random init)",
+        default=1000,
+        help="total examples across chr1..chr22 (8 contexts each). default => 8000 contexts",
     )
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--chromosomes",
         type=str,
         nargs="+",
-        default=[
-            "chr1", "chr2", "chr3", "chr4", "chr5", "chr6",
-            "chr7", "chr8", "chr9", "chr10", "chr11", "chr12",
-            "chr13", "chr14", "chr15", "chr16", "chr17", "chr18",
-            "chr19", "chr20", "chr21", "chr22", "chrX",
-        ],
+        default=[f"chr{i}" for i in range(1, 23)],
     )
     parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=32,
-    )
-    parser.add_argument(
-        "--max_examples",
-        type=int,
+        "--sampled_examples_tsv",
+        type=str,
         default=None,
-        help="optional cap on number of label1 examples (each contributes 5 contexts)",
+        help="if provided, uses this TSV of sampled examples instead of re-sampling",
     )
 
     args = parser.parse_args()
 
-    # checkpoint subdir for gamba, like upstream script
-    if args.model_type == "gamba":
-        checkpoint_dir = os.path.join(args.checkpoint_dir, "clean_dcps/CCP/")
-    else:
-        checkpoint_dir = args.checkpoint_dir
-
-    if args.last_step == 0:
-        last_tag = "random_init"
-    else:
-        last_tag = args.last_step
-
-    outdir = os.path.join(
-        args.output_dir,
-        f"splice_{args.model_type}_{args.training_task}_{args.site_type}_step_{last_tag}",
-    )
+    checkpoint_dir = os.path.join(args.checkpoint_dir, "clean_dcps/CCP/") if args.model_type == "gamba" else args.checkpoint_dir
+    last_tag = "random_init" if args.last_step == 0 else args.last_step
+    outdir = os.path.join(args.output_dir, f"SPLICE8_{args.model_type}_{args.training_task}_step_{last_tag}")
     os.makedirs(outdir, exist_ok=True)
 
-    logging.info(f"writing outputs to {outdir}")
-    logging.info(f"using checkpoint_dir={checkpoint_dir}")
-
-    analyze_splice_pairs_gamba_caduceus(
-        splice_tsv_dir=args.splice_tsv_dir,
+    analyze_splice_8way_knn(
+        splice_tsv_path=args.splice_tsv_path,
         genome_fasta=args.genome_fasta,
         bigwig_file=args.bigwig_file,
         checkpoint_dir=checkpoint_dir,
@@ -766,11 +858,12 @@ def main():
         output_dir=outdir,
         model_type=args.model_type,
         training_task=args.training_task,
-        site_type=args.site_type,
         last_step=args.last_step,
-        chromosomes=args.chromosomes,
         batch_size=args.batch_size,
-        max_examples=args.max_examples,
+        n_examples=args.n_examples,
+        seed=args.seed,
+        chromosomes=args.chromosomes,
+        sampled_examples_tsv=args.sampled_examples_tsv,
     )
 
 
@@ -778,16 +871,5 @@ if __name__ == "__main__":
     main()
 
 
-#  # For donor sites with dual-task gamba
-# python splice_reps.py \
-#     --model_type gamba \
-#     --training_task dual \
-#     --site_type donor \
-#     --last_step 44000
-
-# # For acceptor sites with seq_only gamba
-# python splice_reps.py \
-#     --model_type gamba \
-#     --training_task seq_only \
-#     --site_type acceptor \
-#     --last_step 44000
+# Example usage:
+# python /home/mica/gamba/src/evaluation/splice_reps.py --model_type gamba --training_task dual --last_step 44000
