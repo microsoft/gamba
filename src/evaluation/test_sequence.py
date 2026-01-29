@@ -343,7 +343,7 @@ def save_predicted_scores_as_bigwig(
 def main():
     # process command line arguments
     parser = argparse.ArgumentParser(
-        description="Generate data files for training, testing, and validation sets"
+        description="Make bigwig files"
     )
     parser.add_argument(
         "--bigwig_file",
