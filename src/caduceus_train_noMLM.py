@@ -6,6 +6,7 @@ import os
 import random
 import glob
 from typing import Optional, Sequence, Tuple, Type
+from sequence_models.constants import START, STOP, MSA_PAD
 
 import numpy as np
 import wandb
@@ -39,9 +40,11 @@ from torch.cuda.amp import GradScaler
 import sys
 
 sys.path.append(os.environ["PWD"])  # allow import from project directory.
+from my_caduceus.configuration_caduceus import CaduceusConfig
+from my_caduceus.modeling_caduceus import CaduceusConservation
 
 from gamba.activation_checkpointing import apply_activation_checkpointing
-from gamba.collators import gLMCollator, LMCollator, OAMaskCollator
+from gamba.collators import gLMMLMCollator, LMCollator, OAMaskCollator
 from gamba.constants import TaskType, DNA_ALPHABET_PLUS
 from gamba.datasets import ConservationDataset
 from gamba.model import (
@@ -68,9 +71,10 @@ RANK = int(os.environ.get("RANK", "0"))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "0"))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "1"))
 DEVICE = torch.device(f"cuda:{LOCAL_RANK}" if torch.cuda.is_available() else "cpu")
-#DEVICE = torch.device(f"cuda:1" if torch.cuda.is_available() else "cpu")
+# DEVICE = torch.device(f"cuda:1" if torch.cuda.is_available() else "cpu")
 
 
+ 
 def warmup_with_inverse_sqrt_decay(warmup_steps):
     def lr_lambda(step):
         if step < warmup_steps:
@@ -80,7 +84,6 @@ def warmup_with_inverse_sqrt_decay(warmup_steps):
             # inverse square root decay after warmup
             return (warmup_steps**0.5) / (step**0.5)
     return lr_lambda
-
 
 def is_amlt() -> bool:
     return os.environ.get("AMLT_OUTPUT_DIR", None) is not None
@@ -122,14 +125,14 @@ def load_config_and_model(
     )
 
     #get d_model, n_head, n_layers, dim_feedforward and padding_id from the config
-    d_model = config.get("d_model", 512) #512/2
-    nhead = config.get("n_head", 8)  
-    n_layers = config.get("n_layers", 6)
-    dim_feedforward = config.get("dim_feedforward", d_model)
-    padding_id = config.get("padding_id", 0)
+    # d_model = config.get("d_model", 512) #512/2
+    # nhead = config.get("n_head", 8)  
+    # n_layers = config.get("n_layers", 6)
+    # dim_feedforward = config.get("dim_feedforward", d_model)
+    # padding_id = config.get("padding_id", 0)
 
-    #print all the values
-    print(f"d_model: {d_model}, nhead: {nhead}, n_layers: {n_layers}, dim_feedforward: {dim_feedforward}, padding_id: {padding_id}")
+    # #print all the values
+    # print(f"d_model: {d_model}, nhead: {nhead}, n_layers: {n_layers}, dim_feedforward: {dim_feedforward}, padding_id: {padding_id}")
 
 
     # add the task-specific wrapper
@@ -141,9 +144,16 @@ def load_config_and_model(
     elif task == TaskType.LM:
         model = ARDiffusionModel(model, aux_loss_weight=aux_loss_weight)
     elif task == TaskType.GLM:
-        model = JambagambaModel(
-            model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
+        tokenizer = Tokenizer(DNA_ALPHABET_PLUS)
+        caduceus_config = CaduceusConfig(          
+            d_model=256,
+            n_layer=8,
+            vocab_size = len(DNA_ALPHABET_PLUS)
+            # ...any other config fields you need to set...
         )
+
+        model = CaduceusConservation(caduceus_config)
+        block = None  # Not applicable for huggingface model
     else:
         raise ValueError(f"Unknown task: {config['task']}")
     return config, tokenizer, model, block
@@ -180,7 +190,7 @@ def get_dataloader(
             swap_bos_eos_on_flip=config.get("swap_bos_eos_on_flip", True),
         )
     elif config["task"] == "glm":
-        collator = gLMCollator(
+        collator = gLMMLMCollator(
             tokenizer=tokenizer,
             pad_to_multiple_of=config.get("pad_to_multiple_of", None),
         )
@@ -339,7 +349,7 @@ def get_dataloader(
         dl_val = DataLoader(
             dataset=ds_val,
             batch_size=128,
-            num_workers=8,
+            num_workers=16,
             collate_fn=collator,
             pin_memory=True,
         )
@@ -369,33 +379,47 @@ def step(
 
     batch = [el.to(DEVICE) for el in batch]
     scaler = GradScaler()
+
+    sequence_input = batch[0][:, 0, :].long()       # (B, T)
+    scaling = batch[0][:, 1, :].float()             # (B, T)
+    sequence_labels = batch[1][:, 0, :].long()      # (B, T)
+    scale_lbls = batch[1][:, 1, :].float()          # (B, T)
+
+    model_kwargs = {
+        "input_ids": sequence_input,
+        "labels": sequence_labels,
+    }
+
+    # If model supports conservation prediction, pass conservation labels too
+    if hasattr(model, "conservation_head"):
+        model_kwargs["conservation_labels"] = scale_lbls
+
     if training:
-        # step through model
         optimizer.zero_grad()
-        outputs = model(*batch)
+        outputs = model(**model_kwargs)
         scaler.scale(outputs["loss"]).backward()
-
-        # Unscales the gradients of optimizer's assigned params in-place
         scaler.unscale_(optimizer)
-
-        # Define max_norm
-        max_norm = 1.0
-
-        # Since the gradients of optimizer's assigned params are unscaled, clips as usual:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-
-        # optimizer's gradients are already unscaled, so scaler.step does not unscale them,
-        # although it still skips optimizer.step() if the gradients contain infs or NaNs.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scheduler.step()
-        # Updates the scale for next iteration.
         scaler.update()
-        print(f"entering model with batch {batch[0].shape}")
     else:
-        # validation
         with torch.no_grad():
-            outputs = model(*batch)
-    return outputs
+            outputs = model(**model_kwargs)
+
+    metrics = {
+        "loss": outputs["loss"],
+        "n_processed": outputs.get("n_processed", (sequence_labels != -100).sum()),
+        "n_seqs": outputs.get("n_seqs", torch.tensor(sequence_input.size(0), device=DEVICE)),
+        OTHER_METRICS_KEY: {}
+    }
+
+    # Optionally log conservation-specific losses if present
+    for key in ["gaussian_loss", "mse_loss"]:
+        if key in outputs:
+            metrics[key] = outputs[key]
+
+    return metrics
 
 
 def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=None):
@@ -414,19 +438,26 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
 
     total_tokens = 0
     total_seqs = 0
-    total_ce_loss = 0
     total_gaussian_loss = 0
     num_batches= 0
     total_mse_loss = 0
     for batch in val_loader:
-        output = step(model, batch, None, None, training=False)
-        num_batches += 1
+        sequence = batch[0][:, 0, :].long()        # shape (B, T)
+        scaling = batch[0][:, 1, :].float()         # optional, (B, T)
+        sequence_labels    = batch[1][:, 0, :].long()        # shape (B, T)
+        scale_lbls = batch[1][:, 1, :].float()      # optional
+        print("Label max:", sequence_labels.max())
+        print("Label min:", sequence_labels.min())
+
+        print("Model vocab size:", model.config.vocab_size)
         with torch.no_grad():
+            output = step(model, batch, None, None, training=False)
+            print("output contains:", output)
+            num_batches += 1
             reduce_tensor = torch.stack(
                 (
                     output["n_processed"],
                     output["n_seqs"],
-                    output["cross_entropy_loss"],
                     output["gaussian_loss"],
                     output["mse_loss"]
                 )
@@ -435,23 +466,20 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
                 dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
                 total_tokens += int(reduce_tensor[0].item())
                 total_seqs += int(reduce_tensor[1].item())
-                total_ce_loss += reduce_tensor[2].item()
-                total_gaussian_loss += reduce_tensor[3].item()
-                total_mse_loss += reduce_tensor[4].item()
+                total_gaussian_loss += reduce_tensor[2].item()
+                total_mse_loss += reduce_tensor[3].item()
             else:
                 total_tokens += output["n_processed"]
                 total_seqs += output["n_seqs"]
-                total_ce_loss += output["cross_entropy_loss"]
                 total_gaussian_loss += output["gaussian_loss"]
                 total_mse_loss += output["mse_loss"]
     if RANK == 0:
         with open(csv_fpath, "a") as f:
             f.write(
-                f"{epoch},{train_step},{total_tokens},{total_ce_loss},{total_gaussian_loss}\n"
+                f"{epoch},{train_step},{total_tokens},{total_gaussian_loss}\n"
             )
         wandb.log(
             {
-                "val_ce_loss": total_ce_loss / num_batches,
                 "val_gaussian_loss": total_gaussian_loss/ num_batches,
                 "val_mse_loss": total_mse_loss/ num_batches,
                 "tokens_validated": total_tokens,
@@ -475,7 +503,7 @@ def save_checkpoint(
     if step % save_every != 0:
         return
 
-    out_path = os.path.join(out_dir, f"dcp_gamba{step}")
+    out_path = os.path.join(out_dir, f"dcp_consONLYcaduceus_{step}")
     os.makedirs(out_path, exist_ok=True)
     print(f"Saving checkpoint to {out_path}", flush=True)
 
@@ -501,7 +529,6 @@ def save_checkpoint(
             "epoch": epoch,
         }
         torch.save(sd, os.path.join(out_path, "scheduler.pt"))
-
 
 
 def epoch(
@@ -540,6 +567,14 @@ def epoch(
             print("rank", RANK, "batchsize", batch[0].shape)
 
         print("starting one step...")
+        sequence_input = batch[0][:, 0, :].long()        # shape (B, T)
+        scaling = batch[0][:, 1, :].float()         # optional, (B, T)
+        sequence_labels    = batch[1][:, 0, :].long()        # shape (B, T)
+        scale_lbls = batch[1][:, 1, :].float()      # optional
+        print("Label max:", sequence_labels.max())
+        print("Label min:", sequence_labels.min())
+
+        print("Model vocab size:", model.config.vocab_size)
 
         # def step(model, batch, device, optimizer, scheduler) -> dict:
         output = step(model, batch, optimizer, scheduler)
@@ -551,9 +586,7 @@ def epoch(
                 (
                     output["n_processed"],
                     output["n_seqs"],
-                    output["cross_entropy_loss"],
                     output["gaussian_loss"],
-                    output["mse_loss"]
                 )
             )
             if WORLD_SIZE > 1:
@@ -564,7 +597,6 @@ def epoch(
         if total_steps >= max_steps:
             print(f"Reached max step limit of {max_steps} at epoch {current_epoch}, exiting...")
             return total_steps, total_tokens, total_seq, True  # signal to stop training
-
         total_tokens += int(reduce_tensor[0].item())
         total_seq += int(reduce_tensor[1].item())
 
@@ -573,7 +605,6 @@ def epoch(
             wandb.log(
                 {
                     "loss": output["loss"].item(),
-                    "cross_entropy_loss": output["cross_entropy_loss"].item(),
                     "gaussian_loss": output["gaussian_loss"].item(),
                     "mse_loss": output["mse_loss"].item(),
                     "nsteps": total_steps,
@@ -604,19 +635,20 @@ def epoch(
     return total_steps, total_tokens, total_seq, False
 
 
+
 def get_latest_dcp_checkpoint_path(ckpt_dir: str, last_step: int = -1) -> Optional[str]:
     ckpt_path = None
     if last_step == -1:
         if not os.path.exists(ckpt_dir):
             os.makedirs(ckpt_dir, exist_ok=True)
         for dir_name in os.listdir(ckpt_dir):
-            if "dcp_gamba" in dir_name:
-                step = int(dir_name.split("dcp_gamba")[-1])
+            if "dcp_consONLYcaduceus" in dir_name:
+                step = int(dir_name.split("dcp_consONLYcaduceus")[-1])
                 if step > last_step:
                     ckpt_path = os.path.join(ckpt_dir, dir_name)
                     last_step = step
     else:
-        ckpt_path = os.path.join(ckpt_dir, f"dcp_gamba{last_step}")
+        ckpt_path = os.path.join(ckpt_dir, f"dcp_consONLYcaduceus{last_step}")
     return ckpt_path
 
 
@@ -649,12 +681,7 @@ def load_checkpoint(
         else:
             #non-distributed loading
             print("Using standard checkpoint loading...", flush=True)
-            #checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"))
-            checkpoint = torch.load(
-                os.path.join(ckpt_path, "model_optimizer.pt"),
-                map_location='cuda:0' if torch.cuda.is_available() else 'cpu',
-                weights_only=True
-            )
+            checkpoint = torch.load(os.path.join(ckpt_path, "model_optimizer.pt"))
             model.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
@@ -668,14 +695,32 @@ def load_checkpoint(
     else:
         return 0, 0, 0, 0
 
+
+
+from collections import OrderedDict
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def build_complement_map(vocab_size):
+    """
+    Build a complement map tensor of length `vocab_size`, where:
+    A=0, T=1, G=2, C=3 are reversed: A <-> T, G <-> C
+    All other tokens map to themselves
+    """
+    complement_map = torch.arange(vocab_size)
+    complement_map[0] = 1  # A → T
+    complement_map[1] = 0  # T → A
+    complement_map[2] = 3  # G → C
+    complement_map[3] = 2  # C → G
+    return complement_map
+
 def evaluate_model(model, dataloader, device):
     model.eval()
-    total_ce_loss = 0
     total_gaussian_loss = 0
     num_batches = 0
     total_tokens = 0
     total_seqs = 0
-    total_accuracy = 0
     with torch.no_grad():
         for batch in dataloader:
             output = step(model, batch, None, None, training=False)
@@ -685,27 +730,21 @@ def evaluate_model(model, dataloader, device):
                     (
                         output["n_processed"],
                         output["n_seqs"],
-                        output["cross_entropy_loss"],
                         output["gaussian_loss"],
-                        output["accuracy"]
                     )
                 )
                 if WORLD_SIZE > 1:
                     dist.reduce(reduce_tensor, 0, op=dist.ReduceOp.SUM)
                     total_tokens += int(reduce_tensor[0].item())
                     total_seqs += int(reduce_tensor[1].item())
-                    total_ce_loss += reduce_tensor[2].item()
                     total_gaussian_loss += reduce_tensor[3].item()
                 else:
                     total_tokens += output["n_processed"]
                     total_seqs += output["n_seqs"]
-                    total_ce_loss += output["cross_entropy_loss"]
                     total_gaussian_loss += output["gaussian_loss"]
-                    total_accuracy += output["accuracy"]
-    ce_loss = total_ce_loss / num_batches
     gaussian_loss = total_gaussian_loss / num_batches
-    accuracy = total_accuracy / num_batches
-    return accuracy, ce_loss, gaussian_loss
+    return gaussian_loss
+
 
 def train(args: argparse.Namespace) -> None:
     print(
@@ -719,9 +758,16 @@ def train(args: argparse.Namespace) -> None:
     if args.verbose:
         print("Initializing model...", RANK)
     config, tokenizer, model, blk_types = load_config_and_model(args.config_fpath)
+    tokenizer= Tokenizer(DNA_ALPHABET_PLUS)
+    vocab_size = len(DNA_ALPHABET_PLUS)
+    print(f"Vocabulary size:{vocab_size}")
+    pad_token_id = tokenizer.tokenizeMSA([MSA_PAD])[0]
+    # Pull current config
+    model.config.vocab_size = vocab_size
+    model.config.pad_token_id = pad_token_id
     if RANK == 0 and not args.no_wandb:
         os.makedirs(args.out_fpath, exist_ok=True)
-        run_id_file = os.path.join(args.out_fpath, "ArGambaDual-wandb_run_id.txt")
+        run_id_file = os.path.join(args.out_fpath, "BiGambaConsOnly-wandb_run_id.txt")
         if os.path.exists(run_id_file):
             with open(run_id_file, "r") as f:
                 run_id = f.read().strip()
@@ -735,7 +781,7 @@ def train(args: argparse.Namespace) -> None:
             resume=resume_mode,
             mode="online",
             config=config,
-            name=f"ArGamba-Dual",
+            name=f"BiGamba-ConsOnly",
             group=f"{config['dataset']}",
             notes=f"{config.get('model_config','')}",
             tags=[config['task'], config['model_type'], args.dtype],
@@ -751,7 +797,6 @@ def train(args: argparse.Namespace) -> None:
         wandb.define_metric("*", step_metric="nsteps")
     elif RANK == 0 and args.no_wandb:
         wandb.init(mode="disabled", config=config)
-
     out_fpath = ckpt_dir
     csv_fpath = os.path.join(out_fpath, "val.csv")
 
@@ -840,16 +885,15 @@ def train(args: argparse.Namespace) -> None:
     scheduler = LambdaLR(optimizer, lr_func)
 
     if args.run_type == "test":
-        accuracy, avg_ce_loss, avg_gaussian_loss = evaluate_model(model, dl_test, device=DEVICE)
-        print(f"Accuracy on test: {accuracy}")
-        print(f"Average CE Loss on test: {avg_ce_loss}")
-        print(f"Average Gaussian Loss on test: {avg_gaussian_loss}")
+        gaussian_loss = evaluate_model(model, dl_test, device=DEVICE)
+        print(f"Gaussian Loss on test: {gaussian_loss}")
+        print(f"Average gaussian Loss on test: {gaussian_loss}")
         return
     initial_epoch = 0
     total_steps = 0
     total_tokens = 0
     total_seqs = 0
-        # load the state
+    # load the state
     print("loading state")
     initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
         model, optimizer, scheduler, args.out_fpath, args.last_step
@@ -859,7 +903,7 @@ def train(args: argparse.Namespace) -> None:
     optimizer.param_groups[0]["initial_lr"] = config["lr"]
     scheduler.base_lrs = [config["lr"]]
     act_ckpt = config.get("activation_checkpointing", None)
-    if act_ckpt is not None:
+    if act_ckpt is not None and blk_types is not None:
         apply_activation_checkpointing(model, blk_types, act_ckpt)
 
     # train
@@ -914,7 +958,6 @@ def train(args: argparse.Namespace) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("config_fpath")
     parser.add_argument(
         "out_fpath",
         type=str,
@@ -930,6 +973,10 @@ def main():
         "--random_seed", type=int, default=0
     )  # lambda reweighting term from Austin D3PM
     parser.add_argument("--run_type", type=str, default="train")
+    parser.add_argument("--config_fpath",
+        type=str,
+        default="configs/jamba-small-240mammalian.json",
+    )
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--no_wandb", action="store_true")

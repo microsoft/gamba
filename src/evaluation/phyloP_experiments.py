@@ -278,118 +278,199 @@ def _sample_regions(regions: List[Dict], k: int, seed: int) -> List[Dict]:
     idx = rng.choice(len(regions), size=k, replace=False)
     return [regions[i] for i in idx]
 
-
-def _extend_region_with_upstream_context(
-    region: Dict,
+def _extract_window_with_fixed_context(
     genome: Fasta,
-    context_size: int = 1024,
-    window_size: int = 2048,
-) -> Dict:
+    bigwig_file: str,
+    region: Dict,
+    context_size: int = 1000,
+    predict_size: int = 1024,
+) -> Optional[Dict]:
     """
-    Extend a region upstream by context_size to provide real genomic context.
-    Returns a new region dict with:
-      - Extended genomic coordinates
-      - Updated feature_start/end to mark the original ROI within the extended window
+    Extract a window with FIXED context size for consistent evaluation.
+    
+    Window structure:
+    - Total window: context_size + max(feature_len, predict_size)
+    - Positions [0, context_size): upstream context (don't predict)
+    - Positions [context_size, context_size + feature_len): actual feature (PREDICT HERE)
+    
+    Key: We only predict/correlate on the ACTUAL FEATURE, not padding beyond it.
     """
     chrom = region["chrom"]
-    start = region["start"]
-    end = region["end"]
+    feature_start = int(region["start"])
+    feature_end = int(region["end"])
     
-    # Get chromosome length
-    chrom_len = len(genome[chrom])
+    try:
+        chrom_length = len(genome[chrom])
+    except KeyError:
+        logging.debug(f"Chromosome {chrom} not found in genome")
+        return None
     
-    # Original feature length
-    feature_len = end - start
+    feature_len = feature_end - feature_start
+    if feature_len <= 0:
+        return None
     
-    # Extend upstream by context_size
-    extended_start = max(0, start - context_size)
-    extended_end = end
+    # For features longer than predict_size, truncate to last predict_size bp
+    if feature_len > predict_size:
+        feature_start = feature_end - predict_size
+        feature_len = predict_size
     
-    # If still shorter than window_size, pad downstream to reach window_size
-    extended_len = extended_end - extended_start
-    if extended_len < window_size:
-        additional_needed = window_size - extended_len
-        extended_end = min(chrom_len, extended_end + additional_needed)
-        # If still can't reach window_size, extend more upstream if possible
-        if (extended_end - extended_start) < window_size:
-            extended_start = max(0, extended_end - window_size)
+    # Build window: context_size bp upstream + feature
+    # This gives us variable window sizes, but we'll pad to a consistent size
+    min_window = context_size + feature_len
+    total_window = context_size + predict_size  # For padding
     
-    # Calculate where the original feature sits in the extended window
-    feature_start_in_window = start - extended_start
-    feature_end_in_window = end - extended_start
+    window_start = max(0, feature_start - context_size)
+    window_end = feature_end
     
-    return {
-        "chrom": chrom,
-        "start": extended_start,
-        "end": extended_end,
-        "original_start": start,
-        "original_end": end,
-        "category": region.get("category", region.get("label", "unknown")),
-        "feature_id": region.get("feature_id", f"{chrom}:{start}-{end}"),
-        "feature_start_in_window": feature_start_in_window,
-        "feature_end_in_window": feature_end_in_window,
-        "original_feature_len": feature_len,
-    }
+    # Adjust for chromosome boundaries
+    if window_start == 0:
+        # Can't get full upstream context, extend downstream if possible
+        window_end = min(chrom_length, min_window)
+    if window_end == chrom_length:
+        # At chromosome end, shift window left
+        window_start = max(0, window_end - min_window)
+    
+    window_len = window_end - window_start
+    if window_len < feature_len:
+        return None  # Can't even fit the feature
+    
+    # Extract sequence and scores
+    try:
+        seq = str(genome[chrom][window_start:window_end].seq).upper()
+        
+        with pyBigWig.open(bigwig_file) as bw:
+            scores_raw = bw.values(chrom, window_start, window_end)
+            # Replace None/NaN with 0.0 to prevent NaN loss
+            scores = np.array([s if s is not None and np.isfinite(s) else 0.0 
+                             for s in scores_raw], dtype=np.float32)
+        
+        if len(seq) != len(scores):
+            return None
+        
+        # Calculate where feature is in the extracted window
+        fs_in_window = feature_start - window_start
+        fe_in_window = feature_end - window_start
+        
+        # Pad window to total_window for consistent batching
+        if window_len < total_window:
+            pad_len = total_window - window_len
+            # Pad at the beginning (adds more upstream context)
+            seq = "N" * pad_len + seq
+            scores = np.concatenate([np.zeros(pad_len, dtype=np.float32), scores])
+            # Adjust feature position
+            fs_in_window += pad_len
+            fe_in_window += pad_len
+        
+        # CRITICAL: prediction/evaluation region should be EXACTLY the feature
+        # Not the full [context_size, context_size+predict_size) window
+        # This ensures we only correlate on the actual feature, not random flanking sequence
+        pred_start = fs_in_window
+        pred_end = fe_in_window
+        
+        # Sanity checks
+        if not (0 <= pred_start < pred_end <= len(seq)):
+            logging.warning(
+                f"Invalid feature span for {chrom}:{feature_start}-{feature_end}: "
+                f"pred=[{pred_start}, {pred_end}), window_len={len(seq)}"
+            )
+            return None
+        
+        # Verify feature is in the prediction zone (after context)
+        # For autoregressive models, feature must be after context
+        if pred_start < context_size:
+            # Feature starts in context region - need to shift window
+            shift_needed = context_size - pred_start
+            if window_start >= shift_needed:
+                # Can shift left
+                window_start -= shift_needed
+                window_end -= shift_needed
+                # Re-extract
+                seq = str(genome[chrom][window_start:window_end].seq).upper()
+                with pyBigWig.open(bigwig_file) as bw:
+                    scores_raw = bw.values(chrom, window_start, window_end)
+                    scores = np.array([s if s is not None and np.isfinite(s) else 0.0 
+                                     for s in scores_raw], dtype=np.float32)
+                
+                # Recalculate feature position
+                fs_in_window = feature_start - window_start
+                fe_in_window = feature_end - window_start
+                
+                # Repad if needed
+                if len(seq) < total_window:
+                    pad_len = total_window - len(seq)
+                    seq = "N" * pad_len + seq
+                    scores = np.concatenate([np.zeros(pad_len, dtype=np.float32), scores])
+                    fs_in_window += pad_len
+                    fe_in_window += pad_len
+                
+                pred_start = fs_in_window
+                pred_end = fe_in_window
+            else:
+                # Can't shift enough, skip this region
+                logging.debug(
+                    f"Skipping {chrom}:{feature_start}-{feature_end}: "
+                    f"insufficient upstream context"
+                )
+                return None
+        
+        return {
+            "chrom": chrom,
+            "start": window_start,
+            "end": window_end,
+            "sequence": seq,
+            "scores": scores,
+            "feature_start_in_window": pred_start,  # ACTUAL feature start
+            "feature_end_in_window": pred_end,       # ACTUAL feature end
+            "original_start": feature_start,
+            "original_end": feature_end,
+            "category": region.get("category", region.get("label", "unknown")),
+            "feature_id": region.get("feature_id", f"{chrom}:{feature_start}-{feature_end}"),
+            "original_feature_len": feature_len,
+        }
+        
+    except Exception as e:
+        logging.debug(f"Failed to extract {chrom}:{window_start}-{window_end}: {e}")
+        return None
 
+def _replace_nan_scores_with_zero(scores: np.ndarray) -> np.ndarray:
+    """Replace NaN phyloP scores with 0.0 to prevent NaN loss."""
+    scores = scores.copy()
+    nan_mask = np.isnan(scores)
+    if nan_mask.any():
+        scores[nan_mask] = 0.0
+    return scores
 
-def _collect_contexts_with_upstream(
+def _collect_contexts_using_extract_context(
     bigwig_file: str,
     genome: Fasta,
     regions: List[Dict],
-    model_type_for_context: str,
-    context_size: int = 1024,
-    window_size: int = 2048,
+    model_type: str,  # "gamba" or "caduceus"
 ) -> List[Dict]:
     """
-    Collect contexts with real upstream genomic context.
-    Each region is extended upstream by context_size bp.
+    Use extract_context directly - it already knows how to window properly
+    for gamba (asymmetric) vs caduceus (symmetric).
     """
     valid = []
     
     for r in regions:
-        # Extend region to include upstream context
-        extended = _extend_region_with_upstream_context(
-            r, genome, context_size=context_size, window_size=window_size
-        )
-        
-        # Extract sequence and scores for the extended region
-        ctx = extract_context(
-            bigwig_file, 
-            extended, 
-            genome, 
-            model_type=model_type_for_context
-        )
+        # Let extract_context do ALL the windowing logic
+        ctx = extract_context(bigwig_file, r, genome, model_type=model_type)
         
         if not ctx or "sequence" not in ctx:
-            logging.warning(
-                f"Skipping region {r.get('chrom')}:{r.get('start')}-{r.get('end')} "
-                f"due to missing context."
-            )
             continue
             
         if "scores" not in ctx or ctx["scores"] is None:
-            logging.warning(
-                f"Skipping region {r.get('chrom')}:{r.get('start')}-{r.get('end')} "
-                f"due to missing phyloP scores."
-            )
             continue
         
-        # Preserve feature span information
-        ctx["category"] = extended["category"]
-        ctx["feature_start_in_window"] = extended["feature_start_in_window"]
-        ctx["feature_end_in_window"] = extended["feature_end_in_window"]
-        ctx["original_start"] = extended["original_start"]
-        ctx["original_end"] = extended["original_end"]
-        ctx["original_feature_len"] = extended["original_feature_len"]
+        # extract_context already set feature_start_in_window and feature_end_in_window
+        # These mark the ACTUAL FEATURE within the window
+        # Just pass through the context as-is
+        ctx["category"] = r.get("category", r.get("label", "unknown"))
+        ctx["feature_id"] = r.get("feature_id", f"{r['chrom']}:{r['start']}-{r['end']}")
         
         valid.append(ctx)
     
-    logging.info(
-        f"Extended {len(regions)} regions with {context_size}bp upstream context "
-        f"-> {len(valid)} valid"
-    )
     return valid
-
 
 def apply_effective_region_mask(
     labels: torch.Tensor,                      # (B, 2, T): [:,0,:]=seq labels, [:,1,:]=cons labels
@@ -907,7 +988,7 @@ def compute_region_and_position_correlations(
     baseline: str,
     model_label: str,
     seed: int = 1337,
-    context_size: int = 1024,
+    context_size: int = 1000,
     last_k: int = 1024,
 ):
     outdir = Path(output_dir)
@@ -934,7 +1015,7 @@ def compute_region_and_position_correlations(
 
     # ------------- mode 1: sample directly from dataset splits -------------
     if len(categories) == 1 and categories[0].lower() == "random_from_dataset":
-        window_len = 2048
+        window_len = context_size + last_k  # e.g., 1000 + 1024 = 2024
         target_n  = per_category_n * 10 # N per split
 
         for split_name in ["train", "test"]:
@@ -946,6 +1027,12 @@ def compute_region_and_position_correlations(
                 window_len=window_len,
                 seed=seed if split_name == "train" else seed + 1,
             )
+            
+            # Fix feature spans for the sampled contexts
+            for ctx in ctxs:
+                ctx["feature_start_in_window"] = context_size
+                ctx["feature_end_in_window"] = window_len
+            
             logging.info(f"[dataset_sample] split={split_name} contexts: {len(ctxs)}")
 
             _run_group(
@@ -986,7 +1073,7 @@ def compute_region_and_position_correlations(
         if len(categories) == 1 and categories[0].lower() == "random_sample":
             name = "random_sample"
             rng = np.random.default_rng(seed)
-            window_len = 2048
+            window_len = context_size + last_k  # e.g., 1000 + 1024 = 2024
             target_n = 10_000
 
             chrom_list = chroms if chroms else list(genome.keys())
@@ -1034,8 +1121,6 @@ def compute_region_and_position_correlations(
                         "start": s,
                         "end": e,
                         "category": "random_sample",
-                        "feature_start_in_window": 0,
-                        "feature_end_in_window": window_len,
                     })
                     n_kept += 1
 
@@ -1047,13 +1132,11 @@ def compute_region_and_position_correlations(
 
             logging.info(f"[random_sample] drew {len(sampled_regions)} non-repeat windows of {window_len} bp")
 
-            ctxs = _collect_contexts_with_upstream(
-                bigwig_file,
-                genome,
+            ctxs = _collect_contexts_using_extract_context(
+                bigwig_file,      
+                genome,           
                 sampled_regions,
-                model_type_for_context=model_type or "baseline",
-                context_size=context_size,
-                window_size=2048,
+                model_type,
             )
             logging.info(f"[random_sample] valid contexts: {len(ctxs)}")
             all_contexts.extend(ctxs)
@@ -1071,13 +1154,11 @@ def compute_region_and_position_correlations(
                 for r in regs:
                     r["category"] = cat
                 sampled = _sample_regions(regs, per_category_n, seed)
-                ctxs = _collect_contexts_with_upstream(
+                ctxs = _collect_contexts_using_extract_context(
                     bigwig_file,
                     genome,
                     sampled,
-                    model_type_for_context=model_type or "baseline",
-                    context_size=context_size,
-                    window_size=2048,
+                    model_type=model_type, 
                 )
                 logging.info(f"[{cat}] sampled {len(sampled)} -> valid {len(ctxs)}")
                 all_contexts.extend(ctxs)
@@ -1088,7 +1169,7 @@ def compute_region_and_position_correlations(
             contexts=all_contexts,
             model=model,
             tokenizer=tokenizer,
-            tokenized=False,  # sequences still need tokenization inside predict_scores_batched
+            tokenized=False,  # sequences need tokenization inside predict_scores_batched
             batch_size=batch_size,
             device=device,
             model_type=model_type,
@@ -1114,7 +1195,7 @@ def main():
     parser.add_argument("--data_dir", type=str,
         default="/home/mica/gamba/data_processing/data/240-mammalian")
     parser.add_argument("--output_dir", type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/global_representations/rate_correlations/")
+        default="/home/mica/gamba/data_processing/data/240-mammalian/rate_correlations/")
     parser.add_argument("--checkpoint_dir", type=str, default="/home/mica/gamba/")
     parser.add_argument("--config_fpath", type=str,
         default="/home/mica/gamba/configs/jamba-small-240mammalian.json")
@@ -1134,9 +1215,9 @@ def main():
     parser.add_argument("--categories", type=str, nargs="+", default=DEFAULT_CATEGORIES)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--context_size", type=int, default=1024,
-                        help="Upstream context size (bp) to add before each region")
+                        help="Context size (bp) before prediction region")
     parser.add_argument("--last_k", type=int, default=1024,
-                        help="Only evaluate predictions on the last K bp of each region")
+                        help="Prediction region size (bp)")
 
     args = parser.parse_args()
     

@@ -14,8 +14,12 @@ consolidate_atg4_leaderboard.py
 4-way labels:
 1. START CODON (label 1)
 2. NON-CODING ATG (merge labels 2+3)
-3. IN-FRAME METHIONINE (label 4 → 3)
-4. OUT-OF-FRAME ATG (label 5 → 4)
+3. IN-FRAME METHIONINE (label 4 -> 3)
+4. OUT-OF-FRAME ATG (label 5 -> 4)
+
+--use_6mer_roi:
+  searches for _6mer-suffixed rep files instead of standard ones,
+  and appends _6mer to all output filenames/dirs.
 """
 
 from __future__ import annotations
@@ -42,7 +46,6 @@ from pyfaidx import Fasta
 
 # ---------------- config: label naming + order (4-way) ----------------
 
-# After remapping: 1=start, 2=noncoding, 3=inframe, 4=outframe
 LABEL_ORDER_4WAY = [1, 2, 3, 4]
 
 LABEL_NAME_4WAY = {
@@ -56,16 +59,16 @@ LABEL_NAME_4WAY = {
 def remap_5way_to_4way(labels_5way: np.ndarray) -> np.ndarray:
     """
     Remap 5-way labels to 4-way:
-    - 1 (start) → 1
-    - 2 (noncoding near) → 2
-    - 3 (noncoding far) → 2
-    - 4 (inframe) → 3
-    - 5 (outframe) → 4
+    - 1 (start) -> 1
+    - 2 (noncoding near) -> 2
+    - 3 (noncoding far) -> 2
+    - 4 (inframe) -> 3
+    - 5 (outframe) -> 4
     """
     labels_4way = labels_5way.copy()
-    labels_4way[labels_5way == 3] = 2  # merge far with near
-    labels_4way[labels_5way == 4] = 3  # inframe becomes 3
-    labels_4way[labels_5way == 5] = 4  # outframe becomes 4
+    labels_4way[labels_5way == 3] = 2
+    labels_4way[labels_5way == 4] = 3
+    labels_4way[labels_5way == 5] = 4
     return labels_4way
 
 
@@ -160,10 +163,10 @@ MODEL_META = {
 
 # ---------------- colors ----------------
 
-BLUE   = "#4287f5"   # seq+phy
-PURPLE = "#6F2DA8"   # phy only
-ORANGE = "#FF8C32"   # seq only
-DARK   = "#6A6A6A"   # baselines
+BLUE   = "#4287f5"
+PURPLE = "#6F2DA8"
+ORANGE = "#FF8C32"
+DARK   = "#6A6A6A"
 
 
 def _hex_to_rgb01(h: str):
@@ -254,18 +257,28 @@ class RepFile:
     meta_path: Optional[Path]
 
 
+# Anchors tried in order when inferring model tag from filename.
+# The _6mer variants must come first so they are matched before the non-suffixed ones.
+_FILENAME_ANCHORS = [
+    "_ATG5way_all_labels_roi_6mer",
+    "_ATG5way_all_labels_full_6mer",
+    "_ATG_5way_all_labels_6mer",
+    "_ATG5way_all_labels_6mer",
+    "_ATG5way_all_labels_roi",
+    "_ATG5way_all_labels_full",
+    "_ATG_5way_all_labels",
+    "_ATG5way_all_labels",
+]
+
+
 def _infer_model_tag_from_filename(npz_path: Path) -> str:
     name = npz_path.name
     if not name.startswith("reps_") or not name.endswith(".npz"):
         return npz_path.stem
 
     stem = name[:-4]  # drop .npz
-    for anchor in [
-        "_ATG5way_all_labels_roi",
-        "_ATG5way_all_labels_full",
-        "_ATG_5way_all_labels",
-        "_ATG5way_all_labels",
-    ]:
+
+    for anchor in _FILENAME_ANCHORS:
         if anchor in stem:
             return stem[len("reps_") : stem.index(anchor)]
 
@@ -273,14 +286,25 @@ def _infer_model_tag_from_filename(npz_path: Path) -> str:
     if m:
         return m.group(1)
 
-    return stem[len("reps_") :]
+    return stem[len("reps_"):]
 
 
-def discover_rep_files(roots: list[Path]) -> list[RepFile]:
-    patterns = [
-        "**/reps_*_ATG5way_all_labels_roi.npz",
-        "**/reps_*_ATG_5way_all_labels.npz",
-    ]
+def _glob_patterns_for(use_6mer_roi: bool) -> list[str]:
+    """Return the glob patterns used to discover rep files."""
+    if use_6mer_roi:
+        return [
+            "**/reps_*_ATG5way_all_labels_roi_6mer.npz",
+            "**/reps_*_ATG_5way_all_labels_6mer.npz",
+        ]
+    else:
+        return [
+            "**/reps_*_ATG5way_all_labels_roi.npz",
+            "**/reps_*_ATG_5way_all_labels.npz",
+        ]
+
+
+def discover_rep_files(roots: list[Path], use_6mer_roi: bool = False) -> list[RepFile]:
+    patterns = _glob_patterns_for(use_6mer_roi)
     out: list[RepFile] = []
     seen = set()
 
@@ -611,7 +635,7 @@ def create_comprehensive_tsv(df_rows: pd.DataFrame, per_model: dict, outpath: Pa
     return df_tsv
 
 
-# ---------------- roi validation (simplified) ----------------
+# ---------------- roi validation ----------------
 
 def revcomp(seq: str) -> str:
     tbl = str.maketrans("ACGTNacgtn", "TGCANtgcan")
@@ -649,14 +673,12 @@ def validate_roi_is_atg(
         fe = int(r["feature_end_in_window"])
         seq_window = str(r["sequence"]).upper()
 
-        if fe - fs != 3:
-            continue
-
-        roi_from_window = seq_window[fs:fe]
+        # for 6mer ROI fe-fs == 6; for standard fe-fs == 3
+        # ATG check: first 3 chars of ROI should be ATG
+        roi_from_window = seq_window[fs:fs + 3]
         ok_window = (roi_from_window == "ATG")
 
         ok_fasta = None
-        roi_checked = None
         if fasta is not None:
             s0, e0 = int(r["start"]), int(r["end"])
             a, b = (s0, e0) if s0 <= e0 else (e0, s0)
@@ -672,7 +694,7 @@ def validate_roi_is_atg(
 
         ok = ok_window and (ok_fasta if ok_fasta is not None else True)
         if not ok:
-            bad.append(f"{chrom}:{r['start']}-{r['end']} window={roi_from_window}")
+            bad.append(f"{chrom}:{r['start']}-{r['end']} window[fs:fs+3]={roi_from_window}")
             if len(bad) >= max_print:
                 break
 
@@ -698,6 +720,15 @@ def main():
     ap.add_argument("--top_k", type=int, default=None)
     ap.add_argument("--write_per_model_json", action="store_true")
     ap.add_argument(
+        "--use_6mer_roi",
+        action="store_true",
+        default=False,
+        help=(
+            "Search for _6mer-suffixed rep files (reps_*_ATG5way_all_labels_roi_6mer.npz etc.) "
+            "instead of standard ones. Appends _6mer to all output filenames."
+        ),
+    )
+    ap.add_argument(
         "--genome_fasta",
         type=str,
         default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
@@ -705,13 +736,24 @@ def main():
 
     args = ap.parse_args()
 
+    suffix = "_6mer" if args.use_6mer_roi else ""
+
     roots = [Path(r).expanduser().resolve() for r in args.roots]
     outdir = Path(args.outdir).expanduser().resolve()
     outdir.mkdir(parents=True, exist_ok=True)
 
-    rep_files = discover_rep_files(roots)
+    rep_files = discover_rep_files(roots, use_6mer_roi=args.use_6mer_roi)
     if not rep_files:
-        raise SystemExit(f"no rep files found under roots={roots}")
+        patterns = _glob_patterns_for(args.use_6mer_roi)
+        raise SystemExit(
+            f"no rep files found under roots={roots}\n"
+            f"searched patterns: {patterns}\n"
+            f"hint: did you forget --use_6mer_roi, or run the embedding jobs yet?"
+        )
+
+    print(f"[discover] found {len(rep_files)} rep files (use_6mer_roi={args.use_6mer_roi})")
+    for rf in rep_files:
+        print(f"  {rf.model_tag}: {rf.npz_path}")
 
     rows = []
     per_model = {}
@@ -721,7 +763,6 @@ def main():
     for rf in rep_files:
         X, y_5way = load_embeddings_and_labels(rf.npz_path)
 
-        # Remap 5-way to 4-way
         y = remap_5way_to_4way(y_5way)
 
         mask = np.isin(y, LABEL_ORDER_4WAY)
@@ -752,12 +793,11 @@ def main():
         })
 
         title = (
-            f"{rf.model_tag} | "
+            f"{rf.model_tag}{suffix} | "
             f"micro={hard['micro_accuracy']:.2%} ba={hard['balanced_accuracy']:.2%}"
         )
 
-        # heatmap
-        heat_base = outdir / "heatmaps" / f"knn_heatmap_{rf.model_tag}"
+        heat_base = outdir / "heatmaps" / f"knn_heatmap_{rf.model_tag}{suffix}"
         plot_knn_heatmap(
             outbase=heat_base,
             y_true=y_true,
@@ -766,7 +806,6 @@ def main():
             title=title,
         )
 
-        # validation
         try:
             validate_roi_is_atg(
                 rf.meta_path,
@@ -784,53 +823,65 @@ def main():
 
     df = df.sort_values("balanced_accuracy", ascending=False).reset_index(drop=True)
 
-    df.to_csv(outdir / "leaderboard_atg4.csv", index=False)
+    df.to_csv(outdir / f"leaderboard_atg4{suffix}.csv", index=False)
 
-    # raw leaderboard
     plot_leaderboard(
         df=df,
-        outbase=outdir / "leaderboard_atg4_ba",
+        outbase=outdir / f"leaderboard_atg4_ba{suffix}",
         metric="balanced_accuracy",
         sem_col="balanced_accuracy_sem",
-        title="ATG 4-way leaderboard (balanced accuracy)",
+        title=f"ATG 4-way leaderboard (balanced accuracy){' [6-mer ROI]' if suffix else ''}",
         xlabel="balanced accuracy (loo 1-nn)",
         top_k=args.top_k,
     )
 
-    # overlay leaderboard
     plot_atg4_leaderboard_overlay(
         df_rows=df,
-        outbase=outdir / "leaderboard_atg4_ba_overlay",
+        outbase=outdir / f"leaderboard_atg4_ba_overlay{suffix}",
         metric="balanced_accuracy",
         sem_col="balanced_accuracy_sem",
-        title="ATG 4-way leaderboard (balanced accuracy)",
+        title=f"ATG 4-way leaderboard (balanced accuracy){' [6-mer ROI]' if suffix else ''}",
         xlabel="balanced accuracy (loo 1-nn)",
         top_k=args.top_k,
     )
 
-    # comprehensive TSV
     create_comprehensive_tsv(
         df_rows=df,
         per_model=per_model,
-        outpath=outdir / "atg4_all_metrics.tsv"
+        outpath=outdir / f"atg4_all_metrics{suffix}.tsv"
     )
 
-    with open(outdir / "leaderboard_atg4_details.json", "w") as f:
+    with open(outdir / f"leaderboard_atg4_details{suffix}.json", "w") as f:
         json.dump(per_model, f, indent=2)
 
     if args.write_per_model_json:
-        per_model_dir = outdir / "per_model_json"
+        per_model_dir = outdir / f"per_model_json{suffix}"
         per_model_dir.mkdir(exist_ok=True)
         for k, v in per_model.items():
             with open(per_model_dir / f"{k}.json", "w") as f:
                 json.dump(v, f, indent=2)
 
+    print(f"\n[done] outputs written to: {outdir}")
+    print(f"  leaderboard_atg4{suffix}.csv")
+    print(f"  leaderboard_atg4_ba{suffix}.png/svg")
+    print(f"  leaderboard_atg4_ba_overlay{suffix}.png/svg")
+    print(f"  atg4_all_metrics{suffix}.tsv")
+    print(f"  leaderboard_atg4_details{suffix}.json")
+    print(f"  heatmaps/knn_heatmap_*{suffix}.png/svg")
+
 
 if __name__ == "__main__":
     main()
 
-# example:
+# example (standard ROI):
 # python /home/mica/gamba/src/evaluation/plotting/plot-ATGs.py \
-#   --roots /home/mica/gamba/other-models/ATG_reps_5way /home/mica/gamba/data_processing/data/240-mammalian/ATG_reps_5way \
+#   --roots /home/mica/gamba/other-models/ATG_reps_5way \
+#           /home/mica/gamba/data_processing/data/240-mammalian/ATG_reps_5way \
+#   --outdir /home/mica/gamba/ATG4_leaderboard_out
+
+# example (6-mer ROI):
+# python /home/mica/gamba/src/evaluation/plotting/plot-ATGs.py \
+#   --roots /home/mica/gamba/other-models/ATG_reps_5way \
+#           /home/mica/gamba/data_processing/data/240-mammalian/ATG_reps_5way \
 #   --outdir /home/mica/gamba/ATG4_leaderboard_out \
-#   --top_k 50
+#   --use_6mer_roi

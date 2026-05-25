@@ -177,44 +177,195 @@ from Bio.Seq import Seq  # make sure this import exists!
 #         logging.warning(f"[ERROR] Failed to extract {chrom}:{window_start}-{window_end} - {e}")
 #         return None
 
-def extract_context(bigwig_file, region, genome, model_type=None, context_window=None):
+# def extract_context(bigwig_file, region, genome, model_type=None, context_window=None):
+#     """
+#     Returns dict(region + sequence, scores, feature_start_in_window, feature_end_in_window)
+#     or None if the region cannot be extracted.
+
+#     Windowing rules:
+#       - model_type in {"gamba","hyenaDNA"}        -> 2048 asymmetric (feature at end for '+', at start for '-')
+#       - model_type in {"caduceus","nt-ms","nt-human"} -> 2048 symmetric (feature centered)
+#       - model_type == "phyloGPN"                  -> 481 symmetric (centered)
+#       - model_type is None (e.g., baselines)      -> 2048 symmetric (centered)
+#     """
+#     chrom = region["chrom"]
+#     chrom_length = len(genome[chrom])
+
+#     # Normalize coords & strand
+#     s0, e0 = int(region["start"]), int(region["end"])
+#     strand = region.get("strand", "+")
+#     if e0 < s0:
+#         strand = "-"  # inverted coords imply '-' if not provided
+#     feature_start, feature_end = min(s0, e0), max(s0, e0)
+#     feature_len = feature_end - feature_start
+#     if feature_len <= 0:
+#         return None
+
+#     # --- policy selection (baseline-friendly) ---
+#     # None => baseline => symmetric 2048
+#     if model_type in ("gamba"):
+#         policy = "asym"
+#         max_len = 2048
+#     elif model_type in ("caduceus", "baseline"):
+#         policy = "sym"
+#         max_len = 2048
+#     elif model_type in ("hyenaDNA"):
+#         policy = "asym"
+#         max_len = 160000
+#     elif model_type in ("caduceus-theirs"):
+#         policy = "sym"
+#         max_len = 131000
+#     elif model_type == "phyloGPN":
+#         policy = "sym"
+#         max_len = 481
+#     elif model_type in ("nt-ms", "nt-human"):
+#         policy = "sym"
+#         max_len = 6000
+#     else:
+#         raise ValueError(f"Unknown model_type: {model_type}")
+
+#     if context_window is not None and model_type != "phyloGPN":
+#         max_len = context_window
+
+#     # --- compute window per policy ---
+#     if policy == "asym":
+#         # Asymmetric: feature flush to window edge by strand
+#         if feature_len > max_len:
+#             keep = min(1000, max_len)
+#             if strand == "+":
+#                 window_end = feature_end
+#                 window_start = max(0, window_end - keep)
+#                 fs, fe = 0, keep
+#             else:
+#                 window_start = feature_start
+#                 window_end = min(chrom_length, window_start + keep)
+#                 fs, fe = 0, window_end - window_start
+#         else:
+#             max_ctx = max_len - feature_len
+#             if strand == "+":
+#                 window_end = feature_end
+#                 window_start = max(0, window_end - (feature_len + max_ctx))
+#                 fs = feature_start - window_start
+#                 fe = feature_end - window_start
+#             else:
+#                 window_start = feature_start
+#                 window_end = min(chrom_length, window_start + (feature_len + max_ctx))
+#                 fs = 0
+#                 fe = feature_end - feature_start
+
+#     else:
+#         # Symmetric policies (2048 or 481 or 1000): center feature in window
+#         if feature_len >= max_len:
+#             center = (feature_start + feature_end) // 2
+#             window_start = max(0, center - max_len // 2)
+#             window_end = min(chrom_length, window_start + max_len)
+#             window_start = max(0, window_end - max_len)  # ensure exact length
+#         else:
+#             total_ctx = max_len - feature_len
+#             left = total_ctx // 2
+#             right = total_ctx - left
+#             window_start = max(0, feature_start - left)
+#             window_end = min(chrom_length, feature_end + right)
+#             # fix to exact max_len
+#             if window_end - window_start > max_len:
+#                 window_end = window_start + max_len
+#             elif window_end - window_start < max_len:
+#                 window_start = max(0, window_end - max_len)
+#         fs = feature_start - window_start
+#         fe = feature_end - window_start
+
+#     # Clamp & validate
+#     window_start = max(0, window_start)
+#     window_end = min(chrom_length, window_end)
+#     region_len = window_end - window_start
+#     if region_len <= 0:
+#         return None
+#     if not (0 <= fs <= fe <= region_len):
+#         fs = max(0, min(fs, region_len))
+#         fe = max(fs, min(fe, region_len))
+#         if fs == fe:
+#             return None
+
+#     # Extract sequence + phyloP
+#     try:
+#         seq = genome[chrom][window_start:window_end].seq
+#         with pyBigWig.open(bigwig_file) as bw:
+#             bw_start = max(0, window_start)
+#             bw_end = min(chrom_length, window_end)
+#             if bw_end <= bw_start:
+#                 return None
+#             scores = extract_phyloP_scores(bw, chrom, bw_start, bw_end)
+#         if scores is None or len(scores) != region_len:
+#             return None
+
+#         # Reverse-complement & flip ROI for minus strand
+#         if strand == "-":
+#             seq = str(Seq(seq).reverse_complement())
+#             scores = scores[::-1]
+#             L = region_len
+#             fs, fe = (L - fe, L - fs)
+
+#         if not (0 <= fs <= fe <= len(seq)):
+#             return None
+#         if len(seq) != len(scores):
+#             return None
+
+#         return {
+#             **region,
+#             "sequence": seq,
+#             "scores": scores,
+#             "feature_start_in_window": int(fs),
+#             "feature_end_in_window": int(fe),
+#         }
+
+#     except Exception as e:
+#         logging.warning(f"[ERROR] Failed to extract {chrom}:{window_start}-{window_end} - {e}")
+#         return None
+
+
+def extract_context(bigwig_file, region, genome, model_type=None, context_window=None, snap_to_6mer=False):
     """
     Returns dict(region + sequence, scores, feature_start_in_window, feature_end_in_window)
     or None if the region cannot be extracted.
 
     Windowing rules:
-      - model_type in {"gamba","hyenaDNA"}        -> 2048 asymmetric (feature at end for '+', at start for '-')
-      - model_type in {"caduceus","nt-ms","nt-human"} -> 2048 symmetric (feature centered)
-      - model_type == "phyloGPN"                  -> 481 symmetric (centered)
-      - model_type is None (e.g., baselines)      -> 2048 symmetric (centered)
+      - model_type in {"gamba","hyenaDNA"}           -> asymmetric (feature at end/start by strand)
+      - model_type in {"caduceus","nt-ms","nt-human"} -> symmetric (feature centered)
+      - model_type == "phyloGPN"                      -> 481 symmetric
+      - model_type is None (e.g. baselines)           -> 2048 symmetric
+
+    snap_to_6mer: if True, shifts window_start (+ strand) or window_end (- strand) by up to 5 bp
+    so that after any reverse-complement flip, the feature lands exactly on a 6-mer boundary.
+    This makes ROI token extraction exact and comparable across models.
     """
     chrom = region["chrom"]
     chrom_length = len(genome[chrom])
 
-    # Normalize coords & strand
     s0, e0 = int(region["start"]), int(region["end"])
     strand = region.get("strand", "+")
     if e0 < s0:
-        strand = "-"  # inverted coords imply '-' if not provided
+        strand = "-"
     feature_start, feature_end = min(s0, e0), max(s0, e0)
     feature_len = feature_end - feature_start
     if feature_len <= 0:
         return None
 
-    # --- policy selection (baseline-friendly) ---
-    # None => baseline => symmetric 2048
-    if model_type in ("gamba"):
+    # --- policy selection ---
+    if model_type in ("gamba",):
         policy = "asym"
         max_len = 2048
     elif model_type in ("caduceus", "baseline"):
         policy = "sym"
         max_len = 2048
-    elif model_type in ("hyenaDNA"):
+    elif model_type in ("hyenaDNA",):
         policy = "asym"
         max_len = 160000
-    elif model_type in ("caduceus-theirs"):
+    elif model_type in ("caduceus-theirs",):
         policy = "sym"
         max_len = 131000
+    elif model_type == "evo2":
+        policy = "asym"
+        max_len = 2048
     elif model_type == "phyloGPN":
         policy = "sym"
         max_len = 481
@@ -229,50 +380,60 @@ def extract_context(bigwig_file, region, genome, model_type=None, context_window
 
     # --- compute window per policy ---
     if policy == "asym":
-        # Asymmetric: feature flush to window edge by strand
         if feature_len > max_len:
             keep = min(1000, max_len)
             if strand == "+":
                 window_end = feature_end
                 window_start = max(0, window_end - keep)
-                fs, fe = 0, keep
             else:
                 window_start = feature_start
                 window_end = min(chrom_length, window_start + keep)
-                fs, fe = 0, window_end - window_start
         else:
             max_ctx = max_len - feature_len
             if strand == "+":
                 window_end = feature_end
                 window_start = max(0, window_end - (feature_len + max_ctx))
-                fs = feature_start - window_start
-                fe = feature_end - window_start
             else:
                 window_start = feature_start
                 window_end = min(chrom_length, window_start + (feature_len + max_ctx))
-                fs = 0
-                fe = feature_end - feature_start
-
     else:
-        # Symmetric policies (2048 or 481 or 1000): center feature in window
+        # symmetric
         if feature_len >= max_len:
             center = (feature_start + feature_end) // 2
             window_start = max(0, center - max_len // 2)
             window_end = min(chrom_length, window_start + max_len)
-            window_start = max(0, window_end - max_len)  # ensure exact length
+            window_start = max(0, window_end - max_len)
         else:
             total_ctx = max_len - feature_len
             left = total_ctx // 2
             right = total_ctx - left
             window_start = max(0, feature_start - left)
             window_end = min(chrom_length, feature_end + right)
-            # fix to exact max_len
             if window_end - window_start > max_len:
                 window_end = window_start + max_len
             elif window_end - window_start < max_len:
                 window_start = max(0, window_end - max_len)
-        fs = feature_start - window_start
-        fe = feature_end - window_start
+
+    # --- snap to 6-mer boundary (strand-aware) ---
+    # Goal: after RC flip (if minus strand), the feature lands at token index fs//6
+    # + strand: shift window_start right so (feature_start - window_start) % 6 == 0
+    # - strand: shift window_end left  so (window_end   - feature_end  ) % 6 == 0
+    # In both cases, re-anchor the opposite edge to maintain max_len.
+    if snap_to_6mer and model_type != "phyloGPN":
+        if strand == "+":
+            offset = (feature_start - window_start) % 6
+            if offset != 0:
+                window_start = window_start + offset
+                window_end = min(chrom_length, window_start + max_len)
+        else:  # "-"
+            offset = (window_end - feature_end) % 6
+            if offset != 0:
+                window_end = window_end - offset
+                window_start = max(0, window_end - max_len)
+
+    # --- compute feature position within window ---
+    fs = feature_start - window_start
+    fe = feature_end - window_start
 
     # Clamp & validate
     window_start = max(0, window_start)
@@ -321,8 +482,192 @@ def extract_context(bigwig_file, region, genome, model_type=None, context_window
     except Exception as e:
         logging.warning(f"[ERROR] Failed to extract {chrom}:{window_start}-{window_end} - {e}")
         return None
+        
+import logging
+from typing import Optional, Dict
+import numpy as np
+import pyBigWig
+from Bio.Seq import Seq
+def extract_context_3way(
+    bigwig_240,
+    bigwig_30,
+    bigwig_100,
+    region: Dict,
+    genome,
+    model_type: Optional[str] = None,
+):
+    """
+    Returns dict:
+      {
+        **region,
+        "sequence": str,
+        "scores_240": np.ndarray[float32, T],
+        "missing_240": np.ndarray[float32, T],
+        "scores_30":  np.ndarray[float32, T],
+        "missing_30": np.ndarray[float32, T],
+        "scores_100": np.ndarray[float32, T],
+        "missing_100":np.ndarray[float32, T],
+        "feature_start_in_window": int,
+        "feature_end_in_window":   int,
+      }
+    or None on failure.
 
+    Windowing rules:
+      - {"gamba","hyenaDNA"}              -> asymmetric (feature at end for '+', at start for '-')
+      - {"caduceus","nt-ms","nt-human"}   -> symmetric
+      - "phyloGPN"                        -> symmetric, 481
+      - None                              -> symmetric, 2048
+    """
 
+    def _open_bw(bw_or_path):
+        return bw_or_path if hasattr(bw_or_path, "values") else pyBigWig.open(bw_or_path)
+
+    def _read_scores_and_missing(bw, chrom, start, end):
+        vals = np.asarray(bw.values(chrom, int(start), int(end), numpy=True), dtype=np.float32)
+        # pyBigWig returns np.nan for missing
+        miss = np.isnan(vals).astype(np.float32)
+        vals[np.isnan(vals)] = 0.0
+        return vals, miss
+
+    chrom = region["chrom"]
+    chrom_length = len(genome[chrom])
+
+    # normalize coords and strand
+    s0, e0 = int(region["start"]), int(region["end"])
+    strand = region.get("strand", "+")
+    if e0 < s0:
+        strand = "-"
+    feature_start, feature_end = min(s0, e0), max(s0, e0)
+    feature_len = feature_end - feature_start
+    if feature_len <= 0:
+        return None
+
+    # policy
+    if model_type in ("gamba",):
+        policy, max_len = "asym", 2048
+    elif model_type in ("caduceus", "baseline", None):
+        policy, max_len = "sym", 2048
+    elif model_type in ("hyenaDNA",):
+        policy, max_len = "asym", 160000
+    elif model_type in ("caduceus-theirs",):
+        policy, max_len = "sym", 131000
+    elif model_type == "phyloGPN":
+        policy, max_len = "sym", 481
+    elif model_type in ("nt-ms", "nt-human"):
+        policy, max_len = "sym", 6000
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
+
+    # compute window
+    if policy == "asym":
+        if feature_len > max_len:
+            keep = min(1000, max_len)
+            if strand == "+":
+                window_end = feature_end
+                window_start = max(0, window_end - keep)
+                fs, fe = 0, keep
+            else:
+                window_start = feature_start
+                window_end = min(chrom_length, window_start + keep)
+                fs, fe = 0, window_end - window_start
+        else:
+            max_ctx = max_len - feature_len
+            if strand == "+":
+                window_end = feature_end
+                window_start = max(0, window_end - (feature_len + max_ctx))
+                fs = feature_start - window_start
+                fe = feature_end - window_start
+            else:
+                window_start = feature_start
+                window_end = min(chrom_length, window_start + (feature_len + max_ctx))
+                fs = 0
+                fe = feature_end - feature_start
+    else:
+        if feature_len >= max_len:
+            center = (feature_start + feature_end) // 2
+            window_start = max(0, center - max_len // 2)
+            window_end = min(chrom_length, window_start + max_len)
+            window_start = max(0, window_end - max_len)
+        else:
+            total_ctx = max_len - feature_len
+            left = total_ctx // 2
+            right = total_ctx - left
+            window_start = max(0, feature_start - left)
+            window_end = min(chrom_length, feature_end + right)
+            if window_end - window_start > max_len:
+                window_end = window_start + max_len
+            elif window_end - window_start < max_len:
+                window_start = max(0, window_end - max_len)
+        fs = feature_start - window_start
+        fe = feature_end - window_start
+
+    # clamp and validate
+    window_start = max(0, int(window_start))
+    window_end = min(int(chrom_length), int(window_end))
+    region_len = window_end - window_start
+    if region_len <= 0:
+        return None
+    if not (0 <= fs <= fe <= region_len):
+        fs = max(0, min(int(fs), region_len))
+        fe = max(fs, min(int(fe), region_len))
+        if fs == fe:
+            return None
+
+    # extract sequence
+    try:
+        seq = genome[chrom][window_start:window_end].seq
+    except Exception as e:
+        logging.warning(f"[ERROR] sequence fetch {chrom}:{window_start}-{window_end}: {e}")
+        return None
+
+    # extract three tracks
+    try:
+        bw240 = _open_bw(bigwig_240)
+        bw30  = _open_bw(bigwig_30)
+        bw100 = _open_bw(bigwig_100)
+
+        p240, m240 = _read_scores_and_missing(bw240, chrom, window_start, window_end)
+        p30,  m30  = _read_scores_and_missing(bw30,  chrom, window_start, window_end)
+        p100, m100 = _read_scores_and_missing(bw100, chrom, window_start, window_end)
+
+        # close if we opened
+        if bw240 is not bigwig_240 and hasattr(bw240, "close"): bw240.close()
+        if bw30  is not bigwig_30  and hasattr(bw30,  "close"): bw30.close()
+        if bw100 is not bigwig_100 and hasattr(bw100, "close"): bw100.close()
+    except Exception as e:
+        logging.warning(f"[ERROR] bigWig fetch {chrom}:{window_start}-{window_end}: {e}")
+        return None
+
+    # length checks
+    if not (len(seq) == region_len == len(p240) == len(p30) == len(p100)):
+        return None
+
+    # strand handling
+    if region.get("strand", "+") == "-":
+        seq = str(Seq(seq).reverse_complement())
+        p240 = p240[::-1]; m240 = m240[::-1]
+        p30  = p30[::-1];  m30  = m30[::-1]
+        p100 = p100[::-1]; m100 = m100[::-1]
+        L = region_len
+        fs, fe = (L - fe, L - fs)
+
+    if not (0 <= fs <= fe <= len(seq)):
+        return None
+
+    return {
+        **region,
+        "sequence": seq,
+        "scores_240": p240.astype(np.float32, copy=False),
+        "missing_240": m240.astype(np.float32, copy=False),
+        "scores_30":  p30.astype(np.float32, copy=False),
+        "missing_30": m30.astype(np.float32, copy=False),
+        "scores_100": p100.astype(np.float32, copy=False),
+        "missing_100":m100.astype(np.float32, copy=False),
+        "feature_start_in_window": int(fs),
+        "feature_end_in_window":   int(fe),
+    }
+    
+    
 def extract_phyloP_scores(bigwig: pyBigWig.pyBigWig, chrom: str, start: int, end: int) -> list[float]:
     """
     Extract phyloP conservation scores from bigWig using interval blocks.

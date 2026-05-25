@@ -47,7 +47,7 @@ from gamba.datasets import ConservationDataset
 from gamba.model import (
     ARDiffusionModel,
     OrderAgnosticDiffusionModel,
-    JambagambaModel,
+    JambaGambaNoConsModel,
     OTHER_METRICS_KEY,
 )
 from gamba.model import create_model
@@ -68,7 +68,6 @@ RANK = int(os.environ.get("RANK", "0"))
 LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "0"))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "1"))
 DEVICE = torch.device(f"cuda:{LOCAL_RANK}" if torch.cuda.is_available() else "cpu")
-#DEVICE = torch.device(f"cuda:1" if torch.cuda.is_available() else "cpu")
 
 
 def warmup_with_inverse_sqrt_decay(warmup_steps):
@@ -80,7 +79,6 @@ def warmup_with_inverse_sqrt_decay(warmup_steps):
             # inverse square root decay after warmup
             return (warmup_steps**0.5) / (step**0.5)
     return lr_lambda
-
 
 def is_amlt() -> bool:
     return os.environ.get("AMLT_OUTPUT_DIR", None) is not None
@@ -141,7 +139,7 @@ def load_config_and_model(
     elif task == TaskType.LM:
         model = ARDiffusionModel(model, aux_loss_weight=aux_loss_weight)
     elif task == TaskType.GLM:
-        model = JambagambaModel(
+        model = JambaGambaNoConsModel(
             model, d_model=d_model, nhead=nhead, n_layers=n_layers, padding_id=0, dim_feedfoward=dim_feedforward
         )
     else:
@@ -232,7 +230,7 @@ def get_dataloader(
             dl_test = DataLoader(
                 dataset=ds_test,
                 shuffle=True,
-                batch_size=128,
+                batch_size=48,
                 num_workers=4,
                 collate_fn=collator,
             )
@@ -415,9 +413,7 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
     total_tokens = 0
     total_seqs = 0
     total_ce_loss = 0
-    total_gaussian_loss = 0
     num_batches= 0
-    total_mse_loss = 0
     for batch in val_loader:
         output = step(model, batch, None, None, training=False)
         num_batches += 1
@@ -426,9 +422,7 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
                 (
                     output["n_processed"],
                     output["n_seqs"],
-                    output["cross_entropy_loss"],
-                    output["gaussian_loss"],
-                    output["mse_loss"]
+                    output["cross_entropy_loss"]
                 )
             )
             if WORLD_SIZE > 1:
@@ -436,24 +430,18 @@ def validation(model, val_loader, args, epoch=None, train_step=None, csv_fpath=N
                 total_tokens += int(reduce_tensor[0].item())
                 total_seqs += int(reduce_tensor[1].item())
                 total_ce_loss += reduce_tensor[2].item()
-                total_gaussian_loss += reduce_tensor[3].item()
-                total_mse_loss += reduce_tensor[4].item()
             else:
                 total_tokens += output["n_processed"]
                 total_seqs += output["n_seqs"]
                 total_ce_loss += output["cross_entropy_loss"]
-                total_gaussian_loss += output["gaussian_loss"]
-                total_mse_loss += output["mse_loss"]
     if RANK == 0:
         with open(csv_fpath, "a") as f:
             f.write(
-                f"{epoch},{train_step},{total_tokens},{total_ce_loss},{total_gaussian_loss}\n"
+                f"{epoch},{train_step},{total_tokens},{total_ce_loss}\n"
             )
         wandb.log(
             {
                 "val_ce_loss": total_ce_loss / num_batches,
-                "val_gaussian_loss": total_gaussian_loss/ num_batches,
-                "val_mse_loss": total_mse_loss/ num_batches,
                 "tokens_validated": total_tokens,
                 "nsteps": train_step,
                 "epoch": epoch,
@@ -475,7 +463,7 @@ def save_checkpoint(
     if step % save_every != 0:
         return
 
-    out_path = os.path.join(out_dir, f"dcp_gamba{step}")
+    out_path = os.path.join(out_dir, f"dcp_nocons{step}")
     os.makedirs(out_path, exist_ok=True)
     print(f"Saving checkpoint to {out_path}", flush=True)
 
@@ -501,7 +489,6 @@ def save_checkpoint(
             "epoch": epoch,
         }
         torch.save(sd, os.path.join(out_path, "scheduler.pt"))
-
 
 
 def epoch(
@@ -551,9 +538,7 @@ def epoch(
                 (
                     output["n_processed"],
                     output["n_seqs"],
-                    output["cross_entropy_loss"],
-                    output["gaussian_loss"],
-                    output["mse_loss"]
+                    output["cross_entropy_loss"]
                 )
             )
             if WORLD_SIZE > 1:
@@ -564,7 +549,6 @@ def epoch(
         if total_steps >= max_steps:
             print(f"Reached max step limit of {max_steps} at epoch {current_epoch}, exiting...")
             return total_steps, total_tokens, total_seq, True  # signal to stop training
-
         total_tokens += int(reduce_tensor[0].item())
         total_seq += int(reduce_tensor[1].item())
 
@@ -574,8 +558,6 @@ def epoch(
                 {
                     "loss": output["loss"].item(),
                     "cross_entropy_loss": output["cross_entropy_loss"].item(),
-                    "gaussian_loss": output["gaussian_loss"].item(),
-                    "mse_loss": output["mse_loss"].item(),
                     "nsteps": total_steps,
                     "epoch": current_epoch,
                     "token_trained": total_tokens,
@@ -610,13 +592,13 @@ def get_latest_dcp_checkpoint_path(ckpt_dir: str, last_step: int = -1) -> Option
         if not os.path.exists(ckpt_dir):
             os.makedirs(ckpt_dir, exist_ok=True)
         for dir_name in os.listdir(ckpt_dir):
-            if "dcp_gamba" in dir_name:
-                step = int(dir_name.split("dcp_gamba")[-1])
+            if "dcp_nocons" in dir_name:
+                step = int(dir_name.split("dcp_nocons")[-1])
                 if step > last_step:
                     ckpt_path = os.path.join(ckpt_dir, dir_name)
                     last_step = step
     else:
-        ckpt_path = os.path.join(ckpt_dir, f"dcp_gamba{last_step}")
+        ckpt_path = os.path.join(ckpt_dir, f"dcp_nocons{last_step}")
     return ckpt_path
 
 
@@ -671,7 +653,6 @@ def load_checkpoint(
 def evaluate_model(model, dataloader, device):
     model.eval()
     total_ce_loss = 0
-    total_gaussian_loss = 0
     num_batches = 0
     total_tokens = 0
     total_seqs = 0
@@ -686,7 +667,6 @@ def evaluate_model(model, dataloader, device):
                         output["n_processed"],
                         output["n_seqs"],
                         output["cross_entropy_loss"],
-                        output["gaussian_loss"],
                         output["accuracy"]
                     )
                 )
@@ -695,17 +675,14 @@ def evaluate_model(model, dataloader, device):
                     total_tokens += int(reduce_tensor[0].item())
                     total_seqs += int(reduce_tensor[1].item())
                     total_ce_loss += reduce_tensor[2].item()
-                    total_gaussian_loss += reduce_tensor[3].item()
                 else:
                     total_tokens += output["n_processed"]
                     total_seqs += output["n_seqs"]
                     total_ce_loss += output["cross_entropy_loss"]
-                    total_gaussian_loss += output["gaussian_loss"]
                     total_accuracy += output["accuracy"]
     ce_loss = total_ce_loss / num_batches
-    gaussian_loss = total_gaussian_loss / num_batches
     accuracy = total_accuracy / num_batches
-    return accuracy, ce_loss, gaussian_loss
+    return accuracy, ce_loss
 
 def train(args: argparse.Namespace) -> None:
     print(
@@ -721,7 +698,7 @@ def train(args: argparse.Namespace) -> None:
     config, tokenizer, model, blk_types = load_config_and_model(args.config_fpath)
     if RANK == 0 and not args.no_wandb:
         os.makedirs(args.out_fpath, exist_ok=True)
-        run_id_file = os.path.join(args.out_fpath, "ArGambaDual-wandb_run_id.txt")
+        run_id_file = os.path.join(args.out_fpath, "ArGambaSeqOnly-wandb_run_id.txt")
         if os.path.exists(run_id_file):
             with open(run_id_file, "r") as f:
                 run_id = f.read().strip()
@@ -735,7 +712,7 @@ def train(args: argparse.Namespace) -> None:
             resume=resume_mode,
             mode="online",
             config=config,
-            name=f"ArGamba-Dual",
+            name=f"ArGamba-SeqOnly",
             group=f"{config['dataset']}",
             notes=f"{config.get('model_config','')}",
             tags=[config['task'], config['model_type'], args.dtype],
@@ -840,16 +817,15 @@ def train(args: argparse.Namespace) -> None:
     scheduler = LambdaLR(optimizer, lr_func)
 
     if args.run_type == "test":
-        accuracy, avg_ce_loss, avg_gaussian_loss = evaluate_model(model, dl_test, device=DEVICE)
+        accuracy, avg_ce_loss = evaluate_model(model, dl_test, device=DEVICE)
         print(f"Accuracy on test: {accuracy}")
         print(f"Average CE Loss on test: {avg_ce_loss}")
-        print(f"Average Gaussian Loss on test: {avg_gaussian_loss}")
         return
     initial_epoch = 0
     total_steps = 0
     total_tokens = 0
     total_seqs = 0
-        # load the state
+    # load the state
     print("loading state")
     initial_epoch, total_steps, total_tokens, total_seqs = load_checkpoint(
         model, optimizer, scheduler, args.out_fpath, args.last_step

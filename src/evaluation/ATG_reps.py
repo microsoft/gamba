@@ -11,6 +11,15 @@ NOW WITH BASELINES: kmer6 and phylop6D
 - runs:
   - 5-way 1-NN confusion heatmap on labels 1..5
   - binary 1-NN tasks: 1 vs each of 2..5
+
+use_6mer_roi:
+  - snaps context window to 6-mer boundary (strand-aware, via extract_context)
+  - baseline=="none" (gamba/caduceus): pools 6 consecutive tokens starting at fs
+    (char-level, no CLS token for either model)
+  - baseline=="phylop": pools 6 phyloP scores (ATG + 3 flanking) instead of 3
+  - baseline=="kmer6" / "kmer6_flanked": unchanged — k-mer identity is
+    sequence-determined; snapping only gives consistent boundary alignment
+  - appends '_6mer' suffix to all saved filenames and plots
 """
 
 import argparse
@@ -70,46 +79,43 @@ def _seq_to_kmer_vec(seq: str, k: int, kmer_index: dict) -> np.ndarray:
     L = len(seq)
     if L < k:
         return vec
-    
-    # Count k-mers
+
     for i in range(L - k + 1):
         kmer = seq[i:i + k]
         j = kmer_index.get(kmer)
         if j is not None:
             vec[j] += 1.0
-    
-    # Normalize by frequency
+
     s = vec.sum()
     if s > 0:
         vec /= s
-    
-    # L2 normalize
+
     norm = np.linalg.norm(vec)
     if norm > 0:
         vec /= norm
-    
+
     return vec.astype(np.float32)
 
 
 def _summarize_scores(scores: np.ndarray) -> np.ndarray:
     """Summarize phyloP scores into 6D feature vector."""
     s = np.asarray(scores, dtype=np.float32)
-    
+
     if s.size == 0 or np.isnan(s).all():
         return np.full(6, np.nan, dtype=np.float32)
-    
+
     m = np.nanmean(s)
     st = np.nanstd(s)
-    
+
     denom = float(np.sum(~np.isnan(s))) if np.sum(~np.isnan(s)) else 0.0
     fpos = float(np.sum(s > 0)) / denom if denom else 0.0
     fneg = float(np.sum(s < 0)) / denom if denom else 0.0
-    
+
     pos = s[(s > 0) & ~np.isnan(s)]
     neg = s[(s < 0) & ~np.isnan(s)]
     mpos = float(np.nanmean(pos)) if pos.size else 0.0
     mneg = float(np.nanmean(neg)) if neg.size else 0.0
-    
+
     return np.array([m, st, fpos, fneg, mpos, mneg], dtype=np.float32)
 
 
@@ -277,9 +283,6 @@ def save_reps(base_dir, model_tag, name, X, labels, metas, extra=None):
 
 
 def save_sampled_examples_tsv(output_dir: Path, df_sampled: pd.DataFrame, seed: int, n_examples: int):
-    """
-    Save the exact sampled example rows so other models can reuse the identical set.
-    """
     out = output_dir / "sampled_examples_atg5.tsv"
     meta = {
         "n_examples_requested": int(n_examples),
@@ -312,10 +315,6 @@ DELTA_COLS_5WAY = {
 
 
 def _even_sample_by_chrom(df: pd.DataFrame, chromosomes: list[str], n_total: int, seed: int) -> pd.DataFrame:
-    """
-    sample ~evenly across chromosomes. if a chromosome has fewer rows than requested,
-    we take all of them and re-distribute the remaining quota across others.
-    """
     rng = np.random.default_rng(seed)
 
     df = df[df["chrom"].isin(chromosomes)].copy()
@@ -398,11 +397,8 @@ def load_atg_5way_contexts_from_tsv(
     chromosomes: list[str] | None = None,
     sampled_examples_tsv: str | None = None,
     output_dir_for_sampling: Path | None = None,
+    snap_to_6mer: bool = False,
 ):
-    """
-    Load ATG 5-way contexts. If sampled_examples_tsv is provided, uses it directly.
-    Otherwise samples and optionally writes sampled_examples_atg5.tsv.
-    """
     _ = pyBigWig.open(bigwig_file).close()
 
     if chromosomes is None:
@@ -456,7 +452,10 @@ def load_atg_5way_contexts_from_tsv(
                 "feature_id": f"{row['transcript_id']}_L{lid}",
                 "strand": row["strand"],
             }
-            ctx = extract_context(bigwig_file, region, genome, model_type)
+            ctx = extract_context(
+                bigwig_file, region, genome, model_type,
+                snap_to_6mer=snap_to_6mer,
+            )
             if not ctx or "sequence" not in ctx:
                 ok = False
                 break
@@ -464,7 +463,6 @@ def load_atg_5way_contexts_from_tsv(
             ctx["example_id"] = example_id
             ctx["label_id"] = lid
             ctx["delta_bp"] = 0 if DELTA_COLS_5WAY[lid] is None else int(row[DELTA_COLS_5WAY[lid]])
-
             ctx["transcript_id"] = row["transcript_id"]
             ctx["gene_id"] = row["gene_id"]
             ctx["strand"] = row["strand"]
@@ -505,15 +503,24 @@ def compute_atg_roi_embeddings(
     training_task,
     baseline,
     kmer_k,
+    use_6mer_roi: bool = False,
 ):
-    """Compute embeddings using model or baselines."""
+    """Compute embeddings using model or baselines.
+
+    use_6mer_roi behaviour per baseline:
+      - "none"          : pool 6 char-level tokens (gamba/caduceus have no CLS)
+      - "phylop"        : summarize 6 phyloP scores instead of 3
+      - "kmer6"         : unchanged — k-mer identity is sequence-determined
+      - "kmer6_flanked" : unchanged — already uses a 6bp window by design
+    """
     logging.info(
         f"computing atg roi embeddings for {len(contexts)} contexts, "
-        f"model_type={model_type}, task={training_task}, baseline={baseline}"
+        f"model_type={model_type}, task={training_task}, baseline={baseline}, "
+        f"use_6mer_roi={use_6mer_roi}"
     )
 
     roi_embeds = []
-    full_embeds = []  # ADD THIS
+    full_embeds = []
     label_ids = []
     metas = []
 
@@ -546,20 +553,29 @@ def compute_atg_roi_embeddings(
             if rep.ndim != 2:
                 continue
 
+            T = rep.shape[0]
             fs = int(info.get("feature_start_in_window", 0))
-            fe = int(info.get("feature_end_in_window", rep.shape[0]))
-            if fe <= fs or fs < 0 or fe > rep.shape[0]:
-                continue
+            fe = int(info.get("feature_end_in_window", T))
 
-            rep_slice = rep[fs:fe]
+            full_vec = rep.mean(axis=0)
+
+            if use_6mer_roi:
+                # gamba and caduceus are both char-level with no CLS token:
+                # pool 6 consecutive tokens starting at fs (after snap, fs % 6 == 0)
+                tfs = max(0, min(fs, T - 1))
+                tfe = max(tfs + 1, min(fs + 6, T))
+            else:
+                if fe <= fs or fs < 0 or fe > T:
+                    continue
+                tfs, tfe = fs, fe
+
+            rep_slice = rep[tfs:tfe]
             if rep_slice.shape[0] == 0:
                 continue
 
-            # ADD THIS: compute full window mean
-            full_vec = rep.mean(axis=0)
             pooled = rep_slice.mean(axis=0)
 
-            full_embeds.append(full_vec.astype(np.float32))  # ADD THIS
+            full_embeds.append(full_vec.astype(np.float32))
             roi_embeds.append(pooled.astype(np.float32))
             label_ids.append(int(info["label_id"]))
             metas.append(
@@ -570,43 +586,41 @@ def compute_atg_roi_embeddings(
                     "start": int(info.get("start", -1)),
                     "end": int(info.get("end", -1)),
                     "delta_bp": int(info.get("delta_bp", 0)),
-                    "feature_start_in_window": fs,
-                    "feature_end_in_window": fe,
+                    "feature_start_in_window": tfs,
+                    "feature_end_in_window": tfe,
                     "transcript_id": info.get("transcript_id", ""),
                     "gene_id": info.get("gene_id", ""),
                     "strand": info.get("strand", ""),
                 }
             )
-            
+
     elif baseline == "kmer6_flanked":
-        """Extract 6bp window: 2bp before ATG + ATG + 1bp after"""
+        # Already extracts a 6bp window (2bp before ATG + ATG + 1bp after).
+        # snap_to_6mer ensures consistent boundary alignment but the logic here is unchanged.
+        # use_6mer_roi has no further effect.
         kmer_index = _build_kmer_index(k=kmer_k)
-        
+
         for ctx in contexts:
             seq = ctx.get("sequence", "")
             if not seq:
                 continue
-            
+
             fs = int(ctx.get("feature_start_in_window", 0))
             fe = int(ctx.get("feature_end_in_window", len(seq)))
-            
-            # Full sequence k-mer  # ADD THIS
+
             full_vec = _seq_to_kmer_vec(seq, k=kmer_k, kmer_index=kmer_index)
-            
-            # Expand to 6bp window: 2bp before, ATG (3bp), 1bp after
+
             window_start = max(0, fs - 2)
             window_end = min(len(seq), fe + 1)
             roi_seq = seq[window_start:window_end]
-            
-            # Should be exactly 6bp if not at boundaries
+
             if len(roi_seq) != 6:
                 logging.warning(f"flanked kmer: got {len(roi_seq)}bp instead of 6bp, skipping")
                 continue
-            
-            # This should give us exactly ONE 6-mer
+
             kmer_vec = _seq_to_kmer_vec(roi_seq, k=kmer_k, kmer_index=kmer_index)
-            
-            full_embeds.append(full_vec)  # ADD THIS
+
+            full_embeds.append(full_vec)
             roi_embeds.append(kmer_vec)
             label_ids.append(int(ctx["label_id"]))
             metas.append({
@@ -623,25 +637,27 @@ def compute_atg_roi_embeddings(
                 "gene_id": ctx.get("gene_id", ""),
                 "strand": ctx.get("strand", ""),
             })
-            
+
     elif baseline == "kmer6":
+        # ROI is ATG-only (3bp). use_6mer_roi has no effect here —
+        # k-mer identity is sequence-determined; snapping only gives consistent
+        # boundary alignment for the surrounding context window.
         kmer_index = _build_kmer_index(k=3)
-        
+
         for ctx in contexts:
             seq = ctx.get("sequence", "")
             if not seq:
                 continue
-            
+
             fs = int(ctx.get("feature_start_in_window", 0))
             fe = int(ctx.get("feature_end_in_window", len(seq)))
-            
-            # Full sequence k-mer  # ADD THIS
+
             full_vec = _seq_to_kmer_vec(seq, k=3, kmer_index=kmer_index)
-            
+
             roi_seq = seq[fs:fe]
             kmer_vec = _seq_to_kmer_vec(roi_seq, k=3, kmer_index=kmer_index)
-            
-            full_embeds.append(full_vec)  # ADD THIS
+
+            full_embeds.append(full_vec)
             roi_embeds.append(kmer_vec)
             label_ids.append(int(ctx["label_id"]))
             metas.append(
@@ -659,28 +675,34 @@ def compute_atg_roi_embeddings(
                     "strand": ctx.get("strand", ""),
                 }
             )
-    
+
     elif baseline == "phylop":
         for ctx in contexts:
             scores = ctx.get("scores")
             if scores is None:
                 continue
-            
+
             scores = np.asarray(scores, dtype=np.float32)
             fs = int(ctx.get("feature_start_in_window", 0))
             fe = int(ctx.get("feature_end_in_window", len(scores)))
-            
-            # Full window phyloP  # ADD THIS
+
             full_vec = _summarize_scores(scores)
             if full_vec is None or np.isnan(full_vec).all():
                 continue
-            
-            roi_scores = scores[fs:fe]
+
+            if use_6mer_roi:
+                # pool 6 phyloP scores (ATG + 3 flanking) to match the 6-nt ROI
+                # of the neural models and the kmer6_flanked baseline
+                roi_end = min(fs + 6, len(scores))
+                roi_scores = scores[fs:roi_end]
+            else:
+                roi_scores = scores[fs:fe]  # original 3bp ATG window
+
             phylop_vec = _summarize_scores(roi_scores)
             if np.isnan(phylop_vec).all():
                 continue
-            
-            full_embeds.append(full_vec)  # ADD THIS
+
+            full_embeds.append(full_vec)
             roi_embeds.append(phylop_vec)
             label_ids.append(int(ctx["label_id"]))
             metas.append(
@@ -692,13 +714,13 @@ def compute_atg_roi_embeddings(
                     "end": int(ctx.get("end", -1)),
                     "delta_bp": int(ctx.get("delta_bp", 0)),
                     "feature_start_in_window": fs,
-                    "feature_end_in_window": fe,
+                    "feature_end_in_window": fs + 6 if use_6mer_roi else fe,
                     "transcript_id": ctx.get("transcript_id", ""),
                     "gene_id": ctx.get("gene_id", ""),
                     "strand": ctx.get("strand", ""),
                 }
             )
-    
+
     else:
         raise ValueError(f"unsupported baseline: {baseline}")
 
@@ -707,10 +729,11 @@ def compute_atg_roi_embeddings(
         return np.empty((0, 1), dtype=np.float32), np.empty((0, 1), dtype=np.float32), np.array([]), []
 
     roi_embeds = np.stack(roi_embeds)
-    full_embeds = np.stack(full_embeds)  # ADD THIS
+    full_embeds = np.stack(full_embeds)
     label_ids = np.asarray(label_ids, dtype=int)
     logging.info(f"roi_embeds shape={roi_embeds.shape}, full_embeds shape={full_embeds.shape}, n={len(label_ids)}")
-    return roi_embeds, full_embeds, label_ids, metas  # CHANGE THIS
+    return roi_embeds, full_embeds, label_ids, metas
+
 
 # ---------------- main analysis ----------------
 
@@ -731,9 +754,12 @@ def analyze_atg_5way_knn(
     sampled_examples_tsv,
     baseline,
     kmer_k,
+    use_6mer_roi: bool = False,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = "_6mer" if use_6mer_roi else ""
 
     if baseline == "none":
         step_tag = "random_init" if last_step == 0 else str(last_step)
@@ -741,156 +767,162 @@ def analyze_atg_5way_knn(
     else:
         model_tag = baseline
 
-    cached = maybe_load_cached_reps(output_dir, model_tag, "ATG_5way_all_labels")
+    cached = maybe_load_cached_reps(output_dir, model_tag, f"ATG_5way_all_labels{suffix}")
     if cached is not None:
         roi_embeds, label_ids, metas = cached
         logging.info(f"[cache] loaded roi_embeds shape={roi_embeds.shape}")
-        
-        # 5-way heatmap
+
         plot_knn_heatmap(
             roi_embeds,
             label_ids,
-            output_path=output_dir / f"knn_heatmap_{model_tag}_ATG5way_all_labels.png",
+            output_path=output_dir / f"knn_heatmap_{model_tag}_ATG5way_all_labels{suffix}.png",
             title=f"ATG 5-way 1-NN ({model_tag})",
         )
-        
-        # Binary 1-vs-rest plots
+
         for target_label in range(2, 6):
             indices = np.where((label_ids == 1) | (label_ids == target_label))[0]
             if len(indices) == 0:
                 logging.warning(f"[KNN] no examples for 1-vs-{target_label}, skipping plot")
                 continue
-
-            sub_embeds = roi_embeds[indices]
-            sub_labels = label_ids[indices]
             plot_binary_knn(
-                sub_embeds,
-                sub_labels,
-                output_path=output_dir / f"knn_heatmap_{model_tag}_ATG1_vs_{target_label}.png",
+                roi_embeds[indices],
+                label_ids[indices],
+                output_path=output_dir / f"knn_heatmap_{model_tag}_ATG1_vs_{target_label}{suffix}.png",
                 title=f"ATG 1-vs-{target_label} 1-NN ({model_tag})",
             )
+        return
 
+    # --- full run ---
+    if baseline in ("kmer6", "phylop"):
+        ctx_model_type = "baseline"
     else:
-        # Determine context extraction mode
-        if baseline in ("kmer6", "phylop"):
-            ctx_model_type = "baseline"
-        else:
-            ctx_model_type = model_type
+        ctx_model_type = model_type
 
-        # Load model only if baseline == "none"
-        if baseline == "none":
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            logging.info(f"using device: {device}")
-
-            model, tokenizer = load_model(
-                checkpoint_dir,
-                config_fpath,
-                last_step=last_step,
-                device=device,
-                training_task=training_task,
-                model_type=model_type,
-            )
-        else:
-            model = None
-            tokenizer = None
-            device = None
-
-        genome = Fasta(genome_fasta)
-
-        contexts = load_atg_5way_contexts_from_tsv(
-            atg_tsv_path=atg_tsv_path,
-            bigwig_file=bigwig_file,
-            genome=genome,
-            model_type=ctx_model_type,
-            n_examples=n_examples,
-            seed=seed,
-            chromosomes=chromosomes,
-            sampled_examples_tsv=sampled_examples_tsv,
-            output_dir_for_sampling=output_dir,
-        )
-        if not contexts:
-            logging.error("no contexts loaded, aborting")
-            return
-
-        roi_embeds, full_embeds, label_ids, metas = compute_atg_roi_embeddings(  
-            model,
-            tokenizer,
-            contexts,
-            batch_size=batch_size,
+    if baseline == "none":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logging.info(f"using device: {device}")
+        model, tokenizer = load_model(
+            checkpoint_dir,
+            config_fpath,
+            last_step=last_step,
             device=device,
-            model_type=model_type,
             training_task=training_task,
-            baseline=baseline,
-            kmer_k=kmer_k,
+            model_type=model_type,
         )
-        if roi_embeds.shape[0] == 0:
-            logging.error("empty embeddings, aborting")
-            return
+    else:
+        model = None
+        tokenizer = None
+        device = None
 
-        # Ensure strict 5-per-example
-        index_by_example = defaultdict(dict)
-        for i, meta in enumerate(metas):
-            index_by_example[meta["example_id"]][int(meta["label_id"])] = i
+    genome = Fasta(genome_fasta)
 
-        valid_examples = [
-            ex_id for ex_id, lids in index_by_example.items()
-            if all(l in lids for l in (1, 2, 3, 4, 5))
-        ]
-        logging.info(f"valid examples with all 5 labels after embedding: {len(valid_examples)}")
+    contexts = load_atg_5way_contexts_from_tsv(
+        atg_tsv_path=atg_tsv_path,
+        bigwig_file=bigwig_file,
+        genome=genome,
+        model_type=ctx_model_type,
+        n_examples=n_examples,
+        seed=seed,
+        chromosomes=chromosomes,
+        sampled_examples_tsv=sampled_examples_tsv,
+        output_dir_for_sampling=output_dir,
+        snap_to_6mer=use_6mer_roi,
+    )
+    if not contexts:
+        logging.error("no contexts loaded, aborting")
+        return
 
-        keep_indices = []
-        for ex in valid_examples:
-            for lid in (1, 2, 3, 4, 5):
-                keep_indices.append(index_by_example[ex][lid])
-        keep_indices = np.asarray(keep_indices, dtype=int)
+    roi_embeds, full_embeds, label_ids, metas = compute_atg_roi_embeddings(
+        model,
+        tokenizer,
+        contexts,
+        batch_size=batch_size,
+        device=device,
+        model_type=model_type,
+        training_task=training_task,
+        baseline=baseline,
+        kmer_k=kmer_k,
+        use_6mer_roi=use_6mer_roi,
+    )
+    if roi_embeds.shape[0] == 0:
+        logging.error("empty embeddings, aborting")
+        return
 
-        roi_embeds = roi_embeds[keep_indices]
-        full_embeds = full_embeds[keep_indices]
-        label_ids = label_ids[keep_indices]
-        metas = [metas[i] for i in keep_indices.tolist()]
+    # Enforce strict 5-per-example
+    index_by_example = defaultdict(dict)
+    for i, meta in enumerate(metas):
+        index_by_example[meta["example_id"]][int(meta["label_id"])] = i
 
-        extra_all = {
-            "model_type": model_type if baseline == "none" else baseline,
-            "training_task": training_task if baseline == "none" else "N/A",
-            "last_step": last_step if baseline == "none" else 0,
-            "scope": "roi_all",
-            "n_examples_requested": int(n_examples),
-            "seed": int(seed),
-            "baseline": baseline,
-        }
-        extra_full = {  
-            "model_type": model_type if baseline == "none" else baseline,
-            "training_task": training_task if baseline == "none" else "N/A",
-            "last_step": last_step if baseline == "none" else 0,
-            "scope": "full_all",
-            "n_examples_requested": int(n_examples),
-            "seed": int(seed),
-            "baseline": baseline,
-        }
-        save_reps(output_dir, model_tag, "ATG_5way_all_labels", roi_embeds, label_ids, metas, extra=extra_all)
-        save_reps(output_dir, model_tag, "ATG_5way_all_labels_full", full_embeds, label_ids, metas, extra=extra_full)  
+    valid_examples = [
+        ex_id for ex_id, lids in index_by_example.items()
+        if all(l in lids for l in (1, 2, 3, 4, 5))
+    ]
+    logging.info(f"valid examples with all 5 labels after embedding: {len(valid_examples)}")
 
-        # Plot after saving
-        plot_knn_heatmap(
-            roi_embeds,
-            label_ids,
-            output_path=output_dir / f"knn_heatmap_{model_tag}_ATG5way_all_labels.png",
-            title=f"ATG 5-way 1-NN ({model_tag})",
+    keep_indices = []
+    for ex in valid_examples:
+        for lid in (1, 2, 3, 4, 5):
+            keep_indices.append(index_by_example[ex][lid])
+    keep_indices = np.asarray(keep_indices, dtype=int)
+
+    roi_embeds = roi_embeds[keep_indices]
+    full_embeds = full_embeds[keep_indices]
+    label_ids = label_ids[keep_indices]
+    metas = [metas[i] for i in keep_indices.tolist()]
+
+    extra_roi = {
+        "model_type": model_type if baseline == "none" else baseline,
+        "training_task": training_task if baseline == "none" else "N/A",
+        "last_step": last_step if baseline == "none" else 0,
+        "scope": "roi_all",
+        "n_examples_requested": int(n_examples),
+        "seed": int(seed),
+        "baseline": baseline,
+        "use_6mer_roi": use_6mer_roi,
+    }
+    extra_full = {
+        "model_type": model_type if baseline == "none" else baseline,
+        "training_task": training_task if baseline == "none" else "N/A",
+        "last_step": last_step if baseline == "none" else 0,
+        "scope": "full_all",
+        "n_examples_requested": int(n_examples),
+        "seed": int(seed),
+        "baseline": baseline,
+        "use_6mer_roi": use_6mer_roi,
+    }
+    save_reps(output_dir, model_tag, f"ATG_5way_all_labels{suffix}", roi_embeds, label_ids, metas, extra=extra_roi)
+    save_reps(output_dir, model_tag, f"ATG_5way_all_labels_full{suffix}", full_embeds, label_ids, metas, extra=extra_full)
+
+    # Plots
+    metrics5, _, _ = plot_knn_heatmap(
+        roi_embeds,
+        label_ids,
+        output_path=output_dir / f"knn_heatmap_{model_tag}_ATG5way_all_labels{suffix}.png",
+        title=f"ATG 5-way 1-NN ({model_tag})",
+    )
+
+    task_metrics = {}
+    if metrics5:
+        task_metrics["task5way_balanced_accuracy"] = float(metrics5["balanced_accuracy"])
+        task_metrics["task5way_micro_accuracy"] = float(metrics5["micro_accuracy"])
+
+    for target_label in range(2, 6):
+        indices = np.where((label_ids == 1) | (label_ids == target_label))[0]
+        if len(indices) == 0:
+            continue
+        mk, _, _ = plot_binary_knn(
+            roi_embeds[indices],
+            label_ids[indices],
+            output_path=output_dir / f"knn_heatmap_{model_tag}_ATG1_vs_{target_label}{suffix}.png",
+            title=f"ATG 1-vs-{target_label} 1-NN ({model_tag})",
         )
-        
-        for target_label in range(2, 6):
-            indices = np.where((label_ids == 1) | (label_ids == target_label))[0]
-            if len(indices) == 0:
-                continue
+        if mk:
+            task_metrics[f"1_vs_{target_label}_balanced_accuracy"] = float(mk["balanced_accuracy"])
 
-            sub_embeds = roi_embeds[indices]
-            sub_labels = label_ids[indices]
-            plot_binary_knn(
-                sub_embeds,
-                sub_labels,
-                output_path=output_dir / f"knn_heatmap_{model_tag}_ATG1_vs_{target_label}.png",
-                title=f"ATG 1-vs-{target_label} 1-NN ({model_tag})",
-            )
+    with open(output_dir / f"balanced_accuracy_{model_tag}_ATG5way{suffix}.json", "w") as f:
+        json.dump(task_metrics, f, indent=2)
+
+    logging.info(f"task balanced accuracies: {task_metrics}")
 
 
 # ---------------- CLI ----------------
@@ -903,7 +935,6 @@ def main():
         "--atg_tsv_path",
         type=str,
         default="/home/mica/gamba/data_processing/data/ATGs/all_chr_atg_5way.tsv",
-        help="Path to simplified 5-way ATG TSV",
     )
     parser.add_argument(
         "--bigwig_file",
@@ -926,7 +957,7 @@ def main():
         type=str,
         default="/home/mica/gamba/data_processing/data/240-mammalian/ATG_reps_5way",
     )
-    
+
     parser.add_argument("--model_type", type=str, choices=["gamba", "caduceus"], default=None)
     parser.add_argument("--training_task", type=str, choices=["dual", "cons_only", "seq_only"], default=None)
     parser.add_argument("--last_step", type=int, default=44000)
@@ -939,6 +970,19 @@ def main():
         default="none",
     )
     parser.add_argument("--kmer_k", type=int, default=6)
+
+    parser.add_argument(
+        "--use_6mer_roi",
+        action="store_true",
+        default=False,
+        help=(
+            "Snap context window to 6-mer boundary and pool a 6-nt ROI. "
+            "For baseline==none (gamba/caduceus): pools 6 char-level tokens. "
+            "For baseline==phylop: summarizes 6 phyloP scores instead of 3. "
+            "For kmer6/kmer6_flanked: no change to ROI (k-mer identity is sequence-determined). "
+            "Appends '_6mer' to all saved filenames."
+        ),
+    )
 
     parser.add_argument("--n_examples", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=42)
@@ -956,14 +1000,18 @@ def main():
         if args.model_type is None or args.training_task is None:
             raise SystemExit("when --baseline=none, provide --model_type and --training_task")
 
-    checkpoint_dir = os.path.join(args.checkpoint_dir, "clean_dcps/CCP/") if args.model_type == "gamba" else args.checkpoint_dir
-    
+    checkpoint_dir = (
+        os.path.join(args.checkpoint_dir, "clean_dcps/CCP/")
+        if args.model_type == "gamba"
+        else args.checkpoint_dir
+    )
+
     if args.baseline == "none":
         last_tag = "random_init" if args.last_step == 0 else args.last_step
         outdir = os.path.join(args.output_dir, f"ATG5_{args.model_type}_{args.training_task}_step_{last_tag}")
     else:
         outdir = os.path.join(args.output_dir, f"ATG5_{args.baseline}")
-    
+
     os.makedirs(outdir, exist_ok=True)
 
     analyze_atg_5way_knn(
@@ -983,6 +1031,7 @@ def main():
         sampled_examples_tsv=args.sampled_examples_tsv,
         baseline=args.baseline,
         kmer_k=args.kmer_k,
+        use_6mer_roi=args.use_6mer_roi,
     )
 
 

@@ -317,47 +317,53 @@ def predict_single_window_effective(
     model_type,
     training_task,
     device,
-    context_size,
-    last_k,
+    context_size,  # 1000
+    last_k,  # 1024
 ):
     """
-    Predict for ONE model window [window_start, window_end) and return ONLY the effective region:
-      effective = [window_start + context_size, window_end)
-
-    Returns:
-      eff_start, eff_end, means_eff
-        - means_eff length == eff_end - eff_start (unless truncated/padded)
+    Predict for ONE window [window_start, window_end).
+    Context: [window_start, window_start + context_size)
+    Predict: [window_start + context_size, window_end)
     """
+    
+    # Manually extract sequence and scores (bypass extract_context windowing)
+    try:
+        seq = str(genome[chrom][window_start:window_end].seq)
+        
+        with pyBigWig.open(bigwig_file) as bw:
+            scores = np.array(bw.values(chrom, window_start, window_end), dtype=np.float32)
+        
+        if len(seq) != len(scores):
+            raise ValueError(f"Length mismatch: seq={len(seq)}, scores={len(scores)}")
+            
+    except Exception as e:
+        raise ValueError(f"Failed to extract {chrom}:{window_start}-{window_end}: {e}")
+    
     region = {
         "chrom": chrom,
-        "start": int(window_start),
-        "end": int(window_end),
-        "feature_id": f"{chrom}:{window_start}-{window_end}",
-        "feature_start_in_window": int(context_size),
-        "feature_end_in_window": int(window_end - window_start),
+        "start": window_start,
+        "end": window_end,
+        "sequence": seq,  # Already extracted
+        "scores": scores,  # Already extracted
+        "feature_start_in_window": context_size,  # Prediction starts here
+        "feature_end_in_window": window_end - window_start,  # Prediction ends here
+        "category": "sliding_window",
     }
-
-    context = extract_context(bigwig_file, region, genome, model_type)
-    if not context or "sequence" not in context:
-        raise ValueError(f"failed to extract context for {chrom}:{window_start}-{window_end}")
-
-    # ensure feature span exists for masking
-    context["feature_start_in_window"] = int(context_size)
-    context["feature_end_in_window"] = int(window_end - window_start)
-
+    
+    # Now predict (sequence already extracted, no need for tokenization yet)
     (_, _, _, _, _, all_pred_scores) = predict_scores_batched(
         model=model,
         tokenizer=tokenizer,
-        tokenized=False,
-        regions=[context],
+        tokenized=False,  # Will tokenize the sequence
+        regions=[region],
         batch_size=1,
         device=device,
         model_type=model_type,
         training_task=training_task,
-        effective_only=True,   # critical
-        last_k=last_k,
+        effective_only=True,
+        last_k=last_k,  # This should be 1024 if you want 1024 predictions
     )
-
+    
     if len(all_pred_scores) != 1:
         raise ValueError(f"prediction failed for {chrom}:{window_start}-{window_end} (got {len(all_pred_scores)})")
 

@@ -1225,18 +1225,18 @@ def parse_args():
         "--training_chromosomes",
         type=str,
         nargs="+",
-        default = None,
-        # default=[
-        #     "chr1","chr4","chr5","chr6","chr7","chr8","chr9","chr10","chr11",
-        #     "chr12","chr13","chr14","chr15","chr17","chr18","chr19","chr20","chr21","chrX"
-        # ],
+        #default = None,
+        default=[
+            "chr1","chr4","chr5","chr6","chr7","chr8","chr9","chr10","chr11",
+            "chr12","chr13","chr14","chr15","chr17","chr18","chr19","chr20","chr21","chrX"
+        ],
     )
     p.add_argument(
         "--test_chromosomes",
         type=str,
         nargs="+",
-        default= None,
-        # default=["chr2", "chr22", "chr16", "chr3"],
+        #default= None,
+        default=["chr2", "chr22", "chr16", "chr3"],
     )
 
     # behavior
