@@ -726,10 +726,3 @@ Common output types:
 *.bed              genomic regions
 *.bedGraph         genome-browser-compatible prediction tracks
 ```
-
-## Notes
-
-- BED files are expected to use 0-based, half-open coordinates.
-- GTF files are 1-based and closed by convention; scripts that derive BED-style intervals from GTFs should be checked carefully if exact base-level boundaries matter.
-- The released Hugging Face models use custom model code, so `trust_remote_code=True` is required.
-- For public Hugging Face repositories, no token is required.
