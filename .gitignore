@@ -1,0 +1,40 @@
+/pkgs
+/data_processing/data/
+/wandb
+/gamba/__pycache__
+/clean_dcps/
+/clean_caduceus_dcps/
+/dcps/
+/plot-caduceus-UCNE/
+/plot-CE-loss/
+/scaling-experiments/
+/mica@killarney.alliancecan.ca
+/other-models/
+/ATG4_leaderboard_out
+/phylop_predictions
+/plots-for-icml
+/logs
+/clean_gamba_dcps
+plots-for-icml.zip
+clean_caduceus_dcps.zip
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local run outputs / generated artifacts
+ATG4_leaderboard_out/
+phylop_predictions/
+plots-for-icml/
+logs/
+clean_gamba_dcps/
+clean_caduceus_dcps/
+*.zip
+
+# Specific local analysis outputs
+trnas.out
+trnas.struct
+vista_enhancer_distance_summary.tsv
+multiclass_roi_summary.csv
+per_class_roi_summary.csv
+plot_global_balacc.png
+plot_global_balacc_upstream_by_model.png
