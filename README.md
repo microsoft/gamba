@@ -369,11 +369,11 @@ Checkpoints contain model weights, optimizer state, scheduler state, current epo
 
 ## Downstream evaluation data and benchmarks
 
-After preparing the main genome/phyloP training data, additional scripts can be used to generate downstream evaluation regions and run representation-level evaluations.
+After preparing the main genome training data, additional scripts can be used to generate downstream evaluation regions and run representation-level evaluations.
 
 ### 1. Generate genomic region BED files for testing
 
-The script `data_processing/sample_regions.py` creates BED files for biologically defined genomic categories used in downstream evaluation.
+The script `data_processing/create_eval_data.py` creates BED files for biologically defined genomic categories used in downstream evaluation.
 
 Some small region annotation files are included in:
 
@@ -402,26 +402,24 @@ data_processing/region_info/
 └── UCSC_5UTR_exons.bed
 ```
 
-The following inputs are required or optional depending on which categories you want to generate:
+The script generates the following genomic categories:
 
-| Category | Source |
-|---|---|
-| `coding_regions` | GTF |
-| `noncoding_regions` | inferred from GTF-derived annotated regions |
-| `exons` | GTF |
-| `introns` | inferred from GTF exon structure |
-| `upstream_TSS` | inferred from GTF transcript boundaries |
-| `start_codon` | GTF |
-| `stop_codon` | GTF |
-| `promoters` | `data_processing/region_info/promoters.bed` |
-| `UTR5` | UCSC 5′ UTR BED export |
-| `UTR3` | UCSC 3′ UTR BED export |
-| `repeats` | UCSC RepeatMasker BED export |
-| `UCNE` | `data_processing/region_info/hg38_UCNE_coordinates.bed` |
-| `vista_enhancer` | `data_processing/region_info/experiments.tsv` |
-| `phyloP_positive` | sampled from phyloP bigWig |
-| `phyloP_neutral` | sampled from phyloP bigWig |
-| `phyloP_negative` | sampled from phyloP bigWig |
+| Category         | Source                                                  |
+| ---------------- | ------------------------------------------------------- |
+| `coding_regions` | CDS annotations from canonical GTF transcripts          |
+| `exons`          | GTF                                                     |
+| `introns`        | Inferred from GTF exon structure                        |
+| `upstream_TSS`   | Inferred from GTF transcript boundaries                 |
+| `promoters`      | `data_processing/region_info/promoters.bed`             |
+| `UTR5`           | UCSC 5′ UTR BED export                                  |
+| `UTR3`           | UCSC 3′ UTR BED export                                  |
+| `repeats`        | UCSC RepeatMasker BED export                            |
+| `UCNE`           | `data_processing/region_info/hg38_UCNE_coordinates.bed` |
+| `vista_enhancer` | `data_processing/region_info/experiments.tsv`           |
+
+All generated intervals use 0-based, half-open BED coordinates.
+
+BED inputs are assumed to already use 0-based, half-open coordinates. GTF and VISTA coordinates are converted internally from 1-based, inclusive coordinates.
 
 Prepare per-chromosome GTF files in:
 
@@ -439,7 +437,9 @@ data_processing/data/gtfs/
 └── chrX.gtf
 ```
 
-These are derived from GENCODE.
+Compressed files such as `chr1.gtf.gz` are also supported.
+
+These files can be derived from GENCODE. The chromosome name is inferred from the filename before the first period and must match the chromosome names in the reference FASTA.
 
 Repeat annotations can be exported from the UCSC Genome Browser RepeatMasker track and saved locally as:
 
@@ -460,32 +460,66 @@ Promoter annotations can be downloaded from EPD:
 https://epd.expasy.org/ftp/epdnew/human/current/
 ```
 
+Before regenerating the regions, remove the previous output directory to avoid retaining stale BED files from an earlier run:
+
+```bash
+rm -rf data_processing/data/regions
+```
+
 By default, generated region BED files are written to:
 
 ```text
 data_processing/data/regions/
 ```
 
-with one subdirectory per category and one BED file per chromosome:
+For each genomic category, the script generates an anchor dataset and three matched control datasets:
 
 ```text
 data_processing/data/regions/
 ├── coding_regions/
-│   ├── chr1.bed
-│   ├── chr2.bed
-│   └── ...
+├── coding_regions_upstream/
+├── coding_regions_random/
+├── coding_regions_random-noannot/
+├── exons/
+├── exons_upstream/
+├── exons_random/
+├── exons_random-noannot/
 ├── UCNE/
-├── repeats/
-├── UTR3/
-├── UTR5/
-└── vista_enhancer/
+├── UCNE_upstream/
+├── UCNE_random/
+├── UCNE_random-noannot/
+├── ...
+├── manifest.tsv
+└── manifest.json
 ```
+
+Each subdirectory contains one BED file per chromosome:
+
+```text
+CATEGORY/
+├── chr1.bed
+├── chr2.bed
+└── ...
+```
+
+Each BED row contains seven columns:
+
+```text
+chrom  start  end  name  score  strand  pair_id
+```
+
+The same `pair_id` is propagated across an anchor region and its associated upstream, random, and random-noannot controls.
+
+The upstream control is chromosome- and length-matched to the anchor. The `--upstream_length` argument controls the distance between the anchor and the upstream control, rather than the length of the control itself.
+
+`CATEGORY_random` avoids retained anchor regions from the same category.
+
+`CATEGORY_random-noannot` avoids retained anchor regions across all generated categories. It should be interpreted as avoiding retained benchmark annotations rather than as guaranteeing that the sampled interval contains no genomic annotation of any kind.
 
 Example command:
 
 ```bash
-python data_processing/sample_regions.py \
-  --bigwig_file data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig \
+python data_processing/create_eval_data.py \
   --genome_fasta data_processing/data/240-mammalian/hg38.ml.fa \
   --gtf_dir data_processing/data/gtfs/ \
   --vista_tsv data_processing/region_info/experiments.tsv \
@@ -497,25 +531,37 @@ python data_processing/sample_regions.py \
   --ucne_paralogues data_processing/region_info/ucne_paralogues.txt \
   --output_dir data_processing/data/regions \
   --chromosomes auto \
-  --num_regions 10000 \
-  --region_length 2048 \
   --limit_per_category 10000 \
-  --phylop_num_samples 10000 \
+  --upstream_length 2000 \
+  --max_random_attempts 2000 \
   --seed 42
 ```
 
-Small chr22 test:
+The script enforces non-overlap between retained anchor regions using the following category priority order:
 
-```bash
-python data_processing/sample_regions.py \
-  --chromosomes chr22 \
-  --num_regions 100 \
-  --phylop_num_samples 1000 \
-  --limit_per_category 100 \
-  --output_dir data_processing/data/regions_test
+```text
+repeats
+UCNE
+vista_enhancer
+promoters
+UTR5
+UTR3
+coding_regions
+exons
+introns
+upstream_TSS
 ```
 
-The script enforces non-overlap between categories using a priority order, so higher-priority feature classes are retained first.
+Higher-priority feature classes are retained first, and overlapping regions from lower-priority classes are removed.
+
+The script also writes:
+
+```text
+data_processing/data/regions/manifest.tsv
+data_processing/data/regions/manifest.json
+```
+
+These manifests summarize the number, length distribution, chromosome distribution, strand distribution, and `pair_id` coverage of each generated dataset.
 
 ### 2. Generate ATG data
 
