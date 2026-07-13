@@ -20,6 +20,35 @@ from glob import glob
 from bisect import bisect_left
 import random
 
+
+def find_overlapping_categories(intervals, start, end):
+    """
+    intervals: sorted list of (start, end, category) for a chromosome.
+    returns set of categories that overlap [start, end) (half-open).
+    """
+    cats = set()
+    if not intervals:
+        return cats
+
+    # bisect on start coordinate
+    i = bisect_left(intervals, (start, end, ""))
+
+    # walk left
+    j = i - 1
+    while j >= 0 and intervals[j][1] > start:
+        cats.add(intervals[j][2])
+        j -= 1
+
+    # walk right
+    k = i
+    n = len(intervals)
+    while k < n and intervals[k][0] < end:
+        cats.add(intervals[k][2])
+        k += 1
+
+    return cats
+
+
 def _overlaps(iv, start, end):
     # intervals are [start, end) half-open
     i = bisect_left(iv, (start, end))
@@ -69,6 +98,84 @@ def ensure_nonoverlap(categories, order, limit_per_category=None, seed=42):
         logging.info(f"[NON-OVERLAP] {cat}: kept {len(kept)} non-overlapping regions")
     return out
 
+def build_upstream_regions(categories, chrom_lengths, upstream_len=2000):
+    """
+    For each region in each category, create a strand-aware upstream window.
+    Both anchor and upstream receive a shared pair_id.
+
+    Returns:
+        filtered_categories: anchors WITH pair_id
+        upstream_categories: upstream windows WITH pair_id
+    """
+    intervals_by_chrom = defaultdict(list)
+    for cat, regs in categories.items():
+        for r in regs:
+            intervals_by_chrom[r['chrom']].append((r['start'], r['end'], cat))
+
+    for chrom in intervals_by_chrom:
+        intervals_by_chrom[chrom].sort(key=lambda x: x[0])
+
+    filtered_categories = {cat: [] for cat in categories}
+    upstream_categories = {f"{cat}_upstream": [] for cat in categories}
+
+    pair_id = 0  # global monotonic id across all categories
+
+    for cat, regs in categories.items():
+        up_cat = f"{cat}_upstream"
+
+        for r in regs:
+            chrom = r['chrom']
+            strand = r.get('strand', '.')
+            start = r['start']
+            end = r['end']
+
+            # strand-aware upstream
+            if strand == '-':
+                us_start = end
+                us_end = end + upstream_len
+            else:
+                us_start = start - upstream_len
+                us_end = start
+
+            if chrom not in chrom_lengths:
+                continue
+            if us_start < 0 or us_end > chrom_lengths[chrom]:
+                continue
+            if us_end <= us_start:
+                continue
+
+            # check overlap categories
+            cats_over = find_overlapping_categories(intervals_by_chrom[chrom], us_start, us_end)
+            if cat in cats_over:
+                continue
+
+            # assign unique pair_id to anchor + upstream
+            pid = pair_id
+            pair_id += 1
+
+            anchor = dict(r)
+            anchor["pair_id"] = pid
+            filtered_categories[cat].append(anchor)
+
+            upstream = {
+                "chrom": chrom,
+                "start": us_start,
+                "end": us_end,
+                "name": f"{r.get('name', cat)}_up",
+                "score": 0.0,
+                "strand": strand,
+                "category": up_cat,
+                "pair_id": pid,
+            }
+            upstream_categories[up_cat].append(upstream)
+
+    for cat in filtered_categories:
+        logging.info(f"[UPSTREAM] {cat}: kept {len(filtered_categories[cat])} anchors with upstreams")
+    for up_cat in upstream_categories:
+        logging.info(f"[UPSTREAM] {up_cat}: {len(upstream_categories[up_cat])} upstreams")
+
+    return filtered_categories, upstream_categories
+
 
 def list_gtf_files(gtf_dir):
     files = sorted(glob(os.path.join(gtf_dir, "*.gtf"))) + sorted(glob(os.path.join(gtf_dir, "*.gtf.gz")))
@@ -77,7 +184,7 @@ def list_gtf_files(gtf_dir):
     return files
 
 def discover_chromosomes(genome_fasta, bigwig_file):
-    # Prefer genome FASTA (pyfaidx) since that’s your source of truth
+    # Prefer genome FASTA (pyfaidx) since that’s source of truth
     try:
         fa = Fasta(genome_fasta)
         chroms = list(fa.keys())
@@ -591,10 +698,15 @@ def write_bed(regions, output_dir, category, bw=None):
                     r['chrom'],
                     str(r['start']),
                     str(r['end']),
-                    str(r.get('name') or category),  # Default to category if name missing
+                    str(r.get('name') or category),
                     str(r.get('score', 0)),
-                    r.get('strand', '.')
+                    r.get('strand', '.'),
                 ]
+
+                # optional: append pair_id
+                if 'pair_id' in r:
+                    fields.append(str(r['pair_id']))
+
                 f.write("\t".join(fields) + "\n")
         logging.info(f"Saved {len(chrom_regions)} regions to {out_file}")
 
@@ -637,26 +749,72 @@ def load_bed_file(path, category):
         }
         for _, row in df.iterrows()
     ]
-
+    
 
 def load_vista_coordinates(tsv_path):
-    df = pd.read_csv(tsv_path, sep='\t')
+    """
+    load vista enhancers from a TSV that looks like:
+
+        ... vista_id ... coord ... coordinate_hg38 ... strand ...
+
+    we’ll prefer `coordinate_hg38` if present, otherwise fall back to `coord`.
+    name will be `vista_id` if available.
+    """
+    df = pd.read_csv(tsv_path, sep="\t")
+
+    print(f"[VISTA] columns in {tsv_path}: {list(df.columns)}")
+
+    # pick coord column
+    if "coordinate_hg38" in df.columns:
+        coord_col = "coordinate_hg38"
+    elif "coord" in df.columns:
+        coord_col = "coord"
+    else:
+        raise ValueError(
+            f"could not find a coordinate column ('coordinate_hg38' or 'coord') "
+            f"in {tsv_path}. got: {list(df.columns)}"
+        )
+
+    # pick id column
+    if "vista_id" in df.columns:
+        id_col = "vista_id"
+    else:
+        # fall back to first column if vista_id somehow missing
+        id_col = df.columns[0]
+        logging.warning(
+            f"[VISTA] no 'vista_id' column; using '{id_col}' as id"
+        )
+
+    # optional strand column
+    strand_col = "strand" if "strand" in df.columns else None
+
     vista_regions = []
     for _, row in df.iterrows():
-        if pd.isna(row['Element Coordinates']):
+        coords = row[coord_col]
+        if pd.isna(coords):
             continue
-        coords = row['Element Coordinates'].replace('chr', '').split(':')
-        chrom = 'chr' + coords[0]
-        start, end = map(int, coords[1].split('-'))
+
+        # coords like "chr1:3274017-3274864"
+        coords = str(coords)
+        chrom_part, pos_part = coords.split(":")
+        chrom = chrom_part if chrom_part.startswith("chr") else "chr" + chrom_part
+        start_str, end_str = pos_part.split("-")
+        start = int(start_str)
+        end = int(end_str)
+
         vista_regions.append({
-            'chrom': chrom,
-            'start': start,
-            'end': end,
-            'name': row['Element ID'],
-            'score': 0.0,
-            'strand': '.'
+            "chrom": chrom,
+            "start": start,
+            "end": end,
+            "name": row[id_col],
+            "score": 0.0,
+            "strand": row[strand_col] if strand_col else ".",
         })
+
+    logging.info(f"[vista_enhancer] loaded {len(vista_regions)} regions from {tsv_path}")
     return vista_regions
+
+
 
 def sample_regions_by_feature(gtf_parser, feature_type, chromosomes, canonical=None):
     chrom_set = set(chromosomes)
@@ -774,22 +932,28 @@ def limit_regions(regions, n, seed=None):
 
 def main():
     parser = argparse.ArgumentParser("sample regions for downstream analysis")
-    parser.add_argument("--bigwig_file", default="/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig")
-    parser.add_argument("--genome_fasta", default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa")
-    parser.add_argument("--vista_tsv", default="/home/mica/gamba/data_processing/data/VISTA_enhancers/experiments.tsv")
-    parser.add_argument("--utr5_bed", default="/home/mica/gamba/data_processing/data/UCSC coordinates/UCSC_5UTR_exons.bed")
-    parser.add_argument("--utr3_bed", default="/home/mica/gamba/data_processing/data/UCSC coordinates/UCSC_3UTR_exons.bed")
-    parser.add_argument("--promoters_bed", default="/home/mica/gamba/data_processing/data/promoters/promoters.bed")
-    parser.add_argument("--output_dir", default="/home/mica/gamba/data_processing/data/regions")
+    parser.add_argument("--bigwig_file", default="/home/mica/scratch/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig")
+    parser.add_argument("--genome_fasta", default="/home/mica/scratch/gamba/data_processing/data/240-mammalian/hg38.ml.fa")
+    parser.add_argument("--vista_tsv", default="/home/mica/scratch/gamba/data_processing/data/for_sampling/VISTA_enhancers/subsets/vista_human_positive.tsv")
+    parser.add_argument("--utr5_bed", default="/home/mica/scratch/gamba/data_processing/data/for_sampling/UCSC coordinates/UCSC_5UTR_exons.bed")
+    parser.add_argument("--utr3_bed", default="/home/mica/scratch/gamba/data_processing/data/for_sampling/UCSC coordinates/UCSC_3UTR_exons.bed")
+    parser.add_argument("--promoters_bed", default="/home/mica/scratch/gamba/data_processing/data/for_sampling/promoters/promoters.bed")
+    parser.add_argument("--output_dir", default="/home/mica/scratch/gamba/data_processing/data/regions")
     parser.add_argument("--num_regions", type=int, default=10000)
     parser.add_argument("--region_length", type=int, default=2048)
-    parser.add_argument("--gtf_dir", default="/home/mica/gamba/data_processing/data/gtfs/")
+    parser.add_argument("--gtf_dir", default="/home/mica/scratch/gamba/data_processing/data/for_sampling/gtfs/")
     parser.add_argument("--chromosomes", nargs='+', default=["auto"])
-    parser.add_argument("--repeats_bed", default="/home/mica/gamba/data_processing/data/240-mammalian/repeats_hg38.bed")
-    parser.add_argument("--ucne_bed", default="/home/mica/gamba/data_processing/data/conserved_elements/hg38_UCNE_coordinates.bed")
-    parser.add_argument("--ucne_paralogues", default="/home/mica/gamba/data_processing/data/conserved_elements/ucne_paralogues.txt")
+    parser.add_argument("--repeats_bed", default="/home/mica/scratch/gamba/data_processing/data/for_sampling/repeats_hg38.bed")
+    parser.add_argument("--ucne_bed", default="/home/mica/scratch/gamba/data_processing/data/for_sampling/hg38_UCNE_coordinates.bed")
+    parser.add_argument("--ucne_paralogues", default="/home/mica/scratch/gamba/data_processing/data/for_sampling/conserved_elements/ucne_paralogues.txt")
     parser.add_argument("--limit_per_category", type=int, default=10000,  # keep only N items per category
                     help="If set, randomly keep at most N regions per category (after building).")
+    parser.add_argument(
+        "--upstream_length",
+        type=int,
+        default=2000,
+        help="Length of upstream window to sample for each region."
+    )
     parser.add_argument("--phylop_num_samples", type=int, default=10000,
                         help="Number of random samples to estimate phyloP percentiles (use a small number for tests).")
     parser.add_argument("--seed", type=int, default=42)
@@ -800,6 +964,16 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     canonical = build_canonical_set(args.genome_fasta, args.bigwig_file)
+
+    # build chrom length map for bounds checking
+    fa = Fasta(args.genome_fasta)
+    chrom_lengths = {}
+    for c in canonical:
+        try:
+            chrom_lengths[c] = len(fa[c])
+        except KeyError:
+            # some canonical names may be from bigWig only
+            continue
 
     # Discover chromosomes (auto) or normalize provided list
     if len(args.chromosomes) == 1 and args.chromosomes[0] == "auto":
@@ -919,14 +1093,29 @@ def main():
                 r['start'], r['end'] = r['end'], r['start']
 
 
-    categories = ensure_nonoverlap(categories, priority_order, limit_per_category=cap, seed=args.seed)
+    categories = ensure_nonoverlap(
+        categories, priority_order,
+        limit_per_category=cap,
+        seed=args.seed
+    )
 
+    # build upstream regions and filter anchors to only those with valid upstreams
+    categories, upstream_categories = build_upstream_regions(
+        categories,
+        chrom_lengths=chrom_lengths,
+        upstream_len=args.upstream_length,
+    )
 
+    # merge anchor and upstream categories for writing
+    all_categories = {}
+    all_categories.update(categories)
+    all_categories.update(upstream_categories)
 
     bw = pyBigWig.open(args.bigwig_file)
-    for name, regions in categories.items():
+    for name, regions in all_categories.items():
         write_bed(regions, args.output_dir, name, bw=bw)
     bw.close()
+
 
 if __name__ == "__main__":
     main()
