@@ -38,3 +38,13 @@ multiclass_roi_summary.csv
 per_class_roi_summary.csv
 plot_global_balacc.png
 plot_global_balacc_upstream_by_model.png
+
+# Large region annotation files
+data_processing/region_info/repeats_hg38.bed
+data_processing/region_info/UCSC_3UTR_exons.bed
+data_processing/region_info/UCSC_5UTR_exons.bed
+
+# Large region annotation files
+data_processing/region_info/repeats_hg38.bed
+data_processing/region_info/UCSC_3UTR_exons.bed
+data_processing/region_info/UCSC_5UTR_exons.bed
