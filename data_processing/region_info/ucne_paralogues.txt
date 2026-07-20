@@ -1,0 +1,869 @@
+UCNE name	UCNE ID	UCNE position	UCNE type	Paralogs
+BARHL1_Juan	35469	chr9:135620086-135620348	intron	Paralog UCNEs: /
+Other paralog regions: chr1:90728868-90728999;
+BARHL2_Vincent	4652	chr1:91300599-91300877	intergenic	Paralog UCNEs: /
+Other paralog regions: chr9:135362114-135362205;
+BARHL2_William	4655	chr1:91306681-91306897	intergenic	Paralog UCNEs: /
+Other paralog regions: chr9:135300315-135300532;
+BCL11A_Daniel	19164	chr2:58858096-58858518	intergenic	Paralog UCNEs: VRK1_Jasmine;
+Other paralog regions: /
+BCL11A_Roxane	19319	chr2:60114231-60114511	intergenic	Paralog UCNEs: /
+Other paralog regions: chr2:145470226-145470469; chr2:67385347-67385580; chr5:125308978-125309228; chr9:16406084-16406316; chr6:69893094-69893339; chr13:65971624-65971850; chr3:28885937-28886134; chr16:82860092-82860373; chrX:123756560-123756748; chr4:167266256-167266399; chr1:199194675-199194830; chr5:27469155-27469336; chr1:57759869-57760034; chr8:56147087-56147266; chr14:97956029-97956245; chr13:84154264-84154482; chr2:66499420-66499531; chr3:35765140-35765299;
+BCL11A_Ruby	19320	chr2:60116649-60116902	intergenic	Paralog UCNEs: /
+Other paralog regions: chr14:99008752-99008887;
+BCL11A_Ryan	19322	chr2:60121479-60121749	intergenic	Paralog UCNEs: /
+Other paralog regions: chr6:163339233-163339401; chr13:43899488-43899622; chr1:217818150-217818321; chr7:21291689-21291805; chr11:126509816-126509955; chr5:85423101-85423215; chr10:130561465-130561585; chr18:54582596-54582734; chr16:82981532-82981650; chr1:192365225-192365363; chr11:35805027-35805134; chr7:114923627-114923752; chr1:14303084-14303222; chr18:73113940-73114058; chr7:26523874-26524030; chr2:144595421-144595527; chr18:53165095-53165182; chr16:62942886-62943012; chr1:79992838-79992951; chr19:31589377-31589490; chr6:118599972-118600132; chr8:61940885-61941036; chr20:38244651-38244789; chr18:39792121-39792266; chr2:211503008-211503118; chr1:97498993-97499079; chr9:84143321-84143435; chr4:182417800-182417906; chr16:9509487-9509578; chr7:69921330-69921472; chr1:180234198-180234285; chr7:147340707-147340812; chr10:80649782-80649921; chrX:34800764-34800871; chrX:31595464-31595553; chr9:84985313-84985463; chr2:115835734-115835850; chr7:103461055-103461212; chr3:177834520-177834593; chr4:182080042-182080159; chr1:81085276-81085396; chr1:88523741-88523891; chr5:91698143-91698217; chr1:215963203-215963283; chr14:26874504-26874591; chr2:58802074-58802185; chr15:98774587-98774700;
+BCL11A_Toru	19342	chr2:60297626-60298611	intergenic	Paralog UCNEs: BCL11B_Toru;
+Other paralog regions: /
+BCL11A_Ursula	19349	chr2:60441618-60442140	intergenic	Paralog UCNEs: /
+Other paralog regions: chr14:99466537-99466775;
+BCL11A_Veronica_2	19363	chr2:60684544-60684802	UTR	Paralog UCNEs: BCL11B_Veronica;
+Other paralog regions: /
+BCL11A_Vivien	19365	chr2:60685096-60685415	UTR	Paralog UCNEs: /
+Other paralog regions: chr14:99637676-99638006;
+BCL11A_Wei_1	19384	chr2:60761776-60762163	intron	Paralog UCNEs: BCL11B_Wei;
+Other paralog regions: /
+BCL11B_Toru	12971	chr14:99322875-99323135	intergenic	Paralog UCNEs: BCL11A_Toru;
+Other paralog regions: /
+BCL11B_Veronica	12983	chr14:99635754-99636030	UTR	Paralog UCNEs: BCL11A_Veronica_1; BCL11A_Veronica_2;
+Other paralog regions: /
+BCL11B_Wei	13005	chr14:99701749-99701951	intron	Paralog UCNEs: BCL11A_Wei_1;
+Other paralog regions: /
+BHLHE22_Achilles	33002	chr8:64122289-64122643	UTR	Paralog UCNEs: /
+Other paralog regions: chr4:188967950-188968092;
+chr10_Delphina	6340	chr10:13360808-13361019	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:72990381-72990594; chr2:200525890-200526103; chr7:64312436-64312647; chr2:115017284-115017497;
+chr10_Eden	6419	chr10:22619011-22619253	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:67010717-67010945; chrX:67008701-67008822;
+chr10_Finn	6420	chr10:22619805-22620018	UTR	Paralog UCNEs: /
+Other paralog regions: chr2:226488214-226488406; chr6:103222999-103223194; chrX:67009969-67010164; chrX:113662305-113662433;
+chr10_Jeremy	6579	chr10:34796591-34796852	intron	Paralog UCNEs: /
+Other paralog regions: chr10:75476436-75476683; chr10:48199446-48199692; chr10:47229659-47229905; chr10:49255805-49256051; chr10:46749339-46749585; chr10:48939108-48939354;
+chr10_Nagasawa	6603	chr10:36238573-36238977	intergenic	Paralog UCNEs: /
+Other paralog regions: chr10:37680697-37680862;
+chr10_Pablo	6808	chr10:70101839-70102074	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:79785936-79786106;
+chr10_Roman	7168	chr10:88195013-88195216	UTR	Paralog UCNEs: /
+Other paralog regions: chr6:11082487-11082687;
+chr10_Sherlock	7213	chr10:93808466-93808962	UTR	Paralog UCNEs: CPEB2_Sherlock;
+Other paralog regions: chr16:8841115-8841502;
+chr11_Angela	8316	chr11:10818777-10819092	UTR	Paralog UCNEs: /
+Other paralog regions: chr16:67489712-67489904; chr13:41655657-41655797; chr8:23374551-23374655; chr7:12710363-12710430;
+chr12_Vera	10016	chr12:64106835-64107104	intergenic	Paralog UCNEs: /
+Other paralog regions: chr7:35268760-35269030;
+chr12_Violet	10081	chr12:69053707-69054305	UTR	Paralog UCNEs: /
+Other paralog regions: chr5:75465910-75466454; chr9:18710685-18711222; chr11:10788682-10789207; chr3:103783095-103783931; chr19:44348532-44348878; chr9:30347690-30347830; chr6:117754287-117754387;
+chr12_Vladimir	10105	chr12:70747716-70747936	UTR	Paralog UCNEs: /
+Other paralog regions: chr12:60434189-60434279;
+chr12_Wagner	10106	chr12:70748110-70748772	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:46871239-46871497; chr12:60433777-60434023;
+chr12_Yana	10247	chr12:92536888-92537237	UTR	Paralog UCNEs: /
+Other paralog regions: chr12:9288786-9289091;
+chr12_Zhang	10358	chr12:104513142-104513347	UTR	Paralog UCNEs: /
+Other paralog regions: chr3:109634113-109634276; chr8:39854717-39854890; chr1:179287380-179287577; chr5:174910367-174910439;
+chr12_Zoltan	10615	chr12:130754043-130754368	intergenic	Paralog UCNEs: /
+Other paralog regions: chr12:130756436-130756497;
+chr13_Hamlet	10784	chr13:31035183-31035473	UTR	Paralog UCNEs: /
+Other paralog regions: chr15:71456799-71457089; chr22:26957148-26957438; chr3:22423970-22424260; chr2:171457811-171458101; chr9:124281786-124282076; chr20:56063140-56063429; chr2:219066131-219066422; chr1:171239783-171240073; chr11:20596624-20596905; chr14:58752128-58752410; chr15:89678465-89678755; chrX:36229875-36230168; chr17:35500297-35500585; chr3:80006401-80006691; chr6:133189049-133189339; chr8:81723725-81724001; chr6:76028438-76028726; chr2:231380373-231380658; chr4:41843782-41844076; chr6:135956894-135957183; chr15:56616025-56616314; chr1:229840683-229840970; chr2:9158111-9158400; chr5:76443010-76443294; chr15:85483431-85483719; chrX:110678274-110678561; chr2:54279314-54279634; chr5:123555896-123556187; chr11:120806428-120806721; chrX:97677834-97678112; chr8:108185118-108185406; chr14:68082829-68083124; chr1:80749674-80749955; chr19:8258095-8258338; chr3:148542255-148542543; chr2:192039594-192039879; chr8:29077637-29077916; chr3:70803744-70804031; chr10:50760721-50760996; chr8:124135947-124136235; chr5:50705162-50705430; chr4:78885704-78885915; chr10:32202711-32202947; chr5:124601815-124602103; chrX:50673653-50673923; chr1:226599013-226599290; chr1:145018552-145018850; chr6:53100227-53100402; chr15:58965150-58965512; chr12:27856303-27856492; chr5:77939901-77940070; chr5:77939472-77939609; chr11:17751025-17751160; chr1:45998198-45998297; chr9:31482520-31482762; chr1:50864381-50864511; chr10:87708197-87708446; chr13:99206395-99206481; chr8:120866586-120866686; chr11:17748311-17748441; chr5:86077402-86077478; chr6:53099941-53100000; chr3:122547566-122547639;
+chr13_Kaori	11487	chr13:98008834-98009158	intron	Paralog UCNEs: /
+Other paralog regions: chr3:152164303-152164586;
+chr14_Fiona	12230	chr14:39866935-39867604	UTR	Paralog UCNEs: /
+Other paralog regions: chr11:97765922-97766532;
+chr14_Lolita	12783	chr14:93703897-93704255	UTR	Paralog UCNEs: /
+Other paralog regions: chr8:124397167-124397487; chr1:51637069-51637236;
+chr14_Odessa	13026	chr14:100744377-100744647	UTR	Paralog UCNEs: /
+Other paralog regions: chr2:139655929-139656186; chrX:55653263-55653521; chr10:72244072-72244285; chrX:21876158-21876398; chr14:37537628-37537831; chr4:91755710-91755814; chr2:198060778-198060974;
+chr14_Scout	13050	chr14:103801981-103802196	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:9787511-9787719;
+chr15_Abraham	13427	chr15:44816721-44816939	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:99404210-99404427; chrX:105317519-105317730;
+chr15_Chen	13430	chr15:44817664-44818174	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:105321146-105321652; chrX:69300761-69301075; chr12:14670616-14670807;
+chr15_Norma	13484	chr15:49419537-49420119	UTR	Paralog UCNEs: /
+Other paralog regions: chr9:125822977-125823328;
+chr15_Oskar	13934	chr15:72876194-72876393	UTR	Paralog UCNEs: /
+Other paralog regions: chr6:27140189-27140375;
+chr15_Sam	13997	chr15:82334161-82334923	UTR	Paralog UCNEs: /
+Other paralog regions: chr19:1554689-1554933; chr18:48700941-48701152; chr1:189222587-189222823;
+chr16_Clara	14508	chr16:2652826-2653077	UTR	Paralog UCNEs: /
+Other paralog regions: chr16:2731611-2731751;
+chr16_Wagner	15697	chr16:80423831-80424161	intergenic	Paralog UCNEs: SATB1_Wagner;
+Other paralog regions: /
+chr17_Atsuko	15844	chr17:4175508-4175829	UTR	Paralog UCNEs: /
+Other paralog regions: chr1:235500394-235500547;
+chr17_Cassandra	16085	chr17:30696895-30697094	UTR	Paralog UCNEs: /
+Other paralog regions: chr2:204498637-204498836;
+chr17_Derek	16257	chr17:42544412-42544618	intron	Paralog UCNEs: /
+Other paralog regions: chr17:26626881-26626987;
+chr17_Evelyn_c	16646	chr17:65959403-65959652	intron	Paralog UCNEs: /
+Other paralog regions: chr17:62923708-62923957; chr17_ctg5_hap1:1387047-1387291; chr17_ctg5_hap1:1226702-1226946; chr17_ctg5_hap1:1247440-1247684; chr17:44364133-44364377; chr17_ctg5_hap1:501599-501843; chr17_ctg5_hap1:1248336-1248455;
+chr17_Lucy	16649	chr17:65978699-65979271	UTR	Paralog UCNEs: /
+Other paralog regions: chr17:44351554-44352127; chr17_ctg5_hap1:1218560-1219133; chr17_ctg5_hap1:1255252-1255825; chr17_ctg5_hap1:513843-514416;
+chr17_Vanessa	16733	chr17:73774436-73774674	UTR	Paralog UCNEs: /
+Other paralog regions: chr12:31944456-31944691; chr14:39630576-39630808; chr1:178163254-178163475; chr9:21638714-21638965; chr7:126101847-126102067; chrX:119842697-119842912; chr1:178621818-178622026; chr12:102018633-102018742; chrX:65452890-65453015;
+chr17_Zeus	16745	chr17:74730410-74730708	UTR	Paralog UCNEs: /
+Other paralog regions: chr11:94801758-94802051; chr11:94772449-94772736; chr7:47094099-47094386; chrX:34407447-34407735; chr7:132752312-132752441;
+chr1_Aida	3475	chr1:21755033-21755299	intergenic	Paralog UCNEs: /
+Other paralog regions: chr2:129075633-129075899; chrX:132090856-132091123; chr13:96743534-96743787;
+chr1_Aladdin	3502	chr1:24304383-24304761	intron	Paralog UCNEs: /
+Other paralog regions: chr1_gl000191_random:47727-48105;
+chr1_Amos	3504	chr1:24973471-24973725	intron	Paralog UCNEs: /
+Other paralog regions: chr2:62085492-62085596;
+chr1_Arthur	3525	chr1:27024656-27024880	intron	Paralog UCNEs: /
+Other paralog regions: chr6:157101604-157101733;
+chr1_Boris	3541	chr1:27108345-27108601	UTR	Paralog UCNEs: /
+Other paralog regions: chr15:70038515-70038766; chr6:157530194-157530394; chr7:98410690-98410810;
+chr1_Carmen	3567	chr1:31404352-31404556	UTR	Paralog UCNEs: /
+Other paralog regions: chr1:223056971-223057140; chr2:20449529-20449726;
+chr1_Elvira	4136	chr1:67878506-67878818	UTR	Paralog UCNEs: /
+Other paralog regions: chr4:79101638-79101948; chrX:68004984-68005299; chr1:80557406-80557716; chr17:69009806-69010054; chrY:4669043-4669270; chrX:90814754-90814981; chr3:53097620-53097796; chr3:53098073-53098227;
+chr1_Tara	4890	chr1:110889014-110889217	UTR	Paralog UCNEs: /
+Other paralog regions: chr5:147117643-147117848; chr5:126505931-126506135;
+chr1_Trystan	4901	chr1:112255524-112255757	UTR	Paralog UCNEs: /
+Other paralog regions: chr14:74950661-74950869; chr17:26770375-26770584; chr16:30182870-30182966; chr20:48558439-48558517;
+chr1_Yana	5168	chr1:169101643-169101870	UTR	Paralog UCNEs: /
+Other paralog regions: chr4:42032976-42033202;
+chr1_Zara	6146	chr1:245017477-245017750	UTR	Paralog UCNEs: /
+Other paralog regions: chr14:43769803-43770077;
+chr20_Charlie	22276	chr20:42644017-42644322	intron	Paralog UCNEs: TOX_Charlie;
+Other paralog regions: /
+chr20_Clara	22273	chr20:42087720-42088178	intron	Paralog UCNEs: /
+Other paralog regions: chrX:45772385-45772553; chr1:29486369-29486568;
+chr21_Faust	22743	chr21:38887217-38887502	UTR	Paralog UCNEs: /
+Other paralog regions: chr17:2430807-2430961;
+chr2_Anna	18659	chr2:16086655-16086951	UTR	Paralog UCNEs: /
+Other paralog regions: chr5:50654443-50654738; chr5:148427782-148427974;
+chr2_Ferguson	18865	chr2:43450315-43450572	UTR	Paralog UCNEs: /
+Other paralog regions: chr11:25279109-25279352; chr14:69254784-69255039;
+chr2_Isolde	18999	chr2:47387298-47387540	UTR	Paralog UCNEs: /
+Other paralog regions: chr10:71924251-71924497; chr17:68238281-68238519; chr7:37806854-37807077; chr13:99294911-99295070;
+chr2_Midori	19496	chr2:65315392-65315614	UTR	Paralog UCNEs: /
+Other paralog regions: chr2:191857128-191857352; chr6:86879926-86880146; chr9:112853526-112853641;
+chr2_Ming	19080	chr2:55775514-55775728	UTR	Paralog UCNEs: /
+Other paralog regions: chr15:45233804-45234016; chrX:27475284-27475482; chr2:214972309-214972506; chr1:2091100-2091288;
+chr2_Noah	20859	chr2:161128694-161128935	UTR	Paralog UCNEs: /
+Other paralog regions: chr6:112038287-112038465; chr2:82737007-82737184;
+chr2_Pandora	21645	chr2:206858445-206858656	UTR	Paralog UCNEs: /
+Other paralog regions: chr4:67227223-67227432;
+chr3_Eden	23648	chr3:57914677-57914894	UTR	Paralog UCNEs: /
+Other paralog regions: chr2:15658543-15658738;
+chr3_Emi	23985	chr3:72423750-72424423	UTR	Paralog UCNEs: /
+Other paralog regions: chr7:50092902-50093437;
+chr3_Franz	24057	chr3:77681592-77681824	intron	Paralog UCNEs: /
+Other paralog regions: chr3:78666820-78666965; chr11:124756389-124756543;
+chr3_Joshua	24111	chr3:81981844-81982043	intergenic	Paralog UCNEs: /
+Other paralog regions: chr7:113520728-113520879;
+chr3_Lucifer	24748	chr3:160217966-160218330	UTR	Paralog UCNEs: /
+Other paralog regions: chr6:86002380-86002737; chrX:63523151-63523509; chr4:38590417-38590593; chr7:45157542-45157613;
+chr3_Olivia	24754	chr3:160219590-160219803	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:63524532-63524745; chr6:86000930-86001149;
+chr3_Pandora	24767	chr3:167401764-167401989	UTR	Paralog UCNEs: /
+Other paralog regions: chr8:51772722-51772941; chr9:88329514-88329689;
+chr4_Jeremy	25614	chr4:62933776-62933993	intron	Paralog UCNEs: /
+Other paralog regions: chr1:82453482-82453627;
+chr4_Jun	25677	chr4:73941375-73941697	UTR	Paralog UCNEs: /
+Other paralog regions: chr5:139919288-139919420; chr4:58920936-58921068;
+chr4_Quentin	25891	chr4:99801173-99801396	UTR	Paralog UCNEs: /
+Other paralog regions: chr17:47500649-47500838; chr8:14167968-14168234; chr17:36141981-36142158;
+chr4_Santiago	25909	chr4:103717652-103718074	UTR	Paralog UCNEs: /
+Other paralog regions: chr20:5272112-5272534; chr15:61968213-61968532; chrX:88164249-88164380; chr9:99643731-99643823;
+chr4_Vanessa	26171	chr4:131943463-131943707	intergenic	Paralog UCNEs: /
+Other paralog regions: chr4:135843880-135844045;
+chr4_Virginia	26441	chr4:153242957-153243194	UTR	Paralog UCNEs: /
+Other paralog regions: chr4:136605356-136605543;
+chr4_Wei	26485	chr4:160188294-160188512	intergenic	Paralog UCNEs: /
+Other paralog regions: chr5:130867787-130867886;
+chr4_Whitney	26494	chr4:160280998-160281299	UTR	Paralog UCNEs: /
+Other paralog regions: chr5:130759670-130759787;
+chr5_Cameron	27276	chr5:65454552-65454818	UTR	Paralog UCNEs: SRSF11_Cameron;
+Other paralog regions: /
+chr5_Gandalf	28191	chr5:132211145-132211450	UTR	Paralog UCNEs: /
+Other paralog regions: chr18:63804909-63805210; chr2:229837600-229837910;
+chr5_Hana	28241	chr5:137841910-137842161	UTR	Paralog UCNEs: /
+Other paralog regions: chr2:80366670-80366921; chrX:65017497-65017748;
+chr5_Jacob	28263	chr5:139006387-139006588	UTR	Paralog UCNEs: /
+Other paralog regions: chr12:16617764-16617967; chr6:25182325-25182474; chr5:91247981-91248147; chr1:174635751-174635883; chrX:6315885-6316069;
+chr5_Juan	28274	chr5:139495002-139495612	UTR	Paralog UCNEs: /
+Other paralog regions: chr7:122564768-122565266;
+chr5_Lucy	28324	chr5:148875542-148875857	UTR	Paralog UCNEs: /
+Other paralog regions: chr11:102676804-102677116; chr15:37108466-37108776; chr13:37677532-37677802; chr9:5851952-5852255; chrX:38667022-38667235; chr7:18619628-18619913; chr18:23483967-23484078;
+chr5_Nemo	28752	chr5:175953713-175953938	UTR	Paralog UCNEs: /
+Other paralog regions: chr9:36336403-36336626; chr12:68877686-68877827;
+chr5_Roxane	28766	chr5:178044451-178044700	intron	Paralog UCNEs: /
+Other paralog regions: chr2:201724955-201725209;
+chr6_Achilles	28846	chr6:4061840-4062176	UTR	Paralog UCNEs: /
+Other paralog regions: chr9:117612249-117612544;
+chr6_Alice	29047	chr6:17615268-17615474	UTR	Paralog UCNEs: /
+Other paralog regions: chr17:26389468-26389615;
+chr6_Aphrodite	29273	chr6:41491655-41491879	intergenic	Paralog UCNEs: FOXP2_Aphrodite;
+Other paralog regions: /
+chr6_Demian	29344	chr6:48035738-48035964	intron	Paralog UCNEs: /
+Other paralog regions: chr6:48669035-48669222;
+chr6_Figaro	29433	chr6:51274781-51275052	intergenic	Paralog UCNEs: /
+Other paralog regions: chr6:160169232-160169503; chr11:102702672-102702938;
+chr7_Apollo	31036	chr7:23561642-23562167	intron	Paralog UCNEs: /
+Other paralog regions: chr1:52628661-52628960;
+chr7_Doris	31444	chr7:56372130-56372359	intergenic	Paralog UCNEs: /
+Other paralog regions: chr14:63842483-63842715;
+chr7_Kazuki	32233	chr7:129474544-129474768	UTR	Paralog UCNEs: /
+Other paralog regions: chr8:82167476-82167699;
+chr7_Logan	32290	chr7:139059066-139059282	intron	Paralog UCNEs: /
+Other paralog regions: chr16:278296-278452;
+chr7_Megan	32293	chr7:139246510-139246853	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:62803239-62803583;
+chr7_Mignon	32343	chr7:151832161-151832458	UTR	Paralog UCNEs: /
+Other paralog regions: chr7:98512397-98512654;
+chr8_Agamemnon	32499	chr8:14167088-14167306	intron	Paralog UCNEs: /
+Other paralog regions: chr17:47501508-47501726; chr4:99802056-99802274; chr3:182178082-182178300; chr20:5530032-5530265; chr7:81092241-81092441; chr5:176072887-176072985;
+chr8_Amanda	32531	chr8:21846126-21846361	intron	Paralog UCNEs: /
+Other paralog regions: chr10:128249989-128250069;
+chr8_Ariel	32643	chr8:34084068-34084380	intergenic	Paralog UCNEs: /
+Other paralog regions: chr8:35248196-35248392;
+chr8_Felix	32793	chr8:49494960-49495163	intergenic	Paralog UCNEs: /
+Other paralog regions: chr20:48669768-48669909;
+chr8_Frederica	33122	chr8:68109943-68110155	UTR	Paralog UCNEs: /
+Other paralog regions: chr5:87154650-87154826;
+chr8_Hans	33219	chr8:74706097-74706328	UTR	Paralog UCNEs: /
+Other paralog regions: chr1:96884490-96884706; chr7:45907127-45907324; chr21:39588779-39588894; chr14:81634008-81634154;
+chr9_Benjamin	34150	chr9:3218488-3218796	intergenic	Paralog UCNEs: /
+Other paralog regions: chrX:71047250-71047533; chrX:71030739-71030947;
+chr9_Daniel	34618	chr9:74969652-74969856	UTR	Paralog UCNEs: /
+Other paralog regions: chr6:56196785-56196915; chr6:165380137-165380316;
+chr9_Harold	34858	chr9:86589882-86590746	intron	Paralog UCNEs: /
+Other paralog regions: chr5:14877670-14877774; chr20:29862783-29862881;
+chr9_Havana	34905	chr9:96326883-96327277	UTR	Paralog UCNEs: /
+Other paralog regions: chr3:43079003-43079397; chr8:132939033-132939252;
+chr9_Julia	34907	chr9:96327433-96327835	UTR	Paralog UCNEs: /
+Other paralog regions: chr3:43079545-43079951; chr8:132938220-132938567; chr8:13512259-13512422; chrX:119451992-119452079;
+chr9_Siddhartha	35402	chr9:131457472-131457819	UTR	Paralog UCNEs: /
+Other paralog regions: chr3:155706493-155706831; chr10:34679756-34680094; chr12:107666120-107666466; chrX:84011529-84011876; chr1:92539229-92539565; chr5:96391240-96391583; chr14:51904824-51905171; chr2:128846682-128847014; chr5:59754844-59755179; chrX:116098149-116098487; chr14:20995401-20995742; chr3:81662742-81663077; chr17:56552651-56552991; chr17:70738803-70739113; chr1:179154346-179154704; chr3:150988456-150988793; chr2:27969033-27969365; chr2:156339535-156339859; chr8:21211231-21211561; chr3:138733245-138733511; chr11:23464641-23464980; chr2:97914056-97914387; chr2:98125022-98125353; chrUn_gl000212:3759-4090; chrX:15937092-15937465; chr2:96518438-96518769; chr2:89103070-89103401; chr1:18812220-18812474; chr13:24486227-24486535; chr9:136959843-136960061; chr14:35576151-35576378; chr18:12128528-12128776; chr14:36480266-36480448; chr22:17153621-17153869; chr4:121815766-121816065; chr20:432485-432665; chr12:44121705-44121856; chr12:78841527-78841667; chr1:160641353-160641464; chr9:140534240-140534372; chr11:118703540-118703650; chr7:142831714-142831885; chr7:99892542-99892657; chr7:72529917-72530042; chr7:74692594-74692719; chr7:74906844-74906969; chr7:74341584-74341687;
+chrX_Beata	35867	chrX:44971125-44971560	UTR	Paralog UCNEs: /
+Other paralog regions: chrY:15360861-15361287;
+chrX_Lukas	35985	chrX:76761391-76761620	UTR	Paralog UCNEs: /
+Other paralog regions: chr8:19016629-19016855;
+chrX_Prometheus	36241	chrX:123236165-123236369	UTR	Paralog UCNEs: /
+Other paralog regions: chr1:56524996-56525175;
+chrY_Theodore	36493	chrY:15031692-15031971	UTR	Paralog UCNEs: DDX3X_Theodore;
+Other paralog regions: chrX:73364762-73365043; chr8:26921968-26922254; chr4:104496930-104497211; chr10:118782528-118782812; chr2:55333956-55334167; chrX:74898554-74898712;
+chrY_Zana	36502	chrY:15470923-15471175	intron	Paralog UCNEs: /
+Other paralog regions: chrX:44919194-44919446;
+CPEB2_Patricia	25289	chr4:15069865-15070297	UTR	Paralog UCNEs: CPEB4_Patricia;
+Other paralog regions: /
+CPEB2_Sherlock	25290	chr4:15070715-15071596	UTR	Paralog UCNEs: chr10_Sherlock; CPEB4_Sherlock; CPEB4_Wei;
+Other paralog regions: chr16:8841112-8841699;
+CPEB4_Patricia	28734	chr5:173385122-173385427	UTR	Paralog UCNEs: CPEB2_Patricia;
+Other paralog regions: /
+CTBP2_Flora	7834	chr10:126677146-126677362	UTR	Paralog UCNEs: /
+Other paralog regions: chr1:68626510-68626726; chr5:97913687-97913903; chr2:49141487-49141702; chr18:58332289-58332505; chr17_gl000205_random:119191-119403; chr10:96404896-96405111; chrUn_gl000216:127690-127906; chrUn_gl000225:148939-149155; chrY:59002356-59002569; chr19:36985934-36986109; chr11:43545548-43545687;
+DACH1_Alice	11097	chr13:71653026-71653229	intergenic	Paralog UCNEs: /
+Other paralog regions: chr13:58473308-58473439; chr6:145889926-145890082;
+DACH1_Griselda	11137	chr13:72195745-72196113	intron	Paralog UCNEs: /
+Other paralog regions: chr13:72198091-72198177;
+DACH1_Hana	11138	chr13:72198843-72199106	intron	Paralog UCNEs: DACH2_Hana;
+Other paralog regions: /
+DACH1_Johanna	11155	chr13:72301203-72301537	intron	Paralog UCNEs: /
+Other paralog regions: chrX:85739390-85739603;
+DACH1_Napoleon	11185	chr13:72426938-72427317	intron	Paralog UCNEs: /
+Other paralog regions: chrX:85434145-85434478;
+DACH1_Silvester	11221	chr13:73001934-73002183	intergenic	Paralog UCNEs: /
+Other paralog regions: chrX:85192983-85193211;
+DACH1_Urania	11226	chr13:73082479-73082711	intergenic	Paralog UCNEs: /
+Other paralog regions: chrX:85182915-85183048;
+DACH1_Vincent	11228	chr13:73087704-73088097	intergenic	Paralog UCNEs: DACH2_Vincent;
+Other paralog regions: /
+DACH2_Figaro	36086	chrX:85923430-85923684	intron	Paralog UCNEs: /
+Other paralog regions: chr13:72199306-72199388;
+DACH2_Frodo	36076	chrX:85802940-85803174	intron	Paralog UCNEs: /
+Other paralog regions: chr13:72234254-72234437;
+DACH2_Hana	36087	chrX:85932736-85933047	intron	Paralog UCNEs: DACH1_Hana;
+Other paralog regions: /
+DACH2_Vincent	36037	chrX:85165668-85165924	intron	Paralog UCNEs: DACH1_Vincent;
+Other paralog regions: /
+DDX3X_Alice	35802	chrX:41091778-41092093	UTR	Paralog UCNEs: /
+Other paralog regions: chrY:14971348-14971659; chrX:22499862-22500017; chr1:81802035-81802148; chrY:14969677-14969761;
+DDX3X_Antonio	35803	chrX:41092240-41092467	UTR	Paralog UCNEs: /
+Other paralog regions: chrY:14971793-14971999; chrY:20993848-20993920; chrY:20650254-20650326; chrY:26088714-26088785; chrY:27873621-27873692;
+DDX3X_Atsuko	35805	chrX:41093067-41093276	UTR	Paralog UCNEs: /
+Other paralog regions: chrY:14972591-14972794;
+DDX3X_Hector	35808	chrX:41207219-41207447	UTR	Paralog UCNEs: /
+Other paralog regions: chrY:15030283-15030508; chrX:73359134-73359360; chr4:104495487-104495690;
+DDX3X_Lincoln	35809	chrX:41207523-41207725	UTR	Paralog UCNEs: /
+Other paralog regions: chr4:104495773-104495975; chrX:73359439-73359645; chrY:15030586-15030784;
+DDX3X_Sherlock	35813	chrX:41208369-41208591	UTR	Paralog UCNEs: /
+Other paralog regions: chr8:26922360-26922582; chr10:118782918-118783138; chrY:15031382-15031597; chr4:104496602-104496832; chrX:73364448-73364667;
+DDX3X_Theodore	35814	chrX:41208660-41209003	UTR	Paralog UCNEs: chrY_Theodore;
+Other paralog regions: chr8:26921949-26922291; chr10:118782509-118782849; chr4:104496901-104497230; chrX:73364727-73365061; chr2:55333956-55334186; chrX:74898535-74898712;
+DDX3X_Zhong	35821	chrX:41379235-41379583	UTR	Paralog UCNEs: /
+Other paralog regions: chrY:15041657-15041989;
+DIP2C_Gabriel	6168	chr10:300113-300553	UTR	Paralog UCNEs: /
+Other paralog regions: chr16:24665551-24665743;
+EBF1_Benjamin	28395	chr5:157240839-157241084	intron	Paralog UCNEs: /
+Other paralog regions: chr10:130534223-130534382;
+EBF1_Roxane	28475	chr5:158301794-158302038	intron	Paralog UCNEs: EBF3_Roxane;
+Other paralog regions: /
+EBF1_Scarlett	28483	chr5:158341756-158342107	intron	Paralog UCNEs: EBF3_Scarlett; EBF2_Scarlett;
+Other paralog regions: chr20:2719364-2719619;
+EBF1_Trystan	28502	chr5:158406413-158406641	intron	Paralog UCNEs: EBF3_Trystan;
+Other paralog regions: /
+EBF1_Virginia	28510	chr5:158486542-158486992	intron	Paralog UCNEs: EBF3_Virginia;
+Other paralog regions: /
+EBF2_Scarlett	32577	chr8:25775827-25776216	intron	Paralog UCNEs: EBF3_Scarlett; EBF1_Scarlett;
+Other paralog regions: /
+EBF2_Virginia	32591	chr8:25872280-25872588	intron	Paralog UCNEs: EBF3_Virginia;
+Other paralog regions: /
+EBF2_Yves	32598	chr8:26228111-26228326	UTR	Paralog UCNEs: /
+Other paralog regions: chr4:1093467-1093617; chr13:45095411-45095499;
+EBF3_Oberon	8116	chr10:131652854-131653098	intron	Paralog UCNEs: /
+Other paralog regions: chr5:158187688-158187876;
+EBF3_Roman	8150	chr10:131684502-131684703	intron	Paralog UCNEs: /
+Other paralog regions: chr5:158293446-158293587;
+EBF3_Roxane	8151	chr10:131685491-131686034	intron	Paralog UCNEs: EBF1_Roxane;
+Other paralog regions: /
+EBF3_Sam_1	8155	chr10:131689120-131689570	intron	Paralog UCNEs: /
+Other paralog regions: chr5:158332482-158332720;
+EBF3_Scarlett	8158	chr10:131691309-131691943	intron	Paralog UCNEs: EBF1_Scarlett; EBF2_Scarlett;
+Other paralog regions: chr20:2719373-2719610;
+EBF3_Scheherazade	8161	chr10:131693998-131694422	intron	Paralog UCNEs: /
+Other paralog regions: chr5:158356492-158356769;
+EBF3_Trystan	8174	chr10:131705857-131706201	intron	Paralog UCNEs: EBF1_Trystan;
+Other paralog regions: /
+EBF3_Virginia	8195	chr10:131750878-131751222	intron	Paralog UCNEs: EBF1_Virginia; EBF2_Virginia;
+Other paralog regions: /
+EN1_Jeremy	20013	chr2:118810903-118811173	intergenic	Paralog UCNEs: EN1_Othell;
+Other paralog regions: /
+EN1_Othell	20040	chr2:119304779-119305053	intergenic	Paralog UCNEs: EN1_Jeremy;
+Other paralog regions: /
+ESRRG_Eugene	5692	chr1:216564428-216564656	intron	Paralog UCNEs: /
+Other paralog regions: chr10:11174543-11174657;
+FOXB2_Eva	34681	chr9:79627874-79628150	intergenic	Paralog UCNEs: /
+Other paralog regions: chr15:60285846-60286092; chr11:89831102-89831229;
+FOXD3_Laura	4072	chr1:63464744-63465407	intergenic	Paralog UCNEs: /
+Other paralog regions: chr9:70471120-70471449; chr2:114214333-114214662; chr9:42675516-42675845; chrUn_gl000211:31772-32101; chr9:70875464-70875793; chr9:69243632-69243961;
+FOXP1_Brooklyn_1	23944	chr3:71291978-71292192	UTR	Paralog UCNEs: FOXP2_Brooklyn;
+Other paralog regions: /
+FOXP1_Brooklyn_2	23943	chr3:71290771-71291071	UTR	Paralog UCNEs: FOXP2_Brooklyn;
+Other paralog regions: chr6:41523470-41523578;
+FOXP1_Daniel	23928	chr3:71218423-71218642	intron	Paralog UCNEs: FOXP2_Daniel;
+Other paralog regions: /
+FOXP1_Emi	23912	chr3:71154385-71154744	intron	Paralog UCNEs: FOXP2_Emi;
+Other paralog regions: /
+FOXP1_Finn_2	23897	chr3:71099791-71100399	intron	Paralog UCNEs: FOXP2_Finn;
+Other paralog regions: /
+FOXP1_Frederica	23873	chr3:71052586-71053015	intron	Paralog UCNEs: FOXP2_Frederica;
+Other paralog regions: /
+FOXP1_Isolde	23866	chr3:71030554-71030820	intron	Paralog UCNEs: FOXP2_Isolde;
+Other paralog regions: /
+FOXP1_Kaori	23856	chr3:71009205-71009436	intron	Paralog UCNEs: FOXP2_Kaori_1; FOXP2_Kaori_2;
+Other paralog regions: /
+FOXP1_Sherlock	23790	chr3:70091768-70092178	intergenic	Paralog UCNEs: FOXP2_Sherlock;
+Other paralog regions: /
+FOXP2_Aphrodite	31974	chr7:114052725-114053016	intergenic	Paralog UCNEs: chr6_Aphrodite;
+Other paralog regions: /
+FOXP2_Apollo	31977	chr7:114054254-114054704	intergenic	Paralog UCNEs: /
+Other paralog regions: chr3:71294394-71294484;
+FOXP2_Brooklyn	31983	chr7:114056999-114057849	UTR	Paralog UCNEs: FOXP1_Brooklyn_2;
+Other paralog regions: /
+FOXP2_Cameron	31984	chr7:114058145-114058585	UTR	Paralog UCNEs: /
+Other paralog regions: chr3:71277723-71277970;
+FOXP2_Daniel	31993	chr7:114072767-114073176	UTR	Paralog UCNEs: FOXP1_Daniel;
+Other paralog regions: /
+FOXP2_Delphina	31997	chr7:114142529-114143133	UTR	Paralog UCNEs: /
+Other paralog regions: chr3:71212535-71212922;
+FOXP2_Emi	32002	chr7:114209301-114209623	UTR	Paralog UCNEs: FOXP1_Emi;
+Other paralog regions: /
+FOXP2_Frederica	32022	chr7:114289326-114289600	intron	Paralog UCNEs: FOXP1_Frederica;
+Other paralog regions: /
+FOXP2_Hector	32031	chr7:114297157-114297687	intron	Paralog UCNEs: /
+Other paralog regions: chr3:71030856-71031262;
+FOXP2_Isolde	32032	chr7:114297863-114298078	intron	Paralog UCNEs: FOXP1_Isolde;
+Other paralog regions: /
+FOXP2_Kaori_2	32047	chr7:114328767-114329030	intron	Paralog UCNEs: FOXP1_Kaori;
+Other paralog regions: /
+FOXP2_Nick	32093	chr7:114990703-114990932	intergenic	Paralog UCNEs: /
+Other paralog regions: chr7:114991788-114991910; chr2:44670638-44670801; chr18:39365647-39365807;
+FOXP2_Sherlock	32126	chr7:115319031-115319728	intergenic	Paralog UCNEs: FOXP1_Sherlock;
+Other paralog regions: /
+FOXP2_Xavier	32153	chr7:115723926-115724157	intergenic	Paralog UCNEs: /
+Other paralog regions: chr3:69937649-69937840;
+GBX2_Gandalf	21890	chr2:236812674-236812888	intron	Paralog UCNEs: /
+Other paralog regions: chr7:150828356-150828433;
+GSX1_Quentin	10750	chr13:28396887-28397183	intergenic	Paralog UCNEs: /
+Other paralog regions: chr4:54975576-54975761;
+HDAC9_Patricia	30923	chr7:18886410-18886878	intron	Paralog UCNEs: /
+Other paralog regions: chr2:239999907-240000028;
+HMX2_Bryan_1	7768	chr10:124852132-124852576	intergenic	Paralog UCNEs: /
+Other paralog regions: chr10:124903575-124903963;
+HNRNPD_Mignon	25758	chr4:83275833-83276319	UTR	Paralog UCNEs: HNRNPD_Nemo_1; HNRNPD_Nemo_2;
+Other paralog regions: /
+HNRNPD_Nemo_2	25760	chr4:83346619-83346943	UTR	Paralog UCNEs: HNRNPD_Mignon;
+Other paralog regions: /
+HOXA_Flora	31179	chr7:27592858-27593115	intron	Paralog UCNEs: HOXD_Flora;
+Other paralog regions: /
+HOXA_Harper	31178	chr7:27591493-27591821	intron	Paralog UCNEs: HOXD_Harper;
+Other paralog regions: /
+HOXA_Jacob	31131	chr7:27179781-27180066	intergenic	Paralog UCNEs: /
+Other paralog regions: chr17:46667621-46667787;
+HOXA_Kazuki	31107	chr7:26880761-26880976	intron	Paralog UCNEs: HOXB_Kazuki;
+Other paralog regions: /
+HOXA_Vera	31058	chr7:26231439-26232007	UTR	Paralog UCNEs: /
+Other paralog regions: chr13:107041614-107042084; chr21:42750374-42750610;
+HOXB_Kazuki	16299	chr17:46371414-46371616	intron	Paralog UCNEs: HOXA_Kazuki;
+Other paralog regions: /
+HOXD_Beatrice	21251	chr2:176227191-176227618	intergenic	Paralog UCNEs: /
+Other paralog regions: chr7:27981056-27981334;
+HOXD_Harper	21285	chr2:176718763-176719192	intergenic	Paralog UCNEs: HOXA_Harper;
+Other paralog regions: /
+HOXD_Lucia	21296	chr2:176938178-176938698	intergenic	Paralog UCNEs: /
+Other paralog regions: chr7:27290744-27290948;
+HOXD_Malcolm	21297	chr2:176940301-176940780	intergenic	Paralog UCNEs: /
+Other paralog regions: chr7:27289199-27289303;
+HOXD_Trevor	21381	chr2:178023640-178023865	intergenic	Paralog UCNEs: /
+Other paralog regions: chr4:124776560-124776716;
+HOXD_Ursula	21384	chr2:178084115-178084536	UTR	Paralog UCNEs: /
+Other paralog regions: chr10:44284281-44284686; chr12:52105830-52106235; chr4:83050820-83051217; chrX:139115653-139116029; chr1:113993366-113993768; chr13:66361678-66362053; chr1:81893308-81893708; chr18:48342434-48342832; chr2:197880750-197881149; chr2:217039212-217039602; chr6:48116236-48116595; chr15:57538783-57539146; chr6:25272049-25272417; chr11:32612949-32613322; chr1:54440283-54440630; chr19:54534769-54535020; chr1:65591561-65591701;
+IRXA_Akiko_1	26902	chr5:4628056-4628293	intergenic	Paralog UCNEs: /
+Other paralog regions: chr16:53760541-53760717;
+IRXA_Ruby	26852	chr5:3512399-3513193	intergenic	Paralog UCNEs: IRXB_Ruby; IRXB_Vivien; IRXA_Vivien_1; IRXA_Vivien_2;
+Other paralog regions: /
+IRXA_Santiago_2	26848	chr5:3428326-3428563	intergenic	Paralog UCNEs: /
+Other paralog regions: chr16:54350736-54350866;
+IRXA_Scott	26832	chr5:3198062-3198767	intergenic	Paralog UCNEs: /
+Other paralog regions: chr16:54540558-54540840;
+IRXA_Siddhartha_2	26831	chr5:3186966-3187729	intergenic	Paralog UCNEs: IRXB_Siddhartha_2; IRXB_Siddhartha_3;
+Other paralog regions: /
+IRXA_Vanessa_1	26797	chr5:2799528-2799814	intergenic	Paralog UCNEs: IRXB_Vanessa;
+Other paralog regions: /
+IRXA_Vivien_1	26757	chr5:2112526-2112743	intergenic	Paralog UCNEs: IRXB_Vivien;
+Other paralog regions: /
+IRXA_Vivien_2	26758	chr5:2112745-2113237	intergenic	Paralog UCNEs: IRXB_Vivien; IRXA_Ruby; IRXB_Ruby;
+Other paralog regions: /
+IRXB_Adam	14865	chr16:50848986-50849204	intergenic	Paralog UCNEs: /
+Other paralog regions: chr16:51934961-51935092;
+IRXB_Ariel	14928	chr16:51732598-51733023	intergenic	Paralog UCNEs: SALL3_Ariel; SALL3_Ariana;
+Other paralog regions: chr16:50982359-50982535;
+IRXB_Ava	14931	chr16:51786486-51786893	intergenic	Paralog UCNEs: SALL3_Ava;
+Other paralog regions: /
+IRXB_Ruby	15106	chr16:54323656-54324069	intergenic	Paralog UCNEs: IRXA_Ruby; IRXB_Vivien; IRXA_Vivien_1; IRXA_Vivien_2;
+Other paralog regions: /
+IRXB_Siddhartha_2	15142	chr16:54576674-54576894	intergenic	Paralog UCNEs: IRXA_Siddhartha_2;
+Other paralog regions: /
+IRXB_Siddhartha_3	15143	chr16:54576911-54577390	intergenic	Paralog UCNEs: IRXA_Siddhartha_2;
+Other paralog regions: /
+IRXB_Vanessa	15183	chr16:54955126-54955431	intergenic	Paralog UCNEs: IRXA_Vanessa_1;
+Other paralog regions: /
+IRXB_Vivien	15197	chr16:55223332-55223889	intergenic	Paralog UCNEs: IRXA_Vivien_1; IRXA_Vivien_2; IRXA_Ruby; IRXB_Ruby;
+Other paralog regions: /
+ISL1_Antonio	27068	chr5:50335544-50336082	intergenic	Paralog UCNEs: /
+Other paralog regions: chr15:76537604-76537725;
+ISL1_Tarzan	27129	chr5:51493142-51493363	intergenic	Paralog UCNEs: /
+Other paralog regions: chr5:51027211-51027432;
+LMO1_Logan	8276	chr11:8304630-8305004	intergenic	Paralog UCNEs: LMO3_Logan;
+Other paralog regions: /
+LMO3_Demian	9557	chr12:16703725-16703935	UTR	Paralog UCNEs: /
+Other paralog regions: chr22:28659328-28659448;
+LMO3_Logan	9599	chr12:16941145-16942054	intergenic	Paralog UCNEs: LMO1_Logan;
+Other paralog regions: chr11:8290345-8290522;
+LPHN2_Felix	4383	chr1:83878679-83878948	intergenic	Paralog UCNEs: /
+Other paralog regions: chr7:76498794-76499063;
+MAB21L1_Delphina	10843	chr13:36105724-36106015	intron	Paralog UCNEs: /
+Other paralog regions: chr4:151416777-151416985;
+MAB21L1_Eden	10840	chr13:36088957-36089447	intron	Paralog UCNEs: MAB21L2_Eden;
+Other paralog regions: /
+MAB21L2_Eden	26382	chr4:151453260-151453578	intron	Paralog UCNEs: MAB21L1_Eden;
+Other paralog regions: /
+MAB21L2_Helen	26415	chr4:151600457-151600794	intron	Paralog UCNEs: /
+Other paralog regions: chr13:35960951-35961093;
+MARCKS_Achilles_1	30105	chr6:114182382-114182764	UTR	Paralog UCNEs: /
+Other paralog regions: chr21:27607374-27607755; chr1:29236764-29236952;
+MARCKS_Achilles_2	30106	chr6:114182786-114182990	UTR	Paralog UCNEs: /
+Other paralog regions: chr21:27607148-27607351; chr17:57922750-57922920; chr3:136429726-136429915;
+MBD5_Hana	20672	chr2:149270829-149271042	UTR	Paralog UCNEs: /
+Other paralog regions: chr2:149309170-149309234;
+MECOM_Jasmine	24837	chr3:169153008-169153387	intron	Paralog UCNEs: /
+Other paralog regions: chr1:3086374-3086625;
+MECOM_Nora	24847	chr3:169193752-169194276	intron	Paralog UCNEs: /
+Other paralog regions: chr1:3057990-3058116;
+MECOM_Tatiana	24854	chr3:169291775-169292616	intron	Paralog UCNEs: /
+Other paralog regions: chr2:33045438-33045552;
+MECOM_Trevor	24857	chr3:169296935-169297256	intron	Paralog UCNEs: /
+Other paralog regions: chr1:3017828-3018036;
+MEIS1_Alice	19704	chr2:68407793-68408085	UTR	Paralog UCNEs: /
+Other paralog regions: chr9:104356417-104356676;
+MEIS1_Antigone	19700	chr2:68406212-68406419	UTR	Paralog UCNEs: /
+Other paralog regions: chr3:115273864-115273984;
+MEIS1_Eden	19663	chr2:67494876-67495100	intergenic	Paralog UCNEs: MEIS2_Eden_1;
+Other paralog regions: /
+MEIS1_Hannibal	19649	chr2:67281580-67281874	intergenic	Paralog UCNEs: MEIS2_Hannibal_2;
+Other paralog regions: /
+MEIS1_Hector	19610	chr2:66922668-66922957	intergenic	Paralog UCNEs: MEIS2_Hector;
+Other paralog regions: /
+MEIS1_Jeremy	19588	chr2:66797351-66797619	UTR	Paralog UCNEs: MEIS2_Jeremy;
+Other paralog regions: /
+MEIS1_Kazuki	19574	chr2:66764246-66764464	intron	Paralog UCNEs: /
+Other paralog regions: chr15:37307473-37307594;
+MEIS1_Ming	19564	chr2:66736440-66736675	intron	Paralog UCNEs: MEIS2_Ming_2;
+Other paralog regions: /
+MEIS2_Arthur	13174	chr15:36291350-36291575	intergenic	Paralog UCNEs: /
+Other paralog regions: chr2:141416505-141416684;
+MEIS2_Eden_1	13211	chr15:36936294-36936638	UTR	Paralog UCNEs: MEIS1_Eden;
+Other paralog regions: /
+MEIS2_Eden_2	13212	chr15:36936663-36937050	UTR	Paralog UCNEs: /
+Other paralog regions: chr2:67494533-67494744;
+MEIS2_Eva	13216	chr15:36951018-36951358	intron	Paralog UCNEs: /
+Other paralog regions: chr2:67392472-67392608;
+MEIS2_Hannibal_2	13222	chr15:36966613-36967101	intron	Paralog UCNEs: MEIS1_Hannibal;
+Other paralog regions: /
+MEIS2_Hector	13245	chr15:37048848-37049332	intron	Paralog UCNEs: MEIS1_Hector;
+Other paralog regions: /
+MEIS2_Jeremy	13267	chr15:37185497-37186542	UTR	Paralog UCNEs: MEIS1_Jeremy;
+Other paralog regions: /
+MEIS2_Ming_2	13298	chr15:37330164-37330440	intron	Paralog UCNEs: MEIS1_Ming;
+Other paralog regions: /
+MIR4318_Naomi	17308	chr18:36063645-36063845	intergenic	Paralog UCNEs: /
+Other paralog regions: chrX:49521668-49521825;
+MSI2_Nick	16450	chr17:56049899-56050153	UTR	Paralog UCNEs: /
+Other paralog regions: chr3:192871335-192871555;
+MSI2_Noah	16457	chr17:56081107-56081424	UTR	Paralog UCNEs: /
+Other paralog regions: chr10:106200034-106200314; chr13:69980162-69980563; chr7:49713107-49713280;
+MSI2_Patricia	16459	chr17:56082225-56082438	UTR	Paralog UCNEs: /
+Other paralog regions: chr6:145602281-145602431; chr1:198461956-198462137;
+NEUROD6_Antigone	31224	chr7:31274477-31274738	intergenic	Paralog UCNEs: /
+Other paralog regions: chr17:37719204-37719415; chr2:182418910-182419036;
+NEUROD6_Frankenstein	31239	chr7:31402471-31402736	intergenic	Paralog UCNEs: /
+Other paralog regions: chr17:37774640-37774840; chr2:182551365-182551523;
+NFIA_Atsuko	3935	chr1:61330842-61331161	intergenic	Paralog UCNEs: /
+Other paralog regions: chr9:14531938-14532146; chr19:3314803-3314874;
+NFIB_Evelyn	34260	chr9:14096522-14096951	intron	Paralog UCNEs: /
+Other paralog regions: chr1:61918858-61919037; chr19:13202340-13202434;
+NKX6-1_Ava	25773	chr4:84700502-84701117	intergenic	Paralog UCNEs: NKX6-2_Ava;
+Other paralog regions: /
+NKX6-1_Leo	25797	chr4:85284287-85284552	intergenic	Paralog UCNEs: /
+Other paralog regions: chr10:134556484-134556640;
+NKX6-1_Tarzan	25806	chr4:85354761-85354997	intergenic	Paralog UCNEs: NKX6-2_Tarzan;
+Other paralog regions: /
+NKX6-2_Abraham	8225	chr10:134471489-134471876	intron	Paralog UCNEs: /
+Other paralog regions: chr19:1874696-1874744;
+NKX6-2_Ava	8229	chr10:134481071-134481277	intron	Paralog UCNEs: NKX6-1_Ava;
+Other paralog regions: /
+NKX6-2_Tarzan	8234	chr10:134566885-134567119	intron	Paralog UCNEs: NKX6-1_Tarzan;
+Other paralog regions: /
+NR2F1_Aida	27617	chr5:91037632-91038615	intergenic	Paralog UCNEs: /
+Other paralog regions: chr15:95336267-95336964;
+NR2F1_Nagasawa	27775	chr5:93222700-93222975	intron	Paralog UCNEs: /
+Other paralog regions: chr15:97348114-97348327;
+NR2F2_Malcolm	14301	chr15:96949621-96949821	intergenic	Paralog UCNEs: /
+Other paralog regions: chr5:92956509-92956595;
+NR4A2_Maxwell	20761	chr2:156988676-156989001	intergenic	Paralog UCNEs: /
+Other paralog regions: chr9:102768813-102768926;
+NRXN1_Amadeus	19047	chr2:50848195-50848624	intron	Paralog UCNEs: NRXN3_Amadeus;
+Other paralog regions: /
+NRXN3_Amadeus	12698	chr14:79115459-79115716	UTR	Paralog UCNEs: NRXN1_Amadeus;
+Other paralog regions: chr11:64444420-64444605;
+NRXN3_Ryan	12719	chr14:80327425-80327825	intron	Paralog UCNEs: /
+Other paralog regions: chr11:64375242-64375509;
+NTM_Jonathan	9418	chr11:132869223-132869468	intron	Paralog UCNEs: /
+Other paralog regions: chr11:131707801-131708006;
+ODZ3_Gwyneth	26625	chr4:182581490-182581890	intergenic	Paralog UCNEs: /
+Other paralog regions: chr4:182583769-182583904;
+ONECUT1_Nick	13557	chr15:53726251-53726452	intergenic	Paralog UCNEs: /
+Other paralog regions: chr18:54540863-54541065;
+OTX1_Chen	19433	chr2:63194035-63194669	intron	Paralog UCNEs: /
+Other paralog regions: chr14:57476249-57476609;
+OTX1_Norma_1	19456	chr2:63240650-63240968	intron	Paralog UCNEs: /
+Other paralog regions: chr14:57366538-57366679;
+PAX2_Benjamin	7313	chr10:102414204-102414471	intergenic	Paralog UCNEs: /
+Other paralog regions: chr2:114099532-114099740; chr2:96365575-96365783;
+PAX2_Gandalf	7323	chr10:102447500-102447992	intergenic	Paralog UCNEs: PAX5_Gandalf;
+Other paralog regions: /
+PAX2_Mateo	7344	chr10:102563686-102563993	intron	Paralog UCNEs: PAX5_Mateo;
+Other paralog regions: /
+PAX2_Oberon	7345	chr10:102567791-102568066	intron	Paralog UCNEs: /
+Other paralog regions: chr9:36961423-36961673;
+PAX5_Gandalf	34567	chr9:37215008-37215466	intron	Paralog UCNEs: PAX2_Gandalf;
+Other paralog regions: /
+PAX5_Mateo	34556	chr9:36978914-36979137	intron	Paralog UCNEs: PAX2_Mateo;
+Other paralog regions: /
+PAX9_Santiago_1	12201	chr14:37726421-37726643	intron	Paralog UCNEs: /
+Other paralog regions: chr20:22383132-22383266;
+PBX3_Helen	35294	chr9:128645994-128646517	intron	Paralog UCNEs: /
+Other paralog regions: chr1:164700923-164701054;
+POU3F1_Olivia	3653	chr1:38724158-38724374	intergenic	Paralog UCNEs: POU3F2_Olivia;
+Other paralog regions: /
+POU3F2_Eva	29811	chr6:98104245-98104457	intergenic	Paralog UCNEs: /
+Other paralog regions: chr1:38910795-38910934;
+POU3F2_Harper	29831	chr6:98345798-98346058	intergenic	Paralog UCNEs: /
+Other paralog regions: chr1:38802026-38802268;
+POU3F2_Lincoln	29846	chr6:98492091-98492818	intergenic	Paralog UCNEs: /
+Other paralog regions: chr1:38792565-38792752;
+POU3F2_Naomi	29850	chr6:98566426-98566714	intergenic	Paralog UCNEs: POU3F3_Naomi;
+Other paralog regions: /
+POU3F2_Olivia	29865	chr6:98828466-98828782	intergenic	Paralog UCNEs: POU3F1_Olivia;
+Other paralog regions: /
+POU3F3_Naomi	19919	chr2:105048020-105048661	intergenic	Paralog UCNEs: POU3F2_Naomi;
+Other paralog regions: /
+POU3F4_Vincent	36017	chrX:82754222-82754433	intergenic	Paralog UCNEs: /
+Other paralog regions: chr8:116869740-116869932;
+POU4F1_Laura	11323	chr13:79183203-79183433	intergenic	Paralog UCNEs: /
+Other paralog regions: chr5:145711541-145711651;
+POU4F1_Lily	11334	chr13:79348272-79348516	intergenic	Paralog UCNEs: /
+Other paralog regions: chr4:147364937-147365087;
+POU4F1_Violet	11367	chr13:79843305-79843756	intergenic	Paralog UCNEs: /
+Other paralog regions: chr9:31177775-31177863;
+PTPRD_Hana	34201	chr9:8523419-8523650	intron	Paralog UCNEs: /
+Other paralog regions: chr19:5256085-5256239;
+QKI_Jonathan	30527	chr6:163992476-163992927	UTR	Paralog UCNEs: /
+Other paralog regions: chr1:71131400-71131464;
+QKI_Robert	30531	chr6:163994396-163994698	UTR	Paralog UCNEs: /
+Other paralog regions: chr1:100619760-100620055; chr1:71130558-71130864; chr7:125491929-125492150;
+RNF144A_Joshua	18600	chr2:7774632-7774979	intergenic	Paralog UCNEs: /
+Other paralog regions: chr2:7777488-7777568;
+RUNX1T1_Ariel	33552	chr8:92968735-92968993	intergenic	Paralog UCNEs: /
+Other paralog regions: chr2:165008315-165008529;
+RUNX1T1_Atsuko	33554	chr8:92969361-92969675	intergenic	Paralog UCNEs: /
+Other paralog regions: chr2:165008888-165009171;
+RUNX1T1_Brooklyn	33555	chr8:92969756-92970012	intergenic	Paralog UCNEs: /
+Other paralog regions: chr2:165009231-165009457;
+SALL3_Aphrodite	17926	chr18:76190392-76190599	intergenic	Paralog UCNEs: /
+Other paralog regions: chr16:51671465-51671592;
+SALL3_Ariel	17900	chr18:75957090-75957347	intergenic	Paralog UCNEs: IRXB_Ariel;
+Other paralog regions: /
+SALL3_Ava	17889	chr18:75832214-75832456	intergenic	Paralog UCNEs: /
+Other paralog regions: chr16:51934924-51935071;
+SATB1_Lily	23263	chr3:18389426-18390036	UTR	Paralog UCNEs: /
+Other paralog regions: chr6:121900935-121901040;
+SATB1_Wagner	23317	chr3:19028392-19028780	intergenic	Paralog UCNEs: chr16_Wagner;
+Other paralog regions: /
+SHOX2_Andrew	24706	chr3:157776198-157776799	intergenic	Paralog UCNEs: /
+Other paralog regions: chrX:751583-751678; chrY:701583-701678;
+SHOX2_Harper	24721	chr3:158009969-158010191	intron	Paralog UCNEs: /
+Other paralog regions: chrX:433506-433625; chrY:383506-383625;
+SIX2_Kaori	18926	chr2:44970898-44971239	intron	Paralog UCNEs: /
+Other paralog regions: chr5:92691187-92691238;
+SMAD2_Sam	17477	chr18:45213236-45213479	intergenic	Paralog UCNEs: SMAD3_Sam;
+Other paralog regions: /
+SMAD3_Sam	13859	chr15:68040127-68040888	intron	Paralog UCNEs: SMAD2_Sam;
+Other paralog regions: /
+SOX14_Aurore	24471	chr3:137412689-137413007	intergenic	Paralog UCNEs: /
+Other paralog regions: chr13:95403182-95403371;
+SOX14_Toru	24445	chr3:136983530-136983962	intergenic	Paralog UCNEs: SOX21_Toru;
+Other paralog regions: /
+SOX1_Apollo	11651	chr13:112037538-112037872	intergenic	Paralog UCNEs: SOX2_Apollo;
+Other paralog regions: /
+SOX1_Cameron	11653	chr13:112063121-112063548	intergenic	Paralog UCNEs: SOX2_Cameron;
+Other paralog regions: /
+SOX21_Toru	11469	chr13:95618815-95619594	intergenic	Paralog UCNEs: SOX14_Toru;
+Other paralog regions: /
+SOX2_Aladdin_1	24963	chr3:180694091-180694362	UTR	Paralog UCNEs: /
+Other paralog regions: chr12:42825191-42825457; chr21:24991012-24991246;
+SOX2_Aladdin_2	24964	chr3:180694391-180694638	UTR	Paralog UCNEs: /
+Other paralog regions: chr12:42824919-42825164;
+SOX2_Aladdin_3	24965	chr3:180694650-180694849	UTR	Paralog UCNEs: /
+Other paralog regions: chr12:42824708-42824907;
+SOX2_Apollo	24967	chr3:180773963-180774598	intergenic	Paralog UCNEs: SOX1_Apollo;
+Other paralog regions: /
+SOX2_Cameron	24969	chr3:180892217-180892916	intergenic	Paralog UCNEs: SOX1_Cameron;
+Other paralog regions: /
+SOX5_Mateo	9739	chr12:24168059-24168568	UTR	Paralog UCNEs: SOX6_Mateo;
+Other paralog regions: /
+SOX5_Midori	9741	chr12:24173348-24173738	UTR	Paralog UCNEs: SOX6_Midori;
+Other paralog regions: /
+SOX5_Ryan	9751	chr12:24291951-24292505	UTR	Paralog UCNEs: SOX6_Ryan;
+Other paralog regions: /
+SOX6_Lily	8486	chr11:16366375-16366686	UTR	Paralog UCNEs: /
+Other paralog regions: chr16:73823850-73823930; chr18:75661405-75661505; chr8:89045952-89046052; chr6:8278923-8279018; chr13:72447620-72447712;
+SOX6_Lolita	8489	chr11:16377936-16378406	UTR	Paralog UCNEs: /
+Other paralog regions: chr12:24103228-24103325;
+SOX6_Mateo	8495	chr11:16424390-16425089	UTR	Paralog UCNEs: SOX5_Mateo;
+Other paralog regions: /
+SOX6_Midori	8497	chr11:16426467-16426710	UTR	Paralog UCNEs: SOX5_Midori;
+Other paralog regions: /
+SOX6_Ryan	8499	chr11:16461607-16462151	UTR	Paralog UCNEs: SOX5_Ryan;
+Other paralog regions: /
+SP3_Hans	21178	chr2:174773974-174774344	UTR	Paralog UCNEs: /
+Other paralog regions: chr13:90012721-90013085;
+SP3_Helen	21179	chr2:174774427-174774667	UTR	Paralog UCNEs: /
+Other paralog regions: chr13:90013168-90013407;
+SP3_Hong	21183	chr2:174939554-174939940	UTR	Paralog UCNEs: /
+Other paralog regions: chr22:42503354-42503559; chr17:20680213-20680272;
+SP8_Lucifer	30989	chr7:21084557-21085231	intergenic	Paralog UCNEs: /
+Other paralog regions: chr7:21086350-21086429; chr2:174988318-174988407;
+SRSF11_Cameron	4157	chr1:70697428-70697784	intron	Paralog UCNEs: chr5_Cameron;
+Other paralog regions: /
+ST18_Lucy	32822	chr8:53161898-53162241	UTR	Paralog UCNEs: /
+Other paralog regions: chr20:62795726-62795909;
+TCF12_Aurore	13627	chr15:57580145-57580603	UTR	Paralog UCNEs: /
+Other paralog regions: chr18:52891127-52891274;
+TCF12_Hannibal	13607	chr15:57426321-57426671	intron	Paralog UCNEs: TCF4_Hannibal;
+Other paralog regions: /
+TCF4_Figaro	17506	chr18:53084025-53084343	intron	Paralog UCNEs: TCF12_Figaro;
+Other paralog regions: /
+TCF4_Hannibal	17507	chr18:53089797-53090170	intron	Paralog UCNEs: TCF12_Hannibal;
+Other paralog regions: /
+TCF4_Nick	17509	chr18:53090771-53090980	intron	Paralog UCNEs: /
+Other paralog regions: chr15:57425693-57425842;
+TEAD1_Noah	8357	chr11:12965926-12966251	UTR	Paralog UCNEs: /
+Other paralog regions: chr18:57469768-57470089;
+TFAP2A_Brooklyn	28887	chr6:8611793-8612030	intergenic	Paralog UCNEs: /
+Other paralog regions: chr6:8610035-8610115;
+TFAP2A_Naoko	28955	chr6:9933347-9933775	intergenic	Paralog UCNEs: TFAP2B_Naoko;
+Other paralog regions: chr1:36134271-36134392;
+TFAP2B_Hector	29404	chr6:50798888-50799107	intron	Paralog UCNEs: /
+Other paralog regions: chr6:10406057-10406148;
+TFAP2B_Naoko	29421	chr6:51076801-51077044	intergenic	Paralog UCNEs: TFAP2A_Naoko;
+Other paralog regions: chr1:36134252-36134394;
+TLE4_Alice	34696	chr9:81063974-81064452	intergenic	Paralog UCNEs: /
+Other paralog regions: chr9:85376080-85376313;
+TLE4_Chen	34725	chr9:81871567-81872032	intergenic	Paralog UCNEs: /
+Other paralog regions: chr9:83579387-83579557;
+TLE4_Gwyneth	34739	chr9:82194765-82195194	intron	Paralog UCNEs: /
+Other paralog regions: chr9:83814557-83814814; chr9:84288992-84289183;
+TMEM114_Apollo	14555	chr16:7241448-7241663	intron	Paralog UCNEs: /
+Other paralog regions: chr5:145632185-145632363;
+TMEM114_Ariel	14560	chr16:7384517-7384720	intron	Paralog UCNEs: chr8_Ariel;
+Other paralog regions: /
+TNFAIP3_Poseidon	30304	chr6:137834093-137834320	intergenic	Paralog UCNEs: /
+Other paralog regions: chr21:34364037-34364153;
+TNPO1_Emi	27325	chr5:72204530-72204743	UTR	Paralog UCNEs: /
+Other paralog regions: chr17:18366406-18366618; chr17:20384400-20384612; chr10:86151830-86152042; chr4:168298979-168299046;
+TNPO1_Florentino	27328	chr5:72206016-72206228	UTR	Paralog UCNEs: /
+Other paralog regions: chr10:86153334-86153463; chr18:68171246-68171376;
+TRPS1_Roxane	33944	chr8:116476764-116477123	intron	Paralog UCNEs: /
+Other paralog regions: chr1:166313836-166313949;
+TSHZ1_Larisa	17834	chr18:73925043-73925268	intergenic	Paralog UCNEs: TSHZ2_Larisa; TSHZ3_Larisa;
+Other paralog regions: /
+TSHZ1_Laura	17833	chr18:73857692-73857975	intergenic	Paralog UCNEs: TSHZ3_Laura;
+Other paralog regions: chr20:52103835-52103941;
+TSHZ1_Lily	17815	chr18:73366983-73367510	intergenic	Paralog UCNEs: /
+Other paralog regions: chr19:31642122-31642259;
+TSHZ1_Noah	17787	chr18:73009248-73009534	intergenic	Paralog UCNEs: /
+Other paralog regions: chr20:51878815-51879002;
+TSHZ1_Nora	17777	chr18:72980010-72980673	UTR	Paralog UCNEs: TSHZ3_Nora;
+Other paralog regions: /
+TSHZ1_Norma	17771	chr18:72939872-72940073	UTR	Paralog UCNEs: /
+Other paralog regions: chr19:31829874-31830026;
+TSHZ1_Oskar	17754	chr18:72925594-72925980	UTR	Paralog UCNEs: TSHZ2_Oskar;
+Other paralog regions: chr19:31837812-31837996;
+TSHZ1_Othell	17753	chr18:72924431-72924674	UTR	Paralog UCNEs: /
+Other paralog regions: chr20:51590797-51590901; chr19:31839111-31839206;
+TSHZ1_Poseidon	17738	chr18:72822502-72822715	intergenic	Paralog UCNEs: TSHZ2_Poseidon; TSHZ3_Poseidon;
+Other paralog regions: /
+TSHZ1_Sebastian	17711	chr18:72716886-72717254	intron	Paralog UCNEs: /
+Other paralog regions: chr20:51110045-51110163;
+TSHZ1_Urania	17701	chr18:72592608-72592990	intron	Paralog UCNEs: TSHZ2_Urania;
+Other paralog regions: /
+TSHZ1_Ursula	17700	chr18:72590345-72590686	intron	Paralog UCNEs: /
+Other paralog regions: chr19:32450593-32450697; chr20:51055872-51056015;
+TSHZ2_Larisa	22450	chr20:52105388-52105849	intergenic	Paralog UCNEs: TSHZ1_Larisa;
+Other paralog regions: /
+TSHZ2_Leontina	22449	chr20:52104687-52104917	intergenic	Paralog UCNEs: /
+Other paralog regions: chr18:76371722-76371934; chr9:14118945-14119127; chr5:105373192-105373391; chr18:50929814-50930006; chr19:30110296-30110460; chr17:33165102-33165295; chr12:117020917-117021107; chr1:59924229-59924422; chr20:39392852-39392963; chr3:59783403-59783608; chr16:73923737-73923924; chr2:115392809-115393030; chr2:53147963-53148123; chr12:79225967-79226130; chr16:55130454-55130644; chr13:51467492-51467693; chr4:141147584-141147792; chr18:72957010-72957135; chr2:221127218-221127407; chr7:68469512-68469729; chr18:44634246-44634354; chr2:77500224-77500395; chr3:66320810-66321005; chr13:108193176-108193387; chr15:96837627-96837824; chr16:79006124-79006324; chr17:71445439-71445569;
+TSHZ2_Lucifer	22435	chr20:51962559-51962908	UTR	Paralog UCNEs: /
+Other paralog regions: chr19:31640753-31640930; chr18:73370824-73370974;
+TSHZ2_Oskar	22401	chr20:51619959-51620366	intron	Paralog UCNEs: TSHZ1_Oskar;
+Other paralog regions: chr19:31837812-31838016;
+TSHZ2_Pandora	22392	chr20:51421532-51421750	intergenic	Paralog UCNEs: TSHZ3_Pandora;
+Other paralog regions: chr18:72880849-72880997;
+TSHZ2_Poseidon	22386	chr20:51380163-51380450	intergenic	Paralog UCNEs: TSHZ1_Poseidon; TSHZ3_Poseidon;
+Other paralog regions: /
+TSHZ2_Prometheus	22382	chr20:51354900-51355262	intergenic	Paralog UCNEs: /
+Other paralog regions: chr20:51358467-51358676;
+TSHZ2_Urania	22368	chr20:51058334-51058599	intergenic	Paralog UCNEs: TSHZ1_Urania;
+Other paralog regions: /
+TSHZ3_Larisa	18240	chr19:31339585-31339810	intergenic	Paralog UCNEs: TSHZ1_Larisa;
+Other paralog regions: /
+TSHZ3_Laura	18244	chr19:31353640-31353839	intergenic	Paralog UCNEs: TSHZ1_Laura;
+Other paralog regions: chr20:52103835-52103935;
+TSHZ3_Nora	18313	chr19:31798662-31799051	intron	Paralog UCNEs: TSHZ1_Nora;
+Other paralog regions: /
+TSHZ3_Olivia	18314	chr19:31806491-31806857	intron	Paralog UCNEs: TSHZ1_Nora;
+Other paralog regions: /
+TSHZ3_Pablo	18327	chr19:31837138-31837551	intron	Paralog UCNEs: /
+Other paralog regions: chr18:72926707-72926999; chr20:51648756-51648960;
+TSHZ3_Pandora	18340	chr19:31915109-31915325	intergenic	Paralog UCNEs: TSHZ2_Pandora;
+Other paralog regions: chr18:72880873-72880994;
+TSHZ3_Poseidon	18344	chr19:31998891-31999153	intergenic	Paralog UCNEs: TSHZ1_Poseidon; TSHZ2_Poseidon;
+Other paralog regions: chr4:173374392-173374488;
+TSHZ3_Robert	18352	chr19:32037092-32037345	intergenic	Paralog UCNEs: /
+Other paralog regions: chr18:72780840-72780945;
+TSHZ3_Santiago	18377	chr19:32209033-32209444	intergenic	Paralog UCNEs: /
+Other paralog regions: chr18:72746814-72747110;
+TSHZ3_Vincent_2	18420	chr19:32529725-32529984	intergenic	Paralog UCNEs: /
+Other paralog regions: chr18:72447851-72448032;
+UBE2E3_Alice	21425	chr2:181927661-181928008	UTR	Paralog UCNEs: /
+Other paralog regions: chrX:14263059-14263406;
+VRK1_Agamemnon	12847	chr14:97033186-97033433	UTR	Paralog UCNEs: /
+Other paralog regions: chr15:40270969-40271211; chr2:38171208-38171455; chrX:34734317-34734607; chr7:4897385-4897603; chr9:32370838-32370965;
+VRK1_Jasmine	12869	chr14:97431162-97431766	intergenic	Paralog UCNEs: BCL11A_Daniel;
+Other paralog regions: /
+VRK1_Olivia	12898	chr14:97811417-97811747	intergenic	Paralog UCNEs: /
+Other paralog regions: chr14:97825764-97825882;
+VRK1_Siddhartha	12920	chr14:98039411-98039663	intergenic	Paralog UCNEs: /
+Other paralog regions: chr14:98023564-98023704;
+WWOX_Gabriel	15578	chr16:78511010-78511271	intron	Paralog UCNEs: /
+Other paralog regions: chr2:63268641-63268767;
+XPO1_Felix	19402	chr2:61414655-61414934	UTR	Paralog UCNEs: /
+Other paralog regions: chr13:32056987-32057220;
+XPO1_Logan	19409	chr2:61705069-61705337	UTR	Paralog UCNEs: /
+Other paralog regions: chr5:68787627-68787699;
+ZEB2_Chao	20287	chr2:144331035-144331320	intron	Paralog UCNEs: /
+Other paralog regions: chr6:7099720-7099964;
+ZEB2_Frederica	20351	chr2:144714931-144715468	intron	Paralog UCNEs: /
+Other paralog regions: chr2:158144763-158144914;
+ZEB2_Haruki	20381	chr2:145145584-145146507	UTR	Paralog UCNEs: /
+Other paralog regions: chr4:16360878-16361810;
+ZFHX3_Claudia	15387	chr16:72738984-72739383	intergenic	Paralog UCNEs: /
+Other paralog regions: chr5:58360332-58360532;
+ZFHX4_Amanda	33256	chr8:76888696-76889059	intergenic	Paralog UCNEs: /
+Other paralog regions: chr16:73528027-73528145;
+ZFHX4_Napoleon	33420	chr8:77779092-77779520	UTR	Paralog UCNEs: /
+Other paralog regions: chr16:72816800-72817067;
+ZFPM2_Eden	33834	chr8:106333774-106334241	intron	Paralog UCNEs: /
+Other paralog regions: chr16:88531288-88531430;
+ZIC2_Cameron	11509	chr13:100376250-100376546	intron	Paralog UCNEs: /
+Other paralog regions: chrX:136316284-136316436;
+ZIC2_Franz	11523	chr13:100514067-100514395	intron	Paralog UCNEs: /
+Other paralog regions: chrX:136369489-136369601;
+ZIC2_Leopold	11552	chr13:100956250-100956863	intron	Paralog UCNEs: /
+Other paralog regions: chrX:136910132-136910275;
+ZIC2_Oberon	11557	chr13:101046436-101046635	intron	Paralog UCNEs: /
+Other paralog regions: chr6:57093202-57093263;
+ZIC3_Beatrice	36330	chrX:136317153-136317665	intergenic	Paralog UCNEs: /
+Other paralog regions: chr13:100395407-100395604;
+ZIC3_Frederica	36334	chrX:136353629-136353907	intergenic	Paralog UCNEs: /
+Other paralog regions: chr13:100506670-100506832;
+ZIC3_Jacob	36347	chrX:136829401-136829639	intergenic	Paralog UCNEs: /
+Other paralog regions: chr13:100909731-100909915;
+ZMIZ1_Harper	7151	chr10:81075977-81076247	UTR	Paralog UCNEs: /
+Other paralog regions: chr6:139091437-139091585;
+ZNF423_Nagasawa	14839	chr16:49735608-49736168	intron	Paralog UCNEs: ZNF521_Nagasawa;
+Other paralog regions: /
+ZNF503_Charlie	6928	chr10:77373516-77373820	intergenic	Paralog UCNEs: /
+Other paralog regions: chr8:37336947-37337162;
+ZNF503_Dominica	6933	chr10:77383501-77383775	intergenic	Paralog UCNEs: ZNF703_Dominica;
+Other paralog regions: /
+ZNF503_Eden	6937	chr10:77389288-77389655	intergenic	Paralog UCNEs: ZNF703_Eden;
+Other paralog regions: /
+ZNF503_Faust	6940	chr10:77399495-77399868	intergenic	Paralog UCNEs: ZNF703_Faust;
+Other paralog regions: /
+ZNF503_Flora	6942	chr10:77406283-77406663	intergenic	Paralog UCNEs: ZNF703_Flora;
+Other paralog regions: /
+ZNF503_Jan	6974	chr10:77499119-77499625	intergenic	Paralog UCNEs: /
+Other paralog regions: chr8:37120831-37120979;
+ZNF503_Lily	7008	chr10:77697493-77697868	intron	Paralog UCNEs: /
+Other paralog regions: chr8:36998011-36998274;
+ZNF503_Megan	7015	chr10:77726990-77727511	intron	Paralog UCNEs: /
+Other paralog regions: chr8:36957874-36958124;
+ZNF503_Norma	7036	chr10:77873769-77874102	intron	Paralog UCNEs: /
+Other paralog regions: chr8:36877900-36878050;
+ZNF521_Agamemnon	16988	chr18:22208218-22208535	intergenic	Paralog UCNEs: /
+Other paralog regions: chr18:22237097-22237378;
+ZNF521_Nagasawa	17062	chr18:22865042-22865573	intron	Paralog UCNEs: ZNF423_Nagasawa;
+Other paralog regions: /
+ZNF703_Amos	32724	chr8:37378414-37378660	intergenic	Paralog UCNEs: /
+Other paralog regions: chr10:77357568-77357680;
+ZNF703_Dominica	32721	chr8:37310310-37310668	intergenic	Paralog UCNEs: ZNF503_Dominica;
+Other paralog regions: /
+ZNF703_Eden	32717	chr8:37278000-37278226	intergenic	Paralog UCNEs: ZNF503_Eden;
+Other paralog regions: /
+ZNF703_Flora	32713	chr8:37238217-37238713	intergenic	Paralog UCNEs: ZNF503_Flora;
+Other paralog regions: /
