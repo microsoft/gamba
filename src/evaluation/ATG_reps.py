@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ATG 5-way (gamba/caduceus) with chromosome-stratified sampling.
-NOW WITH BASELINES: kmer6 and phylop6D
+WITH BASELINES: kmer6 and phylop6D
 
 - loads ONE TSV: the simplified 5-way format
 - samples N examples total, approximately evenly across chr1..chr22 (default N=1000)
@@ -934,38 +934,43 @@ def main():
     parser.add_argument(
         "--atg_tsv_path",
         type=str,
-        default="/home/mica/gamba/data_processing/data/ATGs/all_chr_atg_5way.tsv",
+        required=True,
+        default="data_processing/data/ATGs/all_chr_atg_5way.tsv",
     )
     parser.add_argument(
         "--bigwig_file",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
+        required=True,
+        default="data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
     )
     parser.add_argument(
         "--genome_fasta",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
+        required=True,
+        default="data_processing/data/240-mammalian/hg38.ml.fa",
     )
-    parser.add_argument("--checkpoint_dir", type=str, default="/home/mica/gamba/")
+    parser.add_argument("--checkpoint_dir", required=True, type=str,)
     parser.add_argument(
         "--config_fpath",
         type=str,
-        default="/home/mica/gamba/configs/jamba-small-240mammalian.json",
+        required=True,
+        default="configs/jamba-small-240mammalian.json",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/ATG_reps_5way",
+        default="data_processing/data/240-mammalian/ATG_reps_5way",
     )
 
-    parser.add_argument("--model_type", type=str, choices=["gamba", "caduceus"], default=None)
-    parser.add_argument("--training_task", type=str, choices=["dual", "cons_only", "seq_only"], default=None)
+    parser.add_argument("--model_type", required=True, type=str, choices=["gamba", "caduceus"], default=None)
+    parser.add_argument("--training_task", required=True, type=str, choices=["dual", "cons_only", "seq_only"], default=None)
     parser.add_argument("--last_step", type=int, default=44000)
     parser.add_argument("--batch_size", type=int, default=32)
 
     parser.add_argument(
         "--baseline",
         type=str,
+        required=True,
         choices=["none", "kmer6", "kmer6_flanked", "phylop"],
         default="none",
     )
