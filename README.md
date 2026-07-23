@@ -4,9 +4,6 @@ Genomic language models (gLMs) with evolutionary conservation supervision.
 
 `gamba` contains genome language models trained on human DNA sequence together with Zoonomia 241-mammalian phyloP conservation scores. The released checkpoints include autoregressive ArGamba models and bidirectional BiGamba models trained with sequence-only, conservation-only, or dual sequence-plus-conservation objectives.
 
-> [!NOTE]
-> `src/evaluation/` and `data_processing/` contain additional exploratory analysis and test scripts used during development that are not part of the documented reproduction path; only scripts mentioned in the README are required to reproduce the paper's results. Other scripts may reference paths or intermediate data not included in this repo
-
 ## Quick start: load released models from Hugging Face
 
 The released checkpoints can be loaded directly with Hugging Face `transformers`.
@@ -66,6 +63,10 @@ BiGamba / bidirectional:
 Context-only positions are discarded to reduce edge effects.
 
 ## Installation
+
+> [!NOTE]
+> `src/evaluation/` and `data_processing/` contain additional exploratory analysis and test scripts used during development that are not part of the documented reproduction path; only scripts mentioned in the README are required to reproduce the paper's results. Other scripts may reference paths or intermediate data not included in this repo
+
 
 Clone the repository and navigate to the project directory:
 
