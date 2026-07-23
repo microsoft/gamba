@@ -148,12 +148,6 @@ for chrom in {1..22} X; do
 done
 ```
 
-Optionally generate FASTA files from the same cleaned regions:
-
-```bash
-python data_processing/generate_same_data_fasta.py
-```
-
 Uncompress `.npz` files and verify chromosome sizes:
 
 ```bash
@@ -184,12 +178,6 @@ data_processing/data/240-mammalian/
     ├── 22_conservation_small.npy
     ├── 22_sequence_small.npy
     └── 22.npz
-```
-
-Run a basic data sanity check:
-
-```bash
-python src/test_sequence.py
 ```
 
 ## Training
