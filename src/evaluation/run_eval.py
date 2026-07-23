@@ -1162,28 +1162,31 @@ def parse_args():
     p.add_argument(
         "--bigwig_file",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
+        required=True,
+        default="data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
     )
     p.add_argument(
         "--genome_fasta",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
+        required=True,
+        default="data_processing/data/240-mammalian/hg38.ml.fa",
     )
     p.add_argument(
         "--regions_root",
         type=str,
-        default="/home/mica/gamba/data_processing/data/regions_common",
+        required=True,
+        default="data_processing/data/regions_common",
         help="root containing CATEGORY/{chr}.bed, CATEGORY_upstream/{chr}.bed, CATEGORY_random/{chr}.bed, CATEGORY_random-noannot/{chr}.bed",
     )
     p.add_argument(
         "--output_dir",
         type=str,
-        default="/home/mica/gamba/other-models/final_representations/gamba_onepass",
+        default="/other-models/final_representations/gamba_onepass",
     )
 
     # model (only used when baseline=none)
-    p.add_argument("--checkpoint_dir", type=str, default="/home/mica/gamba/")
-    p.add_argument("--config_fpath", type=str, default="/home/mica/gamba/configs/jamba-small-240mammalian.json")
+    p.add_argument("--checkpoint_dir", type=str, required=True)
+    p.add_argument("--config_fpath", type=str, default="/configs/jamba-small-240mammalian.json")
     p.add_argument("--last_step", type=int, default=44000)
     p.add_argument("--batch_size", type=int, default=16)
 
@@ -1197,6 +1200,7 @@ def parse_args():
     p.add_argument(
         "--model_type",
         type=str,
+        required=True,
         choices=["gamba", "caduceus"],
         default=None,
         help="required when --baseline=none (passed to load_model/predict_scores_batched)",
