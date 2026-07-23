@@ -956,7 +956,7 @@ def main():
         "out_fpath",
         type=str,
         nargs="?",
-        default=os.getenv("AMLT_OUTPUT_DIR", "/media/data/mica") + "/",
+        default=os.getenv("AMLT_OUTPUT_DIR", "/media/data/") + "/",
     )
     parser.add_argument("data_root", type=str, nargs="?", default=None)
     parser.add_argument(
