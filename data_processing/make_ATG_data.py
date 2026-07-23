@@ -444,17 +444,19 @@ def main():
     ap.add_argument("--chrom", required=True, help="e.g., chr1")
     ap.add_argument(
         "--gtf_dir",
-        default="/home/mica/gamba/data_processing/data/gtfs",
+        required=True,
+        default="/data_processing/data/gtfs",
         help="directory containing chr1.gtf ... chrX.gtf",
     )
     ap.add_argument(
         "--genome",
-        default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.ml.fa",
+        required=True,
+        default="/data_processing/data/240-mammalian/hg38.ml.fa",
         help="genome fasta",
     )
     ap.add_argument(
         "--out",
-        default="/home/mica/gamba/data_processing/data/ATGs_simplified",
+        default="/data_processing/data/ATGs_simplified",
         help="output directory (tsv per chrom will be written here)",
     )
     ap.add_argument("--min_near", type=int, default=MIN_NEAR, help="min distance for near noncoding (default: 2kb)")
