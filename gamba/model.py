@@ -195,8 +195,8 @@ class JambagambaModel(nn.Module):
         self.seq_embedding = nn.Embedding(jambalm.vocab_size, d_model)
         
         # real number loss
-        #self.cons_loss_func = GaussianNLLLoss()
-        self.cons_loss_func = FocalGaussianNLLLoss()
+        self.cons_loss_func = GaussianNLLLoss()
+        #self.cons_loss_func = FocalGaussianNLLLoss()
         #self.cons_loss_func = WeightedGaussianNLLLoss(weights_path=weights_path)
         self.mse_loss_func = nn.MSELoss()
 
