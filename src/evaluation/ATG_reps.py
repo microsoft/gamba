@@ -958,15 +958,14 @@ def main():
         default="data_processing/data/240-mammalian/ATG_reps_5way",
     )
 
-    parser.add_argument("--model_type", required=True, type=str, choices=["gamba", "caduceus"], default=None)
-    parser.add_argument("--training_task", required=True, type=str, choices=["dual", "cons_only", "seq_only"], default=None)
+    parser.add_argument("--model_type", type=str, choices=["gamba", "caduceus"], default=None)
+    parser.add_argument("--training_task", type=str, choices=["dual", "cons_only", "seq_only"], default=None)
     parser.add_argument("--last_step", type=int, default=44000)
     parser.add_argument("--batch_size", type=int, default=32)
 
     parser.add_argument(
         "--baseline",
         type=str,
-        required=True,
         choices=["none", "kmer6", "kmer6_flanked", "phylop"],
         default="none",
     )
