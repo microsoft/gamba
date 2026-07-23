@@ -934,26 +934,22 @@ def main():
     parser.add_argument(
         "--atg_tsv_path",
         type=str,
-        required=True,
         default="data_processing/data/ATGs/all_chr_atg_5way.tsv",
     )
     parser.add_argument(
         "--bigwig_file",
         type=str,
-        required=True,
         default="data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
     )
     parser.add_argument(
         "--genome_fasta",
         type=str,
-        required=True,
         default="data_processing/data/240-mammalian/hg38.ml.fa",
     )
     parser.add_argument("--checkpoint_dir", required=True, type=str,)
     parser.add_argument(
         "--config_fpath",
         type=str,
-        required=True,
         default="configs/jamba-small-240mammalian.json",
     )
     parser.add_argument(
