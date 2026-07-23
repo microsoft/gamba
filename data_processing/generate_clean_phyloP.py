@@ -141,42 +141,36 @@ def main():
     parser.add_argument(
         "--bigwig_file",
         type=str,
-        required=True,
         default="data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
         help="Path to the bigwig file with phyloP scores",
     )
     parser.add_argument(
         "--bed_file",
         type=str,
-        required=True,
         default="data_processing/data/240-mammalian/regions.bed",
         help="File name of the bed file excluding low quality regions",
     )
     parser.add_argument(
         "--file_path",
         type=str,
-        required=True,
         default="data_processing/data/240-mammalian/",
         help="Directory to save the new sequence and conservation scores fasta",
     )
     parser.add_argument(
         "--genome_fasta",
         type=str,
-        required=True,
         default="data_processing/data/240-mammalian/hg38.ml.fa",
         help="Path to the genome fasta file",
     )
     parser.add_argument(
         "--splits_file",
         type=str,
-        required=True,
         default="data_processing/data/240-mammalian/splits.json",
         help="Path to the splits JSON file",
     )
     parser.add_argument(
         "--chromosome",
         type=str,
-        required=True,
         default="chr1",
         help="Chromosome to analyze",
     )
