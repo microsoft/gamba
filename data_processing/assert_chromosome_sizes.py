@@ -113,25 +113,25 @@ def main():
     parser.add_argument(
         "--input_file",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/regions_excluded.bed",
+        default="/data_processing/data/240-mammalian/regions_excluded.bed",
         help="File name of the exclusion regions file",
     )
     parser.add_argument(
         "--output_file",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/cleaned_chrom_sizes.txt",
+        default="/data_processing/data/240-mammalian/cleaned_chrom_sizes.txt",
         help="File name to save chrom_sizes.txt file",
     )
     parser.add_argument(
         "--splits_json",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/splits.json",
+        default="/data_processing/data/240-mammalian/splits.json",
         help="The train/test/validation splits",
     )
     parser.add_argument(
         "--data_dir",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/",
+        default="/data_processing/data/240-mammalian/",
         help="Directory to find files to uncompress",
     )
     parser.add_argument(
@@ -143,7 +143,7 @@ def main():
     parser.add_argument(
         "--chrom_size_original",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/hg38.chrom.sizes",
+        default="/data_processing/data/240-mammalian/hg38.chrom.sizes",
         help="Original chromosome sizes file",
     )
     args = parser.parse_args()
