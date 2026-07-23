@@ -35,13 +35,15 @@ def main():
     parser.add_argument(
         "--file_path",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/",
+        required=True,
+        default="data_processing/data/240-mammalian/",
         help="Directory to find files to uncompress",
     )
     parser.add_argument(
         "--splits_file",
         type=str,
-        default="/home/mica/gamba/data_processing/data/240-mammalian/splits.json",
+        required=True,
+        default="data_processing/data/240-mammalian/splits.json",
         help="Path to the splits JSON file",
     )
     parser.add_argument(
