@@ -1162,19 +1162,16 @@ def parse_args():
     p.add_argument(
         "--bigwig_file",
         type=str,
-        required=True,
         default="data_processing/data/240-mammalian/241-mammalian-2020v2.bigWig",
     )
     p.add_argument(
         "--genome_fasta",
         type=str,
-        required=True,
         default="data_processing/data/240-mammalian/hg38.ml.fa",
     )
     p.add_argument(
         "--regions_root",
         type=str,
-        required=True,
         default="data_processing/data/regions_common",
         help="root containing CATEGORY/{chr}.bed, CATEGORY_upstream/{chr}.bed, CATEGORY_random/{chr}.bed, CATEGORY_random-noannot/{chr}.bed",
     )
