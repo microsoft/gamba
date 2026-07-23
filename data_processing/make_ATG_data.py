@@ -444,13 +444,11 @@ def main():
     ap.add_argument("--chrom", required=True, help="e.g., chr1")
     ap.add_argument(
         "--gtf_dir",
-        required=True,
         default="/data_processing/data/gtfs",
         help="directory containing chr1.gtf ... chrX.gtf",
     )
     ap.add_argument(
         "--genome",
-        required=True,
         default="/data_processing/data/240-mammalian/hg38.ml.fa",
         help="genome fasta",
     )
