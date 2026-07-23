@@ -919,7 +919,7 @@ def main():
         "out_fpath",
         type=str,
         nargs="?",
-        default=os.getenv("AMLT_OUTPUT_DIR", "/home/mica/scratch/dcps/normalized/") + "/",
+        default=os.getenv("AMLT_OUTPUT_DIR", "/dcps/") + "/",
     )
     parser.add_argument("data_root", type=str, nargs="?", default=None)
     parser.add_argument(
