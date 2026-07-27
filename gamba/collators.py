@@ -330,7 +330,7 @@ class gLMMLMCollator:
         input_ids: torch.Tensor, 
         scaling: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Apply BERT-style 15% masking to sequence and conservation scores"""
+        """Apply BERT-style 15% masking to sequence; conservation scores are supervised at all non-pad positions"""
         labels_seq = input_ids.clone()
         labels_scaling = scaling.clone()
 
@@ -350,7 +350,7 @@ class gLMMLMCollator:
         input_ids[indices_random] = random_words[indices_random]
 
         labels_seq[~mask] = -100  # standard MLM label ignore
-        labels_scaling[~mask] = -100.0  # for conservation loss ignore
+        labels_scaling[special_tokens_mask] = -100.0  # conservation loss: ignore only padding, supervise all real positions
         print("label_seq min:", labels_seq.min(), "label_seq max:", labels_seq.max())
         assert labels_seq.min() >= -100
         assert labels_seq.max() < vocab_size
